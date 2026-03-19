@@ -1,0 +1,88 @@
+@import "tailwindcss";
+
+/* ---------------------------------------------------------------
+   Custom fonts — drop files into  public/fonts/  then register here.
+   Supported formats: .woff2 (preferred), .woff, .ttf, .otf
+
+   To swap the Welcome heading font:
+     1. Place your font file in  public/fonts/
+     2. Update the @font-face src below
+     3. Change --font-welcome in @theme
+   --------------------------------------------------------------- */
+
+@font-face {
+  font-family: "Newsreader";
+  src: url("/fonts/Newsreader-VariableFont_opsz,wght.ttf") format("truetype");
+  font-weight: 300;
+  font-style: normal;
+  font-display: swap;
+}
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-serif: "Instrument Serif", Georgia, "Times New Roman", serif;
+  --font-welcome: "Newsreader", ui-monospace, monospace;
+  --color-charcoal: #171717;
+  --color-workspace: #212121;
+  --color-surface: #2a2a2a;
+  --color-surface-hover: #333333;
+  --color-border: #3a3a3a;
+  --color-text-primary: #f5f5f5;
+  --color-text-secondary: #a0a0a0;
+  --color-text-muted: #6b6b6b;
+  --color-accent-teal: #2D9BAD;
+  --color-accent-deep: #05687F;
+  --color-accent-light: #ACE2E5;
+}
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: var(--font-sans);
+  background-color: var(--color-workspace);
+  color: var(--color-text-primary);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+::selection {
+  background-color: rgba(45, 155, 173, 0.3);
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #3a3a3a;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #555;
+}
+
+.sparkle-icon {
+  transition: transform 0.3s ease, filter 0.3s ease;
+}
+
+.sparkle-wrapper:hover .sparkle-icon {
+  filter: drop-shadow(0 0 8px rgba(45, 155, 173, 0.6));
+}
+
+.sparkle-glow {
+  background: radial-gradient(circle, rgba(45, 155, 173, 0.4), transparent 70%);
+  transition: opacity 0.3s ease;
+}
+
+.sparkle-wrapper:hover .sparkle-glow {
+  opacity: 1;
+}
