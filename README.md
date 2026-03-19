@@ -1,6 +1,6 @@
-# Reflexion Finance Agent — Frontend
+# Finance Agent — Frontend
 
-A React-based chat interface for interacting with the Reflexion Finance Agent, a multi-trial AI system that answers financial questions using tool-augmented reasoning with self-evaluation and reflection loops.
+A React-based chat interface for interacting with the Finance Agent, a multi-trial AI system that answers financial questions using tool-augmented reasoning with self-evaluation and reflection loops.
 
 ## Features
 
