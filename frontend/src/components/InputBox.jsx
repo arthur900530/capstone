@@ -1,12 +1,13 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import {
   Plus,
   Paperclip,
   ChevronDown,
   ArrowUp,
   Loader2,
-  Settings,
   X,
+  Wrench,
+  Check,
 } from "lucide-react";
 
 const MODEL_OPTIONS = [
@@ -17,21 +18,46 @@ const MODEL_OPTIONS = [
   "anthropic/claude-3-5-haiku-20241022",
 ];
 
-export default function InputBox({ onSubmit, isStreaming, config, onConfigChange, stagedFiles, onFilesChange }) {
+export default function InputBox({
+  onSubmit,
+  isStreaming,
+  config,
+  onConfigChange,
+  stagedFiles,
+  onFilesChange,
+  skills = [],
+  selectedSkillIds = [],
+  onSelectedSkillsChange,
+}) {
   const [text, setText] = useState("");
   const [isFocused, setIsFocused] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
   const [showModelPicker, setShowModelPicker] = useState(false);
-  const [showSettings, setShowSettings] = useState(false);
+  const [showSkillPicker, setShowSkillPicker] = useState(false);
+  const [pendingSubmit, setPendingSubmit] = useState(null);
   const fileInputRef = useRef(null);
   const modelRef = useRef(null);
-  const settingsRef = useRef(null);
+  const skillRef = useRef(null);
 
   const files = stagedFiles ?? [];
 
+  const closeAllPopups = () => {
+    setShowModelPicker(false);
+    setShowSettings(false);
+    setShowSkillPicker(false);
+  };
+
+  const toggleSkill = (skillId) => {
+    onSelectedSkillsChange?.(
+      selectedSkillIds.includes(skillId)
+        ? selectedSkillIds.filter((id) => id !== skillId)
+        : [...selectedSkillIds, skillId]
+    );
+  };
+
   const handleFileChange = (e) => {
-    const selected = Array.from(e.target.files);
-    onFilesChange?.([...files, ...selected]);
+    const picked = Array.from(e.target.files);
+    onFilesChange?.([...files, ...picked]);
     e.target.value = "";
   };
 
@@ -41,10 +67,33 @@ export default function InputBox({ onSubmit, isStreaming, config, onConfigChange
 
   const handleSubmit = () => {
     if (!text.trim() || isStreaming) return;
-    onSubmit(text.trim(), files);
+    closeAllPopups();
+    setPendingSubmit({ text: text.trim(), files: [...files] });
+  };
+
+  const handleConfirm = () => {
+    if (!pendingSubmit) return;
+    onSubmit(pendingSubmit.text, pendingSubmit.files);
     setText("");
     onFilesChange?.([]);
+    setPendingSubmit(null);
   };
+
+  const handleCancelConfirm = () => {
+    setPendingSubmit(null);
+  };
+
+  useEffect(() => {
+    if (!pendingSubmit) return;
+    const onKeyDown = (e) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setPendingSubmit(null);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [pendingSubmit]);
 
   const handleKeyDown = (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -56,6 +105,8 @@ export default function InputBox({ onSubmit, isStreaming, config, onConfigChange
   const displayModel = config.model
     ? config.model.split("/").pop()
     : "openai/gpt-5.1";
+
+  const selectedSkills = skills.filter((s) => selectedSkillIds.includes(s.id));
 
   return (
     <div className="mx-auto w-full max-w-4xl px-4">
@@ -92,6 +143,26 @@ export default function InputBox({ onSubmit, isStreaming, config, onConfigChange
           </div>
         )}
 
+        {selectedSkillIds.length > 0 && (
+          <div className="flex flex-wrap gap-1.5 px-5 pt-3">
+            {selectedSkills.map((skill) => (
+              <span
+                key={skill.id}
+                className="flex items-center gap-1.5 rounded-md bg-accent-teal/10 px-2.5 py-1 text-[11px] font-medium text-accent-teal"
+              >
+                <Wrench size={11} />
+                {skill.name}
+                <button
+                  onClick={() => toggleSkill(skill.id)}
+                  className="ml-0.5 text-accent-teal/60 hover:text-accent-teal"
+                >
+                  <X size={11} />
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+
         <textarea
           value={text}
           onChange={(e) => setText(e.target.value)}
@@ -116,53 +187,71 @@ export default function InputBox({ onSubmit, isStreaming, config, onConfigChange
           <div className="flex items-center gap-1">
             <button
               onClick={() => fileInputRef.current?.click()}
-              className="flex h-8 w-8 items-center justify-center rounded-lg text-text-muted transition-colors hover:bg-surface-hover hover:text-text-secondary"
+              className="flex h-8 items-center gap-1 rounded-lg px-2 text-text-muted transition-colors hover:bg-surface-hover hover:text-text-secondary"
             >
-              <Plus size={20} />
+              <Plus size={16} />
+              <span className="text-xs">Files</span>
             </button>
-            <div className="relative" ref={settingsRef}>
+
+            <div className="relative" ref={skillRef}>
               <button
-                onClick={() => { setShowSettings(!showSettings); setShowModelPicker(false); }}
-                className="flex h-8 w-8 items-center justify-center rounded-lg text-text-muted transition-colors hover:bg-surface-hover hover:text-text-secondary"
+                onClick={() => {
+                  setShowSkillPicker(!showSkillPicker);
+                  setShowSettings(false);
+                  setShowModelPicker(false);
+                }}
+                className={`flex h-8 items-center gap-1 rounded-lg px-2 transition-colors hover:bg-surface-hover ${
+                  selectedSkillIds.length > 0
+                    ? "text-accent-teal"
+                    : "text-text-muted hover:text-text-secondary"
+                }`}
               >
-                <Settings size={16} />
+                <Wrench size={14} />
+                <span className="text-xs">Skills</span>
+                {selectedSkillIds.length > 0 && (
+                  <span className="flex h-4 min-w-4 items-center justify-center rounded-full bg-accent-teal/20 px-1 text-[10px] font-semibold text-accent-teal">
+                    {selectedSkillIds.length}
+                  </span>
+                )}
               </button>
-              {showSettings && (
-                <div className="absolute bottom-10 left-0 z-50 w-64 rounded-xl border border-border bg-charcoal p-4 shadow-xl">
-                  <div className="mb-3 flex items-center justify-between">
-                    <span className="text-xs font-medium text-text-primary">Settings</span>
-                    <button onClick={() => setShowSettings(false)} className="text-text-muted hover:text-text-primary">
+
+              {showSkillPicker && (
+                <div className="absolute bottom-10 left-0 z-50 w-72 rounded-xl border border-border bg-charcoal shadow-xl">
+                  <div className="flex items-center justify-between px-3 py-2.5 border-b border-border/50">
+                    <span className="text-xs font-medium text-text-primary">Skills</span>
+                    <button onClick={() => setShowSkillPicker(false)} className="text-text-muted hover:text-text-primary">
                       <X size={14} />
                     </button>
                   </div>
-                  <label className="mb-3 block">
-                    <span className="mb-1 block text-xs text-text-secondary">
-                      Max Trials: {config.maxTrials}
-                    </span>
-                    <input
-                      type="range"
-                      min={1}
-                      max={5}
-                      value={config.maxTrials}
-                      onChange={(e) => onConfigChange({ ...config, maxTrials: Number(e.target.value) })}
-                      className="w-full accent-accent-teal"
-                    />
-                  </label>
-                  <label className="block">
-                    <span className="mb-1 block text-xs text-text-secondary">
-                      Confidence Threshold: {config.confidenceThreshold.toFixed(1)}
-                    </span>
-                    <input
-                      type="range"
-                      min={0}
-                      max={10}
-                      value={config.confidenceThreshold * 10}
-                      onChange={(e) =>
-                        onConfigChange({ ...config, confidenceThreshold: Number(e.target.value) / 10 })
-                      }
-                      className="w-full accent-accent-teal"
-                    />
-                  </label>
+                  {skills.length === 0 ? (
+                    <p className="px-3 py-4 text-center text-xs text-text-muted">No skills available</p>
+                  ) : (
+                    <div className="max-h-52 overflow-y-auto py-1">
+                      {skills.map((skill) => (
+                        <button
+                          key={skill.id}
+                          onClick={() => toggleSkill(skill.id)}
+                          className="flex w-full items-start gap-2.5 px-3 py-2 text-left transition-colors hover:bg-surface"
+                        >
+                          <div
+                            className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded border transition-colors ${
+                              selectedSkillIds.includes(skill.id)
+                                ? "border-accent-teal bg-accent-teal"
+                                : "border-text-muted/50"
+                            }`}
+                          >
+                            {selectedSkillIds.includes(skill.id) && (
+                              <Check size={10} className="text-white" />
+                            )}
+                          </div>
+                          <div className="min-w-0">
+                            <p className="text-xs font-medium text-text-primary">{skill.name}</p>
+                            <p className="truncate text-[11px] text-text-muted">{skill.description}</p>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -171,7 +260,11 @@ export default function InputBox({ onSubmit, isStreaming, config, onConfigChange
           <div className="flex items-center gap-2">
             <div className="relative" ref={modelRef}>
               <button
-                onClick={() => { setShowModelPicker(!showModelPicker); setShowSettings(false); }}
+                onClick={() => {
+                  setShowModelPicker(!showModelPicker);
+                  setShowSettings(false);
+                  setShowSkillPicker(false);
+                }}
                 className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium text-text-secondary transition-colors hover:bg-surface-hover"
               >
                 <div className="h-3.5 w-3.5 rounded-full bg-gradient-to-br from-accent-deep to-accent-teal" />
@@ -221,6 +314,67 @@ export default function InputBox({ onSubmit, isStreaming, config, onConfigChange
           </div>
         </div>
       </div>
+
+      {pendingSubmit && (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm"
+          onClick={handleCancelConfirm}
+        >
+          <div
+            className="w-full max-w-md rounded-2xl border border-border bg-charcoal p-6 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="mb-1 text-sm font-semibold text-text-primary">
+              Confirm Skills
+            </h3>
+            <p className="mb-4 text-xs text-text-muted">
+              Review the skills that will be used for this message.
+            </p>
+
+            {selectedSkills.length > 0 ? (
+              <div className="mb-5 space-y-2">
+                {selectedSkills.map((skill) => (
+                  <div
+                    key={skill.id}
+                    className="flex items-start gap-2.5 rounded-lg bg-surface p-3"
+                  >
+                    <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-accent-teal/15">
+                      <Wrench size={13} className="text-accent-teal" />
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-xs font-medium text-text-primary">{skill.name}</p>
+                      <p className="mt-0.5 text-[11px] leading-relaxed text-text-muted">
+                        {skill.description}
+                      </p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="mb-5 rounded-lg bg-surface px-4 py-3">
+                <p className="text-xs text-text-muted">
+                  No skills selected. The agent will use its default capabilities.
+                </p>
+              </div>
+            )}
+
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={handleCancelConfirm}
+                className="rounded-lg px-4 py-2 text-xs font-medium text-text-secondary transition-colors hover:bg-surface-hover"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleConfirm}
+                className="rounded-lg bg-accent-teal px-4 py-2 text-xs font-medium text-white transition-colors hover:bg-accent-teal/90"
+              >
+                Confirm &amp; Send
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

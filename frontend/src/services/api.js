@@ -102,7 +102,7 @@ export async function deleteSkill(skillId) {
   return res.json();
 }
 
-export async function streamChat({ question, sessionId, model, maxTrials, confidenceThreshold, files }, onEvent) {
+export async function streamChat({ question, sessionId, model, maxTrials, confidenceThreshold, files, skillIds }, onEvent) {
   const res = await fetch(`${API_BASE}/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -113,6 +113,7 @@ export async function streamChat({ question, sessionId, model, maxTrials, confid
       max_trials: maxTrials,
       confidence_threshold: confidenceThreshold,
       files: files || undefined,
+      skill_ids: skillIds?.length ? skillIds : undefined,
     }),
   });
 

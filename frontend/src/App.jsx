@@ -12,6 +12,7 @@ import {
   fetchChats,
   fetchChatById,
   fetchAgents,
+  fetchSkills,
   deleteChat as apiDeleteChat,
   renameChat as apiRenameChat,
 } from "./services/api";
@@ -121,6 +122,8 @@ export default function App() {
   const [chats, setChats] = useState([]);
   const [chatFiles, setChatFiles] = useState([]);
   const [stagedFiles, setStagedFiles] = useState([]);
+  const [skills, setSkills] = useState([]);
+  const [selectedSkillIds, setSelectedSkillIds] = useState([]);
   const [config, setConfig] = useState({
     model: "",
     maxTrials: 3,
@@ -179,6 +182,9 @@ export default function App() {
     fetchAgents()
       .then(setAgents)
       .catch(() => {});
+    fetchSkills()
+      .then(setSkills)
+      .catch(() => {});
   }, []);
 
   const refreshChats = useCallback(async () => {
@@ -223,6 +229,7 @@ export default function App() {
           files: submittedFiles.length > 0
             ? submittedFiles.map((f) => ({ name: f.name, size: f.size, type: f.type }))
             : undefined,
+          skillIds: selectedSkillIds,
         },
         (eventType, data) => {
           let msg = null;
@@ -450,6 +457,9 @@ export default function App() {
               onConfigChange={setConfig}
               stagedFiles={stagedFiles}
               onFilesChange={setStagedFiles}
+              skills={skills}
+              selectedSkillIds={selectedSkillIds}
+              onSelectedSkillsChange={setSelectedSkillIds}
             />
           </div>
         </>
@@ -468,6 +478,9 @@ export default function App() {
               onConfigChange={setConfig}
               stagedFiles={stagedFiles}
               onFilesChange={setStagedFiles}
+              skills={skills}
+              selectedSkillIds={selectedSkillIds}
+              onSelectedSkillsChange={setSelectedSkillIds}
             />
           </div>
         </div>
