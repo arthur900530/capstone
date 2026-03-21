@@ -28,6 +28,8 @@ export default function InputBox({
   skills = [],
   selectedSkillIds = [],
   onSelectedSkillsChange,
+  skipConfirm = false,
+  onSkipConfirmChange,
 }) {
   const [text, setText] = useState("");
   const [isFocused, setIsFocused] = useState(false);
@@ -35,7 +37,6 @@ export default function InputBox({
   const [showModelPicker, setShowModelPicker] = useState(false);
   const [showSkillPicker, setShowSkillPicker] = useState(false);
   const [pendingSubmit, setPendingSubmit] = useState(null);
-  const [skipConfirm, setSkipConfirm] = useState(false);
   const fileInputRef = useRef(null);
   const modelRef = useRef(null);
   const skillRef = useRef(null);
@@ -367,7 +368,7 @@ export default function InputBox({
                 <input
                   type="checkbox"
                   checked={skipConfirm}
-                  onChange={(e) => setSkipConfirm(e.target.checked)}
+                  onChange={(e) => onSkipConfirmChange?.(e.target.checked)}
                   className="h-3.5 w-3.5 rounded border-text-muted/50 accent-accent-teal"
                 />
                 <span className="text-[11px] text-text-muted">Never ask again</span>

@@ -124,6 +124,7 @@ export default function App() {
   const [stagedFiles, setStagedFiles] = useState([]);
   const [skills, setSkills] = useState([]);
   const [selectedSkillIds, setSelectedSkillIds] = useState([]);
+  const [skipSkillConfirm, setSkipSkillConfirm] = useState(false);
   const [config, setConfig] = useState({
     model: "",
     maxTrials: 3,
@@ -343,6 +344,7 @@ export default function App() {
     setVisibleAgent(null);
     setChatFiles([]);
     setStagedFiles([]);
+    setSkipSkillConfirm(false);
     visibleAgentRef.current = null;
     sentinelRefs.current.clear();
   };
@@ -372,6 +374,7 @@ export default function App() {
       setMessages(restored);
       setChatFiles(chat.files ?? []);
       setStagedFiles([]);
+      setSkipSkillConfirm(false);
       if (agent) {
         visibleAgentRef.current = agent.id;
         setVisibleAgent(agent);
@@ -460,6 +463,8 @@ export default function App() {
               skills={skills}
               selectedSkillIds={selectedSkillIds}
               onSelectedSkillsChange={setSelectedSkillIds}
+              skipConfirm={skipSkillConfirm}
+              onSkipConfirmChange={setSkipSkillConfirm}
             />
           </div>
         </>
@@ -481,6 +486,8 @@ export default function App() {
               skills={skills}
               selectedSkillIds={selectedSkillIds}
               onSelectedSkillsChange={setSelectedSkillIds}
+              skipConfirm={skipSkillConfirm}
+              onSkipConfirmChange={setSkipSkillConfirm}
             />
           </div>
         </div>
