@@ -35,6 +35,7 @@ export default function InputBox({
   const [showModelPicker, setShowModelPicker] = useState(false);
   const [showSkillPicker, setShowSkillPicker] = useState(false);
   const [pendingSubmit, setPendingSubmit] = useState(null);
+  const [skipConfirm, setSkipConfirm] = useState(false);
   const fileInputRef = useRef(null);
   const modelRef = useRef(null);
   const skillRef = useRef(null);
@@ -43,7 +44,6 @@ export default function InputBox({
 
   const closeAllPopups = () => {
     setShowModelPicker(false);
-    setShowSettings(false);
     setShowSkillPicker(false);
   };
 
@@ -68,6 +68,12 @@ export default function InputBox({
   const handleSubmit = () => {
     if (!text.trim() || isStreaming) return;
     closeAllPopups();
+    if (skipConfirm) {
+      onSubmit(text.trim(), [...files]);
+      setText("");
+      onFilesChange?.([]);
+      return;
+    }
     setPendingSubmit({ text: text.trim(), files: [...files] });
   };
 
@@ -197,7 +203,6 @@ export default function InputBox({
               <button
                 onClick={() => {
                   setShowSkillPicker(!showSkillPicker);
-                  setShowSettings(false);
                   setShowModelPicker(false);
                 }}
                 className={`flex h-8 items-center gap-1 rounded-lg px-2 transition-colors hover:bg-surface-hover ${
@@ -262,7 +267,6 @@ export default function InputBox({
               <button
                 onClick={() => {
                   setShowModelPicker(!showModelPicker);
-                  setShowSettings(false);
                   setShowSkillPicker(false);
                 }}
                 className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium text-text-secondary transition-colors hover:bg-surface-hover"
@@ -358,19 +362,30 @@ export default function InputBox({
               </div>
             )}
 
-            <div className="flex justify-end gap-2">
-              <button
-                onClick={handleCancelConfirm}
-                className="rounded-lg px-4 py-2 text-xs font-medium text-text-secondary transition-colors hover:bg-surface-hover"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleConfirm}
-                className="rounded-lg bg-accent-teal px-4 py-2 text-xs font-medium text-white transition-colors hover:bg-accent-teal/90"
-              >
-                Confirm &amp; Send
-              </button>
+            <div className="flex items-center justify-between">
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={skipConfirm}
+                  onChange={(e) => setSkipConfirm(e.target.checked)}
+                  className="h-3.5 w-3.5 rounded border-text-muted/50 accent-accent-teal"
+                />
+                <span className="text-[11px] text-text-muted">Never ask again</span>
+              </label>
+              <div className="flex gap-2">
+                <button
+                  onClick={handleCancelConfirm}
+                  className="rounded-lg px-4 py-2 text-xs font-medium text-text-secondary transition-colors hover:bg-surface-hover"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleConfirm}
+                  className="rounded-lg bg-accent-teal px-4 py-2 text-xs font-medium text-white transition-colors hover:bg-accent-teal/90"
+                >
+                  Confirm &amp; Send
+                </button>
+              </div>
             </div>
           </div>
         </div>
