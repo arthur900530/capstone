@@ -25,18 +25,18 @@ if [ ! -d "$FRONTEND_DIR/node_modules" ]; then
   (cd "$FRONTEND_DIR" && npm install)
 fi
 
-# -- Set up Python venv & install backend dependencies if needed --
-if [ ! -d "$BACKEND_DIR/.venv" ]; then
-  echo "Creating Python virtual environment..."
-  python3 -m venv "$BACKEND_DIR/.venv"
-fi
+# # -- Set up Python venv & install backend dependencies if needed --
+# if [ ! -d "$BACKEND_DIR/.venv" ]; then
+#   echo "Creating Python virtual environment..."
+#   python3 -m venv "$BACKEND_DIR/.venv"
+# fi
 
-echo "Installing backend dependencies..."
-"$BACKEND_DIR/.venv/bin/pip" install -q -r "$BACKEND_DIR/requirements.txt"
+# echo "Installing backend dependencies..."
+# "$BACKEND_DIR/.venv/bin/pip" install -q -r "$BACKEND_DIR/requirements.txt"
 
 # -- Start mock backend --
 echo "Starting mock backend on http://localhost:8000 ..."
-(cd "$BACKEND_DIR" && .venv/bin/uvicorn server:app --reload --port 8000) &
+(cd "$BACKEND_DIR" && uvicorn server:app --reload --port 8000) &
 PIDS+=($!)
 
 # -- Start frontend dev server --

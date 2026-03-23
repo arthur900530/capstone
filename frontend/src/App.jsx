@@ -188,6 +188,15 @@ export default function App() {
       .catch(() => {});
   }, []);
 
+  const refreshSkills = useCallback(async () => {
+    try {
+      const list = await fetchSkills();
+      setSkills(list);
+    } catch {
+      /* skills list stays stale */
+    }
+  }, []);
+
   const refreshChats = useCallback(async () => {
     try {
       const list = await fetchChats();
@@ -531,7 +540,7 @@ export default function App() {
             onClearFocus={() => setFocusAgentId(null)}
           />
         ) : activeTab === "skills" ? (
-          <SkillsView />
+          <SkillsView onSkillsChanged={refreshSkills} />
         ) : (
           renderChatView()
         )}

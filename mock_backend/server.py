@@ -9,18 +9,23 @@ Run:  uvicorn server:app --reload --port 8000
 
 from __future__ import annotations
 
+import os
 import asyncio
 import json
 import random
 import re
+import shutil
+import tempfile
 import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
+
+from mm_train import MMSkillTrainer
 
 app = FastAPI(title="Mock Reflexion Finance Agent API")
 
@@ -83,146 +88,38 @@ def _resolve_agent(model: str | None, is_task: bool) -> dict:
     return _AGENTS[_DEFAULT_TASK_AGENT if is_task else _DEFAULT_CHAT_AGENT]
 
 
-_SKILLS: dict[str, dict] = {
-    "web_search": {
-        "id": "web_search",
-        "name": "Web Search",
-        "description": "Search the web for real-time financial data, news articles, and market information using targeted queries.",
-        "type": "builtin",
-        "files": [
-            {"name": "SKILL.md", "size": 2840, "type": "text/markdown"},
-            {"name": "LICENSE", "size": 1065, "type": "text/plain"},
-            {"name": "search_config.json", "size": 1240, "type": "application/json"},
-            {"name": "query_templates.yaml", "size": 3420, "type": "application/x-yaml"},
-            {"name": "examples.md", "size": 1580, "type": "text/markdown"},
-        ],
-        "definition": (
-            "def web_search(query: str, max_results: int = 5) -> list[dict]:\n"
-            '    """Search the web for financial information.\n\n'
-            "    Args:\n"
-            "        query: Search query string\n"
-            "        max_results: Maximum number of results to return\n\n"
-            "    Returns:\n"
-            '        List of search results with title, url, and snippet\n    """\n'
-            "    results = search_engine.query(query, limit=max_results)\n"
-            "    return [\n"
-            "        {\n"
-            '            "title": r.title,\n'
-            '            "url": r.url,\n'
-            '            "snippet": r.snippet,\n'
-            "        }\n"
-            "        for r in results\n"
-            "    ]\n"
-        ),
-        "created_at": "2025-01-15T10:00:00+00:00",
-        "updated_at": "2025-01-15T10:00:00+00:00",
-    },
-    "edgar_search": {
-        "id": "edgar_search",
-        "name": "SEC Filing Search",
-        "description": "Query the SEC EDGAR database to retrieve official company filings including 10-K, 10-Q, 8-K, and proxy statements.",
-        "type": "builtin",
-        "files": [
-            {"name": "SKILL.md", "size": 3150, "type": "text/markdown"},
-            {"name": "LICENSE", "size": 1065, "type": "text/plain"},
-            {"name": "reference.md", "size": 4200, "type": "text/markdown"},
-            {"name": "edgar_api_config.json", "size": 890, "type": "application/json"},
-            {"name": "filing_types.csv", "size": 2100, "type": "text/csv"},
-            {"name": "cik_lookup_cache.json", "size": 45200, "type": "application/json"},
-            {"name": "scripts/validate_cik.py", "size": 1820, "type": "text/x-python"},
-        ],
-        "definition": (
-            "def edgar_search(company: str, filing_type: str = '10-K', limit: int = 3) -> list[dict]:\n"
-            '    """Search SEC EDGAR for company filings.\n\n'
-            "    Args:\n"
-            "        company: Company name or CIK number\n"
-            "        filing_type: Type of filing (10-K, 10-Q, 8-K, etc.)\n"
-            "        limit: Maximum filings to return\n\n"
-            "    Returns:\n"
-            '        List of filing metadata with download URLs\n    """\n'
-            "    filings = edgar_client.search(\n"
-            "        company=company,\n"
-            "        form_type=filing_type,\n"
-            "        count=limit,\n"
-            "    )\n"
-            "    return [\n"
-            "        {\n"
-            '            "filing_date": f.date,\n'
-            '            "form_type": f.form_type,\n'
-            '            "url": f.document_url,\n'
-            '            "description": f.description,\n'
-            "        }\n"
-            "        for f in filings\n"
-            "    ]\n"
-        ),
-        "created_at": "2025-01-15T10:00:00+00:00",
-        "updated_at": "2025-01-15T10:00:00+00:00",
-    },
-    "parse_html": {
-        "id": "parse_html",
-        "name": "Parse HTML",
-        "description": "Extract and clean readable text content from HTML pages, including financial tables, earnings reports, and news articles.",
-        "type": "builtin",
-        "files": [
-            {"name": "SKILL.md", "size": 2210, "type": "text/markdown"},
-            {"name": "LICENSE", "size": 1065, "type": "text/plain"},
-            {"name": "parser_rules.json", "size": 5600, "type": "application/json"},
-            {"name": "examples.md", "size": 980, "type": "text/markdown"},
-        ],
-        "definition": (
-            "def parse_html(url: str, extract_tables: bool = True) -> dict:\n"
-            '    """Fetch and parse an HTML page into structured content.\n\n'
-            "    Args:\n"
-            "        url: The URL to fetch and parse\n"
-            "        extract_tables: Whether to extract HTML tables as structured data\n\n"
-            "    Returns:\n"
-            '        Dict with text content and optionally extracted tables\n    """\n'
-            "    response = http_client.get(url)\n"
-            "    soup = BeautifulSoup(response.text, 'html.parser')\n"
-            "    text = soup.get_text(separator='\\n', strip=True)\n"
-            "    result = {'text': text[:5000]}\n"
-            "    if extract_tables:\n"
-            "        result['tables'] = extract_html_tables(soup)\n"
-            "    return result\n"
-        ),
-        "created_at": "2025-01-15T10:00:00+00:00",
-        "updated_at": "2025-01-15T10:00:00+00:00",
-    },
-    "retrieve_info": {
-        "id": "retrieve_info",
-        "name": "Retrieve Information",
-        "description": "Analyze and synthesize information from previously collected documents to extract specific financial data points and insights.",
-        "type": "builtin",
-        "files": [
-            {"name": "SKILL.md", "size": 2960, "type": "text/markdown"},
-            {"name": "LICENSE", "size": 1065, "type": "text/plain"},
-            {"name": "STANDARDS.md", "size": 1740, "type": "text/markdown"},
-        ],
-        "definition": (
-            "def retrieve_info(query: str, documents: list[str] | None = None) -> dict:\n"
-            '    """Retrieve and synthesize information from collected documents.\n\n'
-            "    Args:\n"
-            "        query: What information to extract\n"
-            "        documents: Optional list of document IDs to search within\n\n"
-            "    Returns:\n"
-            '        Dict with extracted info, sources, and confidence\n    """\n'
-            "    context = document_store.search(query, doc_ids=documents)\n"
-            "    synthesis = llm.synthesize(\n"
-            "        query=query,\n"
-            "        context=context,\n"
-            "        instruction='Extract precise financial data with sources',\n"
-            "    )\n"
-            "    return {\n"
-            "        'answer': synthesis.text,\n"
-            "        'sources': [s.id for s in synthesis.sources],\n"
-            "        'confidence': synthesis.confidence,\n"
-            "    }\n"
-        ),
-        "created_at": "2025-01-15T10:00:00+00:00",
-        "updated_at": "2025-01-15T10:00:00+00:00",
-    },
-}
+_SKILLS_DIR = os.path.join(os.path.dirname(__file__), "skills")
 
+
+def _load_skills_from_disk() -> dict[str, dict]:
+    """Scan ./skills/ and return a dict of skill objects keyed by id."""
+    skills: dict[str, dict] = {}
+    if not os.path.isdir(_SKILLS_DIR):
+        return skills
+    for skill in os.listdir(_SKILLS_DIR):
+        skill_path = os.path.join(_SKILLS_DIR, skill)
+        skill_md = os.path.join(skill_path, "SKILL.md")
+        if not os.path.isdir(skill_path) or not os.path.isfile(skill_md):
+            continue
+        fs = []
+        for _root, _dirs, filenames in os.walk(skill_path):
+            for fname in filenames:
+                fs.append({"name": fname})
+        skills[skill] = {
+            "id": skill,
+            "name": " ".join(word.capitalize() for word in skill.split("-")),
+            "description": "Placeholder description for the skill",
+            "type": "builtin",
+            "files": fs,
+            "definition": open(skill_md).read(),
+            "created_at": os.path.getctime(skill_md),
+            "updated_at": os.path.getmtime(skill_md),
+        }
+    return skills
+
+
+_SKILLS: dict[str, dict] = _load_skills_from_disk()
+        
 
 _COMPANY_PATTERNS = re.compile(
     r"\b(Apple|Google|Alphabet|Microsoft|Tesla|Amazon|Meta|Facebook|Netflix|Nvidia"
@@ -1102,6 +999,43 @@ async def get_skill_file_content(skill_id: str, filename: str):
     if file_exists:
         return {"filename": filename, "content": f"# {filename}\n\n(File content placeholder)"}
     raise HTTPException(status_code=404, detail="File not found")
+
+
+@app.post("/api/skills/train")
+async def train_skills(files: list[UploadFile] = File(...)):
+    """Accept media uploads, run MMSkillTrainer, return newly created skills."""
+    if not files:
+        raise HTTPException(status_code=400, detail="No files provided")
+
+    tmp_dir = tempfile.mkdtemp(prefix="mm_train_")
+    try:
+        saved_paths: list[str] = []
+        for upload in files:
+            dest = os.path.join(tmp_dir, upload.filename)
+            with open(dest, "wb") as f:
+                content = await upload.read()
+                f.write(content)
+            saved_paths.append(dest)
+
+        existing_ids = set(_SKILLS.keys())
+
+        trainer = MMSkillTrainer()
+        await asyncio.to_thread(trainer.train, saved_paths)
+
+        refreshed = _load_skills_from_disk()
+        new_skills = []
+        for sid, skill in refreshed.items():
+            if sid not in existing_ids:
+                _SKILLS[sid] = skill
+                new_skills.append(skill)
+            else:
+                _SKILLS[sid] = skill
+
+        return new_skills
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 @app.get("/api/health")
