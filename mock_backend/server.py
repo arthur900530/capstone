@@ -16,6 +16,7 @@ import random
 import re
 import shutil
 import tempfile
+import mimetypes
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -104,7 +105,11 @@ def _load_skills_from_disk() -> dict[str, dict]:
         fs = []
         for _root, _dirs, filenames in os.walk(skill_path):
             for fname in filenames:
-                fs.append({"name": fname})
+                # Capture only the file structure relative to that skill
+                fpath_relative = os.path.relpath(_root, skill_path)
+                fpath_relative = os.path.join(fpath_relative, fname)
+                fpath = os.path.join(_root, fname)
+                fs.append({"name": fpath_relative, "size": os.path.getsize(fpath), "type": mimetypes.guess_type(fpath)[0]})
         skills[skill] = {
             "id": skill,
             "name": " ".join(word.capitalize() for word in skill.split("-")),
