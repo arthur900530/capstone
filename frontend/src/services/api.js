@@ -6,6 +6,12 @@ export async function fetchEvaluations() {
   return res.json();
 }
 
+export async function fetchSkillEvals() {
+  const res = await fetch(`${API_BASE}/skill-evals`);
+  if (!res.ok) throw new Error(`Failed to load skill evals: ${res.status}`);
+  return res.json();
+}
+
 export async function fetchChats() {
   const res = await fetch(`${API_BASE}/chats`);
   if (!res.ok) throw new Error(`Failed to load chats: ${res.status}`);
