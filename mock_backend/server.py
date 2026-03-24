@@ -9,18 +9,24 @@ Run:  uvicorn server:app --reload --port 8000
 
 from __future__ import annotations
 
+import os
 import asyncio
 import json
 import random
 import re
+import shutil
+import tempfile
+import mimetypes
 import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
+
+from mm_train import MMSkillTrainer
 
 app = FastAPI(title="Mock Reflexion Finance Agent API")
 
@@ -83,146 +89,56 @@ def _resolve_agent(model: str | None, is_task: bool) -> dict:
     return _AGENTS[_DEFAULT_TASK_AGENT if is_task else _DEFAULT_CHAT_AGENT]
 
 
-_SKILLS: dict[str, dict] = {
-    "web_search": {
-        "id": "web_search",
-        "name": "Web Search",
-        "description": "Search the web for real-time financial data, news articles, and market information using targeted queries.",
-        "type": "builtin",
-        "files": [
-            {"name": "SKILL.md", "size": 2840, "type": "text/markdown"},
-            {"name": "LICENSE", "size": 1065, "type": "text/plain"},
-            {"name": "search_config.json", "size": 1240, "type": "application/json"},
-            {"name": "query_templates.yaml", "size": 3420, "type": "application/x-yaml"},
-            {"name": "examples.md", "size": 1580, "type": "text/markdown"},
-        ],
-        "definition": (
-            "def web_search(query: str, max_results: int = 5) -> list[dict]:\n"
-            '    """Search the web for financial information.\n\n'
-            "    Args:\n"
-            "        query: Search query string\n"
-            "        max_results: Maximum number of results to return\n\n"
-            "    Returns:\n"
-            '        List of search results with title, url, and snippet\n    """\n'
-            "    results = search_engine.query(query, limit=max_results)\n"
-            "    return [\n"
-            "        {\n"
-            '            "title": r.title,\n'
-            '            "url": r.url,\n'
-            '            "snippet": r.snippet,\n'
-            "        }\n"
-            "        for r in results\n"
-            "    ]\n"
-        ),
-        "created_at": "2025-01-15T10:00:00+00:00",
-        "updated_at": "2025-01-15T10:00:00+00:00",
-    },
-    "edgar_search": {
-        "id": "edgar_search",
-        "name": "SEC Filing Search",
-        "description": "Query the SEC EDGAR database to retrieve official company filings including 10-K, 10-Q, 8-K, and proxy statements.",
-        "type": "builtin",
-        "files": [
-            {"name": "SKILL.md", "size": 3150, "type": "text/markdown"},
-            {"name": "LICENSE", "size": 1065, "type": "text/plain"},
-            {"name": "reference.md", "size": 4200, "type": "text/markdown"},
-            {"name": "edgar_api_config.json", "size": 890, "type": "application/json"},
-            {"name": "filing_types.csv", "size": 2100, "type": "text/csv"},
-            {"name": "cik_lookup_cache.json", "size": 45200, "type": "application/json"},
-            {"name": "scripts/validate_cik.py", "size": 1820, "type": "text/x-python"},
-        ],
-        "definition": (
-            "def edgar_search(company: str, filing_type: str = '10-K', limit: int = 3) -> list[dict]:\n"
-            '    """Search SEC EDGAR for company filings.\n\n'
-            "    Args:\n"
-            "        company: Company name or CIK number\n"
-            "        filing_type: Type of filing (10-K, 10-Q, 8-K, etc.)\n"
-            "        limit: Maximum filings to return\n\n"
-            "    Returns:\n"
-            '        List of filing metadata with download URLs\n    """\n'
-            "    filings = edgar_client.search(\n"
-            "        company=company,\n"
-            "        form_type=filing_type,\n"
-            "        count=limit,\n"
-            "    )\n"
-            "    return [\n"
-            "        {\n"
-            '            "filing_date": f.date,\n'
-            '            "form_type": f.form_type,\n'
-            '            "url": f.document_url,\n'
-            '            "description": f.description,\n'
-            "        }\n"
-            "        for f in filings\n"
-            "    ]\n"
-        ),
-        "created_at": "2025-01-15T10:00:00+00:00",
-        "updated_at": "2025-01-15T10:00:00+00:00",
-    },
-    "parse_html": {
-        "id": "parse_html",
-        "name": "Parse HTML",
-        "description": "Extract and clean readable text content from HTML pages, including financial tables, earnings reports, and news articles.",
-        "type": "builtin",
-        "files": [
-            {"name": "SKILL.md", "size": 2210, "type": "text/markdown"},
-            {"name": "LICENSE", "size": 1065, "type": "text/plain"},
-            {"name": "parser_rules.json", "size": 5600, "type": "application/json"},
-            {"name": "examples.md", "size": 980, "type": "text/markdown"},
-        ],
-        "definition": (
-            "def parse_html(url: str, extract_tables: bool = True) -> dict:\n"
-            '    """Fetch and parse an HTML page into structured content.\n\n'
-            "    Args:\n"
-            "        url: The URL to fetch and parse\n"
-            "        extract_tables: Whether to extract HTML tables as structured data\n\n"
-            "    Returns:\n"
-            '        Dict with text content and optionally extracted tables\n    """\n'
-            "    response = http_client.get(url)\n"
-            "    soup = BeautifulSoup(response.text, 'html.parser')\n"
-            "    text = soup.get_text(separator='\\n', strip=True)\n"
-            "    result = {'text': text[:5000]}\n"
-            "    if extract_tables:\n"
-            "        result['tables'] = extract_html_tables(soup)\n"
-            "    return result\n"
-        ),
-        "created_at": "2025-01-15T10:00:00+00:00",
-        "updated_at": "2025-01-15T10:00:00+00:00",
-    },
-    "retrieve_info": {
-        "id": "retrieve_info",
-        "name": "Retrieve Information",
-        "description": "Analyze and synthesize information from previously collected documents to extract specific financial data points and insights.",
-        "type": "builtin",
-        "files": [
-            {"name": "SKILL.md", "size": 2960, "type": "text/markdown"},
-            {"name": "LICENSE", "size": 1065, "type": "text/plain"},
-            {"name": "STANDARDS.md", "size": 1740, "type": "text/markdown"},
-        ],
-        "definition": (
-            "def retrieve_info(query: str, documents: list[str] | None = None) -> dict:\n"
-            '    """Retrieve and synthesize information from collected documents.\n\n'
-            "    Args:\n"
-            "        query: What information to extract\n"
-            "        documents: Optional list of document IDs to search within\n\n"
-            "    Returns:\n"
-            '        Dict with extracted info, sources, and confidence\n    """\n'
-            "    context = document_store.search(query, doc_ids=documents)\n"
-            "    synthesis = llm.synthesize(\n"
-            "        query=query,\n"
-            "        context=context,\n"
-            "        instruction='Extract precise financial data with sources',\n"
-            "    )\n"
-            "    return {\n"
-            "        'answer': synthesis.text,\n"
-            "        'sources': [s.id for s in synthesis.sources],\n"
-            "        'confidence': synthesis.confidence,\n"
-            "    }\n"
-        ),
-        "created_at": "2025-01-15T10:00:00+00:00",
-        "updated_at": "2025-01-15T10:00:00+00:00",
-    },
-}
+_SKILLS_DIR = os.path.join(os.path.dirname(__file__), "skills")
 
+
+def _load_skills_from_disk() -> dict[str, dict]:
+    """Scan ./skills/ and return a dict of skill objects keyed by id."""
+    skills: dict[str, dict] = {}
+    if not os.path.isdir(_SKILLS_DIR):
+        return skills
+    for skill in os.listdir(_SKILLS_DIR):
+        skill_path = os.path.join(_SKILLS_DIR, skill)
+        skill_md = os.path.join(skill_path, "SKILL.md")
+        if not os.path.isdir(skill_path) or not os.path.isfile(skill_md):
+            continue
+        fs = []
+        for _root, _dirs, filenames in os.walk(skill_path):
+            for fname in filenames:
+                # Capture only the file structure relative to that skill
+                fpath_relative = os.path.relpath(_root, skill_path)
+                fpath_relative = os.path.join(fpath_relative, fname)
+                fpath = os.path.join(_root, fname)
+                fs.append({"name": fpath_relative, "size": os.path.getsize(fpath), "type": mimetypes.guess_type(fpath)[0]})
+        skills[skill] = {
+            "id": skill,
+            "name": " ".join(word.capitalize() for word in skill.split("-")),
+            "description": "Placeholder description for the skill",
+            "type": "builtin",
+            "files": fs,
+            "definition": open(skill_md).read(),
+            "created_at": os.path.getctime(skill_md),
+            "updated_at": os.path.getmtime(skill_md),
+        }
+    return skills
+
+
+
+def _load_file_contents_from_disk() -> dict[str, dict[str, str]]:
+    """Scan ./skills/ and return a dict of file contents keyed by skill id and file path."""
+    file_contents: dict[str, dict[str, str]] = {}
+    for skill in _SKILLS.values():
+        if skill["id"] not in file_contents:
+            file_contents[skill["id"]] = {}
+        for file in skill["files"]:
+            fpath = os.path.join(_SKILLS_DIR, skill["id"], file["name"])
+            file_contents[skill["id"]][file["name"]] = open(fpath).read()
+    return file_contents
+
+
+_SKILLS: dict[str, dict] = _load_skills_from_disk()
+_FILE_CONTENTS: dict[str, dict[str, str]] = _load_file_contents_from_disk()
+        
 
 _COMPANY_PATTERNS = re.compile(
     r"\b(Apple|Google|Alphabet|Microsoft|Tesla|Amazon|Meta|Facebook|Netflix|Nvidia"
@@ -740,347 +656,6 @@ async def remove_skill_file(skill_id: str, filename: str):
     return skill
 
 
-_FILE_CONTENTS: dict[str, dict[str, str]] = {
-    "web_search": {
-        "SKILL.md": (
-            "---\n"
-            "name: web-search\n"
-            "description: >-\n"
-            "  Search the web for real-time financial data, news articles, and market\n"
-            "  information using targeted queries.\n"
-            "---\n\n"
-            "# Web Search\n\n"
-            "## Overview\n\n"
-            "This skill searches the web for financial information using targeted queries.\n"
-            "It supports multiple search engines and returns structured results with\n"
-            "titles, URLs, and snippets.\n\n"
-            "## Usage\n\n"
-            "```python\n"
-            "results = web_search(\"Apple Q4 2024 earnings report\")\n"
-            "for r in results:\n"
-            "    print(r['title'], r['url'])\n"
-            "```\n\n"
-            "## Parameters\n\n"
-            "| Parameter | Type | Default | Description |\n"
-            "|-----------|------|---------|-------------|\n"
-            "| `query` | `str` | required | Search query string |\n"
-            "| `max_results` | `int` | `5` | Maximum results to return |\n\n"
-            "## Best Practices\n\n"
-            "- Use specific financial terms in queries\n"
-            "- Include company ticker symbols when possible\n"
-            "- Combine with `parse_html` to extract full content from results\n"
-        ),
-        "LICENSE": (
-            "MIT License\n\n"
-            "Copyright (c) 2025 Reflexion Finance Agent\n\n"
-            "Permission is hereby granted, free of charge, to any person obtaining a copy\n"
-            "of this software and associated documentation files (the \"Software\"), to deal\n"
-            "in the Software without restriction, including without limitation the rights\n"
-            "to use, copy, modify, merge, publish, distribute, sublicense, and/or sell\n"
-            "copies of the Software, and to permit persons to whom the Software is\n"
-            "furnished to do so, subject to the following conditions:\n\n"
-            "The above copyright notice and this permission notice shall be included in all\n"
-            "copies or substantial portions of the Software.\n\n"
-            "THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n"
-            "IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n"
-            "FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.\n"
-        ),
-        "search_config.json": (
-            '{\n'
-            '  "engine": "google",\n'
-            '  "timeout_ms": 5000,\n'
-            '  "max_retries": 3,\n'
-            '  "rate_limit_rps": 10,\n'
-            '  "safe_search": true,\n'
-            '  "default_max_results": 5,\n'
-            '  "financial_domains_boost": [\n'
-            '    "sec.gov",\n'
-            '    "finance.yahoo.com",\n'
-            '    "reuters.com",\n'
-            '    "bloomberg.com",\n'
-            '    "wsj.com"\n'
-            '  ]\n'
-            '}\n'
-        ),
-        "query_templates.yaml": (
-            "templates:\n"
-            "  earnings:\n"
-            '    pattern: "{company} {quarter} {year} earnings report"\n'
-            '    example: "Apple Q4 2024 earnings report"\n\n'
-            "  sec_filing:\n"
-            '    pattern: "{company} {filing_type} SEC filing {year}"\n'
-            '    example: "Tesla 10-K SEC filing 2024"\n\n'
-            "  stock_price:\n"
-            '    pattern: "{company} stock price today market cap"\n'
-            '    example: "Microsoft stock price today market cap"\n\n'
-            "  financial_news:\n"
-            '    pattern: "{company} latest financial news {topic}"\n'
-            '    example: "Nvidia latest financial news AI revenue"\n'
-        ),
-        "examples.md": (
-            "# Web Search Examples\n\n"
-            "## Basic Search\n\n"
-            "```python\n"
-            "results = web_search(\"Apple revenue 2024\")\n"
-            "# Returns 5 results from financial news sources\n"
-            "```\n\n"
-            "## Targeted Search\n\n"
-            "```python\n"
-            "results = web_search(\"AAPL 10-K SEC filing 2024\", max_results=3)\n"
-            "# Returns top 3 results focused on SEC filings\n"
-            "```\n\n"
-            "## Combined with Parse HTML\n\n"
-            "```python\n"
-            "results = web_search(\"Tesla Q4 earnings\")\n"
-            "for r in results:\n"
-            "    content = parse_html(r['url'])\n"
-            "    print(content['text'][:200])\n"
-            "```\n"
-        ),
-    },
-    "edgar_search": {
-        "SKILL.md": (
-            "---\n"
-            "name: edgar-search\n"
-            "description: >-\n"
-            "  Query the SEC EDGAR database to retrieve official company filings\n"
-            "  including 10-K, 10-Q, 8-K, and proxy statements.\n"
-            "---\n\n"
-            "# SEC Filing Search\n\n"
-            "## Overview\n\n"
-            "This skill queries the SEC EDGAR full-text search system to retrieve\n"
-            "official company filings. It supports all major filing types and returns\n"
-            "structured metadata with direct download links.\n\n"
-            "## Supported Filing Types\n\n"
-            "| Type | Description |\n"
-            "|------|-------------|\n"
-            "| 10-K | Annual report |\n"
-            "| 10-Q | Quarterly report |\n"
-            "| 8-K  | Current report (material events) |\n"
-            "| DEF 14A | Proxy statement |\n"
-            "| S-1  | Registration statement (IPO) |\n\n"
-            "## Usage\n\n"
-            "```python\n"
-            "filings = edgar_search(\"Apple\", filing_type=\"10-K\", limit=3)\n"
-            "```\n\n"
-            "## Additional Resources\n\n"
-            "- For complete EDGAR API reference, see [reference.md](reference.md)\n"
-            "- For CIK validation, run `scripts/validate_cik.py`\n"
-        ),
-        "LICENSE": (
-            "MIT License\n\n"
-            "Copyright (c) 2025 Reflexion Finance Agent\n\n"
-            "Permission is hereby granted, free of charge, to any person obtaining a copy\n"
-            "of this software and associated documentation files (the \"Software\"), to deal\n"
-            "in the Software without restriction, including without limitation the rights\n"
-            "to use, copy, modify, merge, publish, distribute, sublicense, and/or sell\n"
-            "copies of the Software, and to permit persons to whom the Software is\n"
-            "furnished to do so, subject to the following conditions:\n\n"
-            "The above copyright notice and this permission notice shall be included in all\n"
-            "copies or substantial portions of the Software.\n"
-        ),
-        "reference.md": (
-            "# EDGAR API Reference\n\n"
-            "## Base URL\n\n"
-            "```\n"
-            "https://efts.sec.gov/LATEST/search-index\n"
-            "```\n\n"
-            "## Authentication\n\n"
-            "EDGAR EFTS requires a valid `User-Agent` header with contact information:\n\n"
-            "```\n"
-            "User-Agent: CompanyName admin@company.com\n"
-            "```\n\n"
-            "## Rate Limits\n\n"
-            "- Maximum 10 requests per second\n"
-            "- Respect `Retry-After` headers on 429 responses\n\n"
-            "## Endpoints\n\n"
-            "### Full-Text Search\n\n"
-            "```\n"
-            "GET /efts/search-index?q={query}&dateRange=custom&startdt={start}&enddt={end}&forms={type}\n"
-            "```\n\n"
-            "### Company Filings\n\n"
-            "```\n"
-            "GET /cgi-bin/browse-edgar?action=getcompany&CIK={cik}&type={form_type}&dateb=&owner=include&count={count}\n"
-            "```\n"
-        ),
-        "edgar_api_config.json": (
-            '{\n'
-            '  "base_url": "https://efts.sec.gov/LATEST",\n'
-            '  "user_agent": "ReflexionAgent research@example.com",\n'
-            '  "rate_limit_rps": 10,\n'
-            '  "timeout_ms": 10000,\n'
-            '  "max_retries": 2\n'
-            '}\n'
-        ),
-        "filing_types.csv": (
-            "code,name,description\n"
-            "10-K,Annual Report,Comprehensive annual financial report\n"
-            "10-Q,Quarterly Report,Quarterly financial report\n"
-            "8-K,Current Report,Report of material events or corporate changes\n"
-            "DEF 14A,Proxy Statement,Definitive proxy statement\n"
-            "S-1,Registration,Registration statement for new securities\n"
-            "20-F,Foreign Annual,Annual report for foreign private issuers\n"
-            "6-K,Foreign Current,Current report for foreign private issuers\n"
-        ),
-        "cik_lookup_cache.json": (
-            '{\n'
-            '  "AAPL": "0000320193",\n'
-            '  "MSFT": "0000789019",\n'
-            '  "GOOGL": "0001652044",\n'
-            '  "AMZN": "0001018724",\n'
-            '  "TSLA": "0001318605",\n'
-            '  "META": "0001326801",\n'
-            '  "NVDA": "0001045810",\n'
-            '  "JPM": "0000019617",\n'
-            '  "V": "0001403161"\n'
-            '}\n'
-        ),
-        "scripts/validate_cik.py": (
-            "#!/usr/bin/env python3\n"
-            '"""Validate a CIK number against SEC EDGAR."""\n\n'
-            "import sys\n"
-            "import requests\n\n\n"
-            "def validate_cik(cik: str) -> bool:\n"
-            '    url = f"https://data.sec.gov/submissions/CIK{cik.zfill(10)}.json"\n'
-            "    headers = {\"User-Agent\": \"ReflexionAgent research@example.com\"}\n"
-            "    resp = requests.get(url, headers=headers, timeout=10)\n"
-            "    if resp.status_code == 200:\n"
-            "        data = resp.json()\n"
-            '        print(f"Valid CIK: {cik} -> {data[\'name\']}")\n'
-            "        return True\n"
-            '    print(f"Invalid CIK: {cik} (HTTP {resp.status_code})")\n'
-            "    return False\n\n\n"
-            'if __name__ == "__main__":\n'
-            "    if len(sys.argv) != 2:\n"
-            '        print("Usage: python validate_cik.py <CIK>")\n'
-            "        sys.exit(1)\n"
-            "    valid = validate_cik(sys.argv[1])\n"
-            "    sys.exit(0 if valid else 1)\n"
-        ),
-    },
-    "parse_html": {
-        "SKILL.md": (
-            "---\n"
-            "name: parse-html\n"
-            "description: >-\n"
-            "  Extract and clean readable text content from HTML pages, including\n"
-            "  financial tables, earnings reports, and news articles.\n"
-            "---\n\n"
-            "# Parse HTML\n\n"
-            "## Overview\n\n"
-            "Fetches a URL and extracts clean, readable text. Optionally extracts\n"
-            "HTML tables as structured data for financial analysis.\n\n"
-            "## Usage\n\n"
-            "```python\n"
-            "result = parse_html(\"https://example.com/earnings\")\n"
-            "print(result['text'][:500])\n"
-            "print(result['tables'])  # List of extracted tables\n"
-            "```\n\n"
-            "## Parameters\n\n"
-            "| Parameter | Type | Default | Description |\n"
-            "|-----------|------|---------|-------------|\n"
-            "| `url` | `str` | required | URL to fetch and parse |\n"
-            "| `extract_tables` | `bool` | `True` | Extract HTML tables |\n"
-        ),
-        "LICENSE": (
-            "MIT License\n\n"
-            "Copyright (c) 2025 Reflexion Finance Agent\n\n"
-            "Permission is hereby granted, free of charge, to any person obtaining a copy\n"
-            "of this software and associated documentation files (the \"Software\"), to deal\n"
-            "in the Software without restriction, including without limitation the rights\n"
-            "to use, copy, modify, merge, publish, distribute, sublicense, and/or sell\n"
-            "copies of the Software.\n"
-        ),
-        "parser_rules.json": (
-            '{\n'
-            '  "strip_tags": ["script", "style", "nav", "footer", "header", "aside"],\n'
-            '  "max_text_length": 5000,\n'
-            '  "table_extraction": {\n'
-            '    "enabled": true,\n'
-            '    "min_rows": 2,\n'
-            '    "min_cols": 2,\n'
-            '    "detect_headers": true\n'
-            '  },\n'
-            '  "financial_patterns": {\n'
-            '    "currency": "\\\\$[\\\\d,]+\\\\.?\\\\d*",\n'
-            '    "percentage": "\\\\d+\\\\.?\\\\d*%",\n'
-            '    "date": "\\\\d{4}-\\\\d{2}-\\\\d{2}"\n'
-            '  }\n'
-            '}\n'
-        ),
-        "examples.md": (
-            "# Parse HTML Examples\n\n"
-            "## Extract Article Text\n\n"
-            "```python\n"
-            "result = parse_html(\"https://reuters.com/article/apple-earnings\")\n"
-            "print(result['text'])\n"
-            "```\n\n"
-            "## Extract Financial Tables\n\n"
-            "```python\n"
-            "result = parse_html(\"https://sec.gov/filing/10-K\", extract_tables=True)\n"
-            "for table in result['tables']:\n"
-            "    print(table['headers'])\n"
-            "    for row in table['rows']:\n"
-            "        print(row)\n"
-            "```\n"
-        ),
-    },
-    "retrieve_info": {
-        "SKILL.md": (
-            "---\n"
-            "name: retrieve-info\n"
-            "description: >-\n"
-            "  Analyze and synthesize information from previously collected documents\n"
-            "  to extract specific financial data points and insights.\n"
-            "---\n\n"
-            "# Retrieve Information\n\n"
-            "## Overview\n\n"
-            "This skill analyzes documents collected during the research phase\n"
-            "and synthesizes answers to specific financial queries. It uses\n"
-            "semantic search over the document store and LLM-based synthesis.\n\n"
-            "## Usage\n\n"
-            "```python\n"
-            "result = retrieve_info(\"What was Apple's revenue in Q4 2024?\")\n"
-            "print(result['answer'])\n"
-            "print(result['confidence'])  # 0.0 to 1.0\n"
-            "print(result['sources'])     # List of document IDs\n"
-            "```\n\n"
-            "## Best Practices\n\n"
-            "- Ask specific, targeted questions\n"
-            "- Specify document IDs when you know which sources to search\n"
-            "- Check the confidence score before presenting results\n"
-            "- For detailed quality standards, see [STANDARDS.md](STANDARDS.md)\n"
-        ),
-        "LICENSE": (
-            "MIT License\n\n"
-            "Copyright (c) 2025 Reflexion Finance Agent\n\n"
-            "Permission is hereby granted, free of charge, to any person obtaining a copy\n"
-            "of this software and associated documentation files (the \"Software\"), to deal\n"
-            "in the Software without restriction, including without limitation the rights\n"
-            "to use, copy, modify, merge, publish, distribute, sublicense, and/or sell\n"
-            "copies of the Software.\n"
-        ),
-        "STANDARDS.md": (
-            "# Information Retrieval Quality Standards\n\n"
-            "## Confidence Thresholds\n\n"
-            "| Level | Score | Action |\n"
-            "|-------|-------|--------|\n"
-            "| High  | >= 0.8 | Present directly |\n"
-            "| Medium | 0.5-0.8 | Present with caveat |\n"
-            "| Low   | < 0.5 | Flag for manual review |\n\n"
-            "## Source Requirements\n\n"
-            "- At least 2 independent sources for financial claims\n"
-            "- Primary sources (SEC filings) preferred over secondary\n"
-            "- Data must be from within the last 12 months\n\n"
-            "## Accuracy Checks\n\n"
-            "- Cross-reference numerical data across sources\n"
-            "- Flag discrepancies > 5% between sources\n"
-            "- Verify units (millions vs billions, USD vs other)\n"
-        ),
-    },
-}
-
-
 @app.delete("/api/skills/{skill_id}")
 async def delete_skill(skill_id: str):
     if skill_id not in _SKILLS:
@@ -1102,6 +677,43 @@ async def get_skill_file_content(skill_id: str, filename: str):
     if file_exists:
         return {"filename": filename, "content": f"# {filename}\n\n(File content placeholder)"}
     raise HTTPException(status_code=404, detail="File not found")
+
+
+@app.post("/api/skills/train")
+async def train_skills(files: list[UploadFile] = File(...)):
+    """Accept media uploads, run MMSkillTrainer, return newly created skills."""
+    if not files:
+        raise HTTPException(status_code=400, detail="No files provided")
+
+    tmp_dir = tempfile.mkdtemp(prefix="mm_train_")
+    try:
+        saved_paths: list[str] = []
+        for upload in files:
+            dest = os.path.join(tmp_dir, upload.filename)
+            with open(dest, "wb") as f:
+                content = await upload.read()
+                f.write(content)
+            saved_paths.append(dest)
+
+        existing_ids = set(_SKILLS.keys())
+
+        trainer = MMSkillTrainer()
+        await asyncio.to_thread(trainer.train, saved_paths)
+
+        refreshed = _load_skills_from_disk()
+        new_skills = []
+        for sid, skill in refreshed.items():
+            if sid not in existing_ids:
+                _SKILLS[sid] = skill
+                new_skills.append(skill)
+            else:
+                _SKILLS[sid] = skill
+
+        return new_skills
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 @app.get("/api/health")

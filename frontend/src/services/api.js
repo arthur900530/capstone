@@ -102,6 +102,20 @@ export async function deleteSkill(skillId) {
   return res.json();
 }
 
+export async function trainSkillsFromMedia(files) {
+  const form = new FormData();
+  for (const f of files) form.append("files", f);
+  const res = await fetch(`${API_BASE}/skills/train`, {
+    method: "POST",
+    body: form,
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Training failed: ${text}`);
+  }
+  return res.json();
+}
+
 export async function streamChat({ question, sessionId, model, maxTrials, confidenceThreshold, files, skillIds }, onEvent) {
   const res = await fetch(`${API_BASE}/chat`, {
     method: "POST",
