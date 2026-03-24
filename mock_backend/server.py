@@ -587,7 +587,7 @@ class SkillUpdate(BaseModel):
 
 @app.get("/api/skills")
 async def list_skills():
-    skills = sorted(_SKILLS.values(), key=lambda s: s["created_at"])
+    skills = sorted(_SKILLS.values(), key=lambda s: str(s.get("created_at", "")))
     return skills
 
 
