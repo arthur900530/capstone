@@ -1114,7 +1114,7 @@ async def get_skill_file_content(skill_id: str, filename: str):
     raise HTTPException(status_code=404, detail="File not found")
 
 
-_SKILLSBENCH_ROOT = _pathlib.Path(__file__).parent.parent.parent / "skillsbench"
+_SKILLSBENCH_ROOT = _pathlib.Path(__file__).parent.parent / "skillsbench_backend"
 _SKILLSBENCH_RUNS = _SKILLSBENCH_ROOT / "experiments" / "skill-eval-runs"
 _SKILLS_POOL_DIR = _SKILLSBENCH_ROOT / "skills-pool"
 
