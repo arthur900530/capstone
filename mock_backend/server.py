@@ -11,17 +11,21 @@ from __future__ import annotations
 
 import os
 import asyncio
+import csv as _csv
 import json
+import os
+import pathlib as _pathlib
 import random
 import re
 import shutil
 import tempfile
 import mimetypes
 import uuid
+import yaml as _yaml
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
@@ -599,22 +603,28 @@ async def get_skill(skill_id: str):
 
 
 @app.post("/api/skills", status_code=201)
-async def create_skill(body: SkillCreate):
+async def create_skill(body: SkillCreate, background_tasks: BackgroundTasks):
     skill_id = f"user_{body.name.lower().replace(' ', '_')}_{uuid.uuid4().hex[:6]}"
-    now = _now_iso()
-    file_dicts = [f.model_dump(exclude_none=True) for f in body.files] if body.files else []
     skill = {
         "id": skill_id,
         "name": body.name,
         "description": body.description,
         "type": "user",
-        "files": file_dicts,
+        "files": [f.model_dump(exclude_none=True) for f in body.files] if body.files else [],
         "definition": body.definition,
-        "created_at": now,
-        "updated_at": now,
+        "created_at": _now_iso(),
+        "updated_at": _now_iso(),
     }
-    _SKILLS[skill_id] = skill
-    return skill
+    print(f"\n[skill pipeline] Step 1/3 — Writing '{body.name}' to skills-pool (id: {skill_id})")
+    try:
+        folder_name = _write_skill_to_pool(skill)  # pool is source of truth
+        _load_skills_from_pool()                    # sync cache from pool
+        print(f"[skill pipeline] Step 2/3 — SKILL.md written to skills-pool/{folder_name}/")
+        background_tasks.add_task(_run_skill_eval, folder_name)
+        print(f"[skill pipeline] Step 3/3 — Evaluation scheduled (runs in background)")
+    except Exception as e:
+        print(f"[skill pipeline] ERROR — {e}")
+    return _SKILLS.get(skill_id, skill)
 
 
 @app.patch("/api/skills/{skill_id}")
@@ -714,6 +724,193 @@ async def train_skills(files: list[UploadFile] = File(...)):
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+_SKILLSBENCH_ROOT = _pathlib.Path(__file__).parent.parent / "skillsbench_backend"
+_SKILLSBENCH_RUNS = _SKILLSBENCH_ROOT / "experiments" / "skill-eval-runs"
+_SKILLS_POOL_DIR = _SKILLSBENCH_ROOT / "skills-pool"
+
+
+def _yaml_safe_load(text: str) -> dict:
+    return _yaml.safe_load(text) or {}
+
+
+def _write_skill_to_pool(skill: dict) -> str:
+    """Write a skill to skillsbench/skills-pool as a SKILL.md file. Returns folder name."""
+    folder_name = skill["id"].replace("_", "-")
+    skill_dir = _SKILLS_POOL_DIR / folder_name
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    skill_md = skill_dir / "SKILL.md"
+
+    definition_block = ""
+    if skill.get("definition"):
+        definition_block = f"\n## Definition\n\n```python\n{skill['definition']}\n```\n"
+
+    content = (
+        f"---\n"
+        f"name: \"{skill['name']}\"\n"
+        f"description: \"{skill.get('description', '').replace(chr(34), chr(39))}\"\n"
+        f"---\n\n"
+        f"# {skill['name']}\n\n"
+        f"## Description\n\n"
+        f"{skill.get('description', '')}\n"
+        f"{definition_block}"
+    )
+    skill_md.write_text(content, encoding="utf-8")
+    return folder_name
+
+
+def _load_skills_from_pool() -> None:
+    """Load all skills from skillsbench/skills-pool into _SKILLS on startup.
+
+    - Provides persistence: user-created skills survive server restarts
+      because they were already written to the pool on creation.
+    - Makes pool skills (e.g. mesh-analysis, azure-bgp) visible in the
+      frontend Skills tab without any frontend changes.
+    - Skips builtin skills already registered in _SKILLS (e.g. web_search).
+    """
+    if not _SKILLS_POOL_DIR.exists():
+        return
+    for skill_dir in sorted(_SKILLS_POOL_DIR.iterdir()):
+        if not skill_dir.is_dir():
+            continue
+        skill_md_path = skill_dir / "SKILL.md"
+        if not skill_md_path.exists():
+            continue
+
+        folder_name = skill_dir.name
+        skill_id = folder_name.replace("-", "_")
+        if skill_id in _SKILLS:
+            continue  # builtin already registered — don't overwrite
+
+        content = skill_md_path.read_text(encoding="utf-8")
+        parts = content.split("---", 2)
+        fm = _yaml_safe_load(parts[1]) if len(parts) >= 3 else {}
+        name = str(fm.get("name", folder_name))
+        description = str(fm.get("description", ""))
+        body = parts[2].strip() if len(parts) >= 3 else content
+
+        skill_type = "user" if folder_name.startswith("user-") else "pool"
+        now = _now_iso()
+        _SKILLS[skill_id] = {
+            "id": skill_id,
+            "name": name,
+            "description": description,
+            "type": skill_type,
+            "files": [],
+            "definition": body,
+            "created_at": now,
+            "updated_at": now,
+        }
+        print(f"[pool] Loaded '{name}' ({skill_type})")
+
+
+_load_skills_from_pool()
+
+
+# ---------------------------------------------------------------------------
+# Skill evaluation pipeline — config (override via environment variables)
+# ---------------------------------------------------------------------------
+
+_EVAL_THRESHOLD = os.getenv("EVAL_THRESHOLD", "0.357")
+_EVAL_EMBEDDING_MODEL = os.getenv("EVAL_EMBEDDING_MODEL", "openai/text-embedding-3-small")
+_EVAL_BASE_CONFIG = os.getenv("EVAL_BASE_CONFIG", "experiments/configs/sanity-check.yaml")
+_EVAL_AGENT_NAME = os.getenv("EVAL_AGENT_NAME", "codex")
+_EVAL_MODEL_NAME = os.getenv("EVAL_MODEL_NAME", "openai/gpt-5.2-codex")
+
+
+async def _run_skill_eval(folder_name: str) -> None:
+    """Run skill_evaluation_framework.py for a newly added skill (background task).
+
+    Uses the skillsbench .venv python and prepends its bin/ to PATH so that
+    harbor (installed there) is resolvable by the framework's subprocess calls.
+    Logs to skillsbench/experiments/skill-eval-logs/<folder_name>.log.
+    """
+    venv_bin = _SKILLSBENCH_ROOT / ".venv" / "bin"
+    python = str(venv_bin / "python3")
+
+    cmd = [
+        python,
+        "experiments/skill_evaluation_framework.py",
+        "--skills-pool", "skills-pool",
+        "--skill", folder_name,
+        "--tasks-dir", "tasks",
+        "--threshold", _EVAL_THRESHOLD,
+        "--embedding-model", _EVAL_EMBEDDING_MODEL,
+        "--base-config", _EVAL_BASE_CONFIG,
+        "--agent-name", _EVAL_AGENT_NAME,
+        "--model-name", _EVAL_MODEL_NAME,
+        "--run",
+    ]
+
+    # Inherit the current environment but put the skillsbench venv bin first
+    # so that `harbor` (and any other venv tools) are found by the framework.
+    env = os.environ.copy()
+    env["PATH"] = str(venv_bin) + ":" + env.get("PATH", "")
+    env["VIRTUAL_ENV"] = str(_SKILLSBENCH_ROOT / ".venv")
+
+    log_dir = _SKILLSBENCH_ROOT / "experiments" / "skill-eval-logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / f"{folder_name}.log"
+    print(f"[skill eval] Starting evaluation for '{folder_name}' — log: {log_path}")
+    print(f"[skill eval] Using python: {python}")
+    with open(log_path, "w") as log_f:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            cwd=str(_SKILLSBENCH_ROOT),
+            env=env,
+            stdout=log_f,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        print(f"[skill eval] Process started (pid {proc.pid}) — running skill_evaluation_framework.py ...")
+        await proc.wait()
+        if proc.returncode == 0:
+            print(f"[skill eval] '{folder_name}' evaluation completed successfully (exit 0)")
+        else:
+            print(f"[skill eval] '{folder_name}' evaluation finished with exit code {proc.returncode} — check {log_path}")
+
+
+@app.get("/api/skill-evals")
+async def list_skill_evals():
+    """Return skill evaluation runs from the skillsbench experiments folder."""
+    results = []
+    if not _SKILLSBENCH_RUNS.exists():
+        return results
+    for run_dir in sorted(_SKILLSBENCH_RUNS.iterdir(), reverse=True):
+        if not run_dir.is_dir():
+            continue
+        summary_path = run_dir / "evaluation_summary.json"
+        csv_path = run_dir / "evaluation_summary.csv"
+        if not summary_path.exists():
+            continue
+        with open(summary_path) as f:
+            summary = json.load(f)
+        trials = []
+        if csv_path.exists():
+            with open(csv_path) as f:
+                trials = list(_csv.DictReader(f))
+        ev = summary.get("evaluation") or {}
+        ev_no = summary.get("evaluation_no_skills") or {}
+
+        def _adjusted_pass_rate(e: dict) -> float | None:
+            """pass_rate from JSON excludes errored trials; scale back by n_scored/n_trials."""
+            p, scored, total = e.get("pass_rate"), e.get("n_scored_trials"), e.get("n_trials")
+            return round(p * scored / total, 4) if (p and scored and total) else p
+
+        results.append({
+            "run_name": run_dir.name,
+            "skill_name": summary.get("inputs", {}).get("selected_skill_name", run_dir.name),
+            "model_name": summary.get("inputs", {}).get("model_name"),
+            "created_at": summary.get("created_at_utc"),
+            "selected_tasks": summary.get("selection", {}).get("selected_task_names", []),
+            "pass_rate": _adjusted_pass_rate(ev),
+            "mean_reward": ev.get("mean_reward"),
+            "n_trials": ev.get("n_trials"),
+            "pass_rate_no_skills": _adjusted_pass_rate(ev_no),
+            "mean_reward_no_skills": ev_no.get("mean_reward"),
+            "trials": trials,
+        })
+    return results
 
 
 @app.get("/api/health")

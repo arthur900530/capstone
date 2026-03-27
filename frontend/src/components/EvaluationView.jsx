@@ -13,17 +13,16 @@ import {
   Search,
   Bot,
   Wrench,
+  ChevronRight,
+  ArrowLeft,
+  TrendingUp,
 } from "lucide-react";
-import { fetchEvaluations } from "../services/api";
+import { fetchEvaluations, fetchSkillEvals } from "../services/api";
 
 function RateBar({ rate }) {
   const pct = (rate ?? 0) * 100;
   const color =
-    pct >= 80
-      ? "bg-emerald-500"
-      : pct >= 60
-        ? "bg-yellow-500"
-        : "bg-red-500";
+    pct >= 80 ? "bg-emerald-500" : pct >= 60 ? "bg-yellow-500" : "bg-red-500";
 
   return (
     <div className="flex items-center gap-3">
@@ -40,14 +39,24 @@ function RateBar({ rate }) {
   );
 }
 
-function MetricCard({ icon: Icon, label, children }) {
+function MetricCard({ icon: Icon, label, children, onViewDetails }) {
   return (
     <div className="rounded-lg border border-border/60 bg-[#2a2c31] p-4 shadow-[0_2px_12px_rgba(0,0,0,0.25)]">
-      <div className="mb-3 flex items-center gap-2">
-        <Icon size={15} className="text-accent-teal" />
-        <h4 className="text-xs font-semibold uppercase tracking-wider text-text-secondary">
-          {label}
-        </h4>
+      <div className="mb-3 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Icon size={15} className="text-accent-teal" />
+          <h4 className="text-xs font-semibold uppercase tracking-wider text-text-secondary">
+            {label}
+          </h4>
+        </div>
+        {onViewDetails && (
+          <button
+            onClick={onViewDetails}
+            className="flex items-center gap-0.5 text-[11px] text-accent-teal hover:text-accent-teal/80 transition-colors"
+          >
+            View details <ChevronRight size={11} />
+          </button>
+        )}
       </div>
       {children}
     </div>
@@ -80,7 +89,9 @@ function HallucinationBadge({ rate }) {
         : "bg-red-500/10";
 
   return (
-    <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-lg font-semibold ${color} ${bgColor}`}>
+    <span
+      className={`inline-flex items-center rounded-full px-2.5 py-1 text-lg font-semibold ${color} ${bgColor}`}
+    >
       {pct.toFixed(1)}%
     </span>
   );
@@ -125,7 +136,192 @@ function AgentListItem({ agent, run, isSelected, onSelect }) {
   );
 }
 
-function RunDetail({ run, agent }) {
+function SkillEvalsPage({ skillEvals, onBack }) {
+  const fmt = (v) => (v != null ? (v * 100).toFixed(1) + "%" : "—");
+  const rateColor = (v) =>
+    v >= 0.8
+      ? "text-emerald-400"
+      : v >= 0.5
+        ? "text-yellow-400"
+        : "text-red-400";
+
+  return (
+    <div className="flex h-full flex-col">
+      {/* Page header */}
+      <div className="flex items-center gap-3 border-b border-border/40 px-5 py-3">
+        <button
+          onClick={onBack}
+          className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-text-secondary hover:bg-surface/60 hover:text-text-primary transition-colors"
+        >
+          <ArrowLeft size={13} /> Back
+        </button>
+        <div className="flex items-center gap-2">
+          <Layers size={15} className="text-accent-teal" />
+          <h2 className="text-sm font-semibold text-text-primary">
+            Financial Skill Proficiency
+          </h2>
+        </div>
+        <span className="rounded-full bg-surface px-1.5 py-0.5 text-[10px] text-text-muted">
+          {skillEvals.length} run{skillEvals.length !== 1 ? "s" : ""}
+        </span>
+      </div>
+
+      {/* Content */}
+      <div className="flex-1 overflow-y-auto p-5">
+        {skillEvals.length === 0 ? (
+          <div className="flex flex-col items-center justify-center gap-3 py-16 text-center">
+            <TrendingUp size={36} className="text-text-muted" />
+            <p className="text-sm text-text-muted">
+              No skill evaluation runs found.
+            </p>
+          </div>
+        ) : (
+          <div className="mx-auto max-w-3xl space-y-6">
+            {skillEvals.map((ev) => (
+              <div
+                key={ev.run_name}
+                className="rounded-xl border border-border/60 bg-[#2a2c31] shadow-[0_2px_12px_rgba(0,0,0,0.25)]"
+              >
+                {/* Run header */}
+                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/40 px-5 py-3">
+                  <div className="flex items-center gap-2">
+                    <span className="rounded-md bg-accent-teal/10 px-2 py-0.5 text-xs font-semibold text-accent-teal">
+                      {ev.skill_name}
+                    </span>
+                    <span className="text-xs text-text-muted">
+                      {ev.model_name?.split("/").pop()}
+                    </span>
+                  </div>
+                  <span className="text-[11px] text-text-muted">
+                    {ev.created_at
+                      ? new Date(ev.created_at).toLocaleString()
+                      : ev.run_name}
+                  </span>
+                </div>
+
+                <div className="p-5 space-y-5">
+                  {/* Pass-rate comparison */}
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="rounded-lg border border-border/40 bg-surface/40 p-4 text-center">
+                      <p className="mb-1 text-[11px] uppercase tracking-wider text-text-muted">
+                        With Skill
+                      </p>
+                      <p
+                        className={`text-3xl font-bold ${rateColor(ev.pass_rate)}`}
+                      >
+                        {fmt(ev.pass_rate)}
+                      </p>
+                      <p className="mt-1 text-[11px] text-text-muted">
+                        {ev.n_trials} trial{ev.n_trials !== 1 ? "s" : ""}
+                      </p>
+                    </div>
+                    <div className="rounded-lg border border-border/40 bg-surface/40 p-4 text-center">
+                      <p className="mb-1 text-[11px] uppercase tracking-wider text-text-muted">
+                        Without Skill
+                      </p>
+                      <p
+                        className={`text-3xl font-bold ${rateColor(ev.pass_rate_no_skills)}`}
+                      >
+                        {fmt(ev.pass_rate_no_skills)}
+                      </p>
+                      <p className="mt-1 text-[11px] text-text-muted">
+                        baseline
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Selected tasks */}
+                  {ev.selected_tasks?.length > 0 && (
+                    <div>
+                      <p className="mb-1.5 text-[11px] font-medium uppercase tracking-wider text-text-muted">
+                        Tasks
+                      </p>
+                      <div className="flex flex-wrap gap-1.5">
+                        {ev.selected_tasks.map((t) => (
+                          <span
+                            key={t}
+                            className="rounded bg-surface px-2 py-0.5 text-[11px] text-text-secondary"
+                          >
+                            {t}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Trials table */}
+                  {ev.trials?.length > 0 && (
+                    <div>
+                      <p className="mb-2 text-[11px] font-medium uppercase tracking-wider text-text-muted">
+                        Trial Results
+                      </p>
+                      <div className="overflow-x-auto rounded-lg border border-border/40">
+                        <table className="w-full text-xs">
+                          <thead className="bg-surface/60">
+                            <tr className="text-left text-text-muted">
+                              <th className="px-3 py-2 font-medium">Task</th>
+                              <th className="px-3 py-2 font-medium">Reward</th>
+                              <th className="px-3 py-2 font-medium">
+                                Duration
+                              </th>
+                              <th className="px-3 py-2 font-medium">
+                                Input Tokens
+                              </th>
+                              <th className="px-3 py-2 font-medium">
+                                Output Tokens
+                              </th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-border/20">
+                            {ev.trials.map((t) => {
+                              const reward = Number(t.reward);
+                              const rewardColor =
+                                reward >= 1
+                                  ? "text-emerald-400"
+                                  : reward > 0
+                                    ? "text-yellow-400"
+                                    : "text-red-400";
+                              return (
+                                <tr
+                                  key={t.trial_name}
+                                  className="hover:bg-surface/30 transition-colors"
+                                >
+                                  <td className="px-3 py-2 text-text-secondary">
+                                    {t.task_name}
+                                  </td>
+                                  <td
+                                    className={`px-3 py-2 font-semibold ${rewardColor}`}
+                                  >
+                                    {reward.toFixed(1)}
+                                  </td>
+                                  <td className="px-3 py-2 text-text-muted">
+                                    {Number(t.duration_sec).toFixed(1)}s
+                                  </td>
+                                  <td className="px-3 py-2 text-text-muted">
+                                    {Number(t.n_input_tokens).toLocaleString()}
+                                  </td>
+                                  <td className="px-3 py-2 text-text-muted">
+                                    {Number(t.n_output_tokens).toLocaleString()}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function RunDetail({ run, agent, onViewSkillEvals }) {
   const categoryEntries = Object.entries(run.category_success || {});
 
   return (
@@ -181,24 +377,32 @@ function RunDetail({ run, agent }) {
             <MetricCard icon={CheckCircle2} label="Analysis Accuracy">
               <RateBar rate={run.task_success?.rate} />
               <p className="mt-1.5 text-right text-xs text-text-muted">
-                {run.task_success?.passed}/{run.task_success?.total} queries resolved
+                {run.task_success?.passed}/{run.task_success?.total} queries
+                resolved
               </p>
             </MetricCard>
 
             <MetricCard icon={ListChecks} label="Workflow Completion">
               <RateBar rate={run.step_success?.rate} />
               <p className="mt-1.5 text-right text-xs text-text-muted">
-                {run.step_success?.passed}/{run.step_success?.total} steps completed
+                {run.step_success?.passed}/{run.step_success?.total} steps
+                completed
               </p>
             </MetricCard>
 
-            <MetricCard icon={Layers} label="Financial Skill Proficiency">
+            <MetricCard
+              icon={Layers}
+              label="Financial Skill Proficiency"
+              onViewDetails={onViewSkillEvals}
+            >
               {categoryEntries.length > 0 ? (
                 <div className="space-y-2.5">
                   {categoryEntries.map(([category, stats]) => (
                     <div key={category}>
                       <div className="mb-0.5 flex items-center justify-between">
-                        <span className="text-xs text-text-muted">{category}</span>
+                        <span className="text-xs text-text-muted">
+                          {category}
+                        </span>
                         <span className="text-xs text-text-muted">
                           {stats.passed}/{stats.total}
                         </span>
@@ -226,7 +430,8 @@ function RunDetail({ run, agent }) {
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="text-xs text-text-muted">
-                      {run.hallucination?.hallucinated} / {run.hallucination?.total_claims} claims flagged
+                      {run.hallucination?.hallucinated} /{" "}
+                      {run.hallucination?.total_claims} claims flagged
                     </p>
                   </div>
                   <HallucinationBadge rate={run.hallucination?.rate} />
@@ -237,7 +442,9 @@ function RunDetail({ run, agent }) {
 
           <div className="text-xs text-text-muted">
             <span className="font-medium text-text-secondary">Run ID:</span>{" "}
-            <code className="rounded bg-surface px-1.5 py-0.5 text-accent-teal">{run.run_id}</code>
+            <code className="rounded bg-surface px-1.5 py-0.5 text-accent-teal">
+              {run.run_id}
+            </code>
           </div>
         </div>
       </div>
@@ -245,12 +452,18 @@ function RunDetail({ run, agent }) {
   );
 }
 
-export default function EvaluationView({ agentMap = {}, focusAgentId, onClearFocus }) {
+export default function EvaluationView({
+  agentMap = {},
+  focusAgentId,
+  onClearFocus,
+}) {
   const [runs, setRuns] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [selectedAgentId, setSelectedAgentId] = useState(null);
   const [search, setSearch] = useState("");
+  const [skillEvals, setSkillEvals] = useState([]);
+  const [showSkillEvals, setShowSkillEvals] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -258,7 +471,9 @@ export default function EvaluationView({ agentMap = {}, focusAgentId, onClearFoc
       .then((data) => {
         if (!cancelled) {
           setRuns(data);
-          setSelectedAgentId((prev) => prev ?? (data.length > 0 ? data[0].agent_id : null));
+          setSelectedAgentId(
+            (prev) => prev ?? (data.length > 0 ? data[0].agent_id : null),
+          );
         }
       })
       .catch((err) => {
@@ -267,7 +482,21 @@ export default function EvaluationView({ agentMap = {}, focusAgentId, onClearFoc
       .finally(() => {
         if (!cancelled) setLoading(false);
       });
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchSkillEvals()
+      .then((data) => {
+        if (!cancelled) setSkillEvals(data);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -318,7 +547,9 @@ export default function EvaluationView({ agentMap = {}, focusAgentId, onClearFoc
       <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center">
         <BarChart3 size={40} className="text-text-muted" />
         <div>
-          <p className="text-sm font-medium text-text-primary">No evaluation runs yet</p>
+          <p className="text-sm font-medium text-text-primary">
+            No evaluation runs yet
+          </p>
           <p className="mt-1 text-xs text-text-muted">
             Run the benchmark to generate evaluation scores.
           </p>
@@ -338,7 +569,9 @@ export default function EvaluationView({ agentMap = {}, focusAgentId, onClearFoc
           <div className="mb-2.5 flex items-center justify-between">
             <div className="flex items-center gap-2">
               <BarChart3 size={15} className="text-accent-teal" />
-              <h2 className="text-sm font-semibold text-text-primary">Evaluations</h2>
+              <h2 className="text-sm font-semibold text-text-primary">
+                Evaluations
+              </h2>
               <span className="rounded-full bg-surface px-1.5 py-0.5 text-[10px] text-text-muted">
                 {runs.length}
               </span>
@@ -381,19 +614,28 @@ export default function EvaluationView({ agentMap = {}, focusAgentId, onClearFoc
 
       {/* Evaluation detail */}
       <div className="flex flex-1 flex-col bg-workspace">
-        {selectedRun ? (
+        {showSkillEvals ? (
+          <SkillEvalsPage
+            skillEvals={skillEvals}
+            onBack={() => setShowSkillEvals(false)}
+          />
+        ) : selectedRun ? (
           <RunDetail
             key={selectedRun.run_id}
             run={selectedRun}
             agent={agentMap[selectedRun.agent_id]}
+            onViewSkillEvals={() => setShowSkillEvals(true)}
           />
         ) : (
           <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center">
             <BarChart3 size={40} className="text-text-muted" />
             <div>
-              <p className="text-sm font-medium text-text-primary">Select an agent</p>
+              <p className="text-sm font-medium text-text-primary">
+                Select an agent
+              </p>
               <p className="mt-1 text-xs text-text-muted">
-                Choose a digital employee from the list to view evaluation results.
+                Choose a digital employee from the list to view evaluation
+                results.
               </p>
             </div>
           </div>

@@ -1,4 +1,49 @@
-**__pycache__**
-**.DS_Store**
-**.vscode**
-**.env**
+# Python virtual environments
+.venv/
+venv/
+env/
+skillsbench_backend/.venv/
+
+# skillsbench_backend — generated outputs
+skillsbench_backend/experiments/skill-eval-runs/
+skillsbench_backend/experiments/skill-eval-logs/
+skillsbench_backend/jobs/
+
+# skillsbench_backend — Python cache
+skillsbench_backend/**/__pycache__/
+skillsbench_backend/**/*.py[cod]
+
+# skillsbench_backend — Python version pin (machine-specific)
+skillsbench_backend/.python-version
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Node / frontend
+node_modules/
+frontend/node_modules/
+frontend/dist/
+frontend/.env
+frontend/.env.local
+frontend/.env.*.local
+
+# Environment / secrets
+.env
+.env.local
+.env.*
+!.env.example
+
+# macOS
+.DS_Store
+
+# Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs
+*.log
