@@ -93,7 +93,7 @@ function AnswerBlock({ message, animate }) {
   return (
     <div className="max-w-[90%] rounded-2xl rounded-bl-sm bg-surface px-4 py-3">
       <p className="mb-2 text-[10px] font-medium uppercase tracking-wider text-accent-teal">
-        Final Answer
+        Response
       </p>
       <div className="prose-dark text-sm leading-relaxed text-text-primary">
         <ReactMarkdown
@@ -184,6 +184,12 @@ export default function ChatMessage({ message, animate = true }) {
       retrieve_information: "Analyzing Documents",
       submit_result: "Submitting Answer",
       submit_final_result: "Submitting Answer",
+      finish: "Task Complete",
+      FinishTool: "Task Complete",
+      terminal: "Terminal",
+      file_editor: "File Editor",
+      task_tracker: "Task Tracker",
+      delegate: "Delegate",
     };
     const label = TOOL_LABELS[message.tool] || message.tool;
 

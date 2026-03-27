@@ -9,6 +9,7 @@ import EvaluationView from "./components/EvaluationView";
 import SkillsView from "./components/SkillsView";
 import {
   streamChat,
+  uploadFiles,
   fetchChats,
   fetchChatById,
   fetchAgents,
@@ -125,6 +126,7 @@ export default function App() {
   const [skills, setSkills] = useState([]);
   const [selectedSkillIds, setSelectedSkillIds] = useState([]);
   const [skipSkillConfirm, setSkipSkillConfirm] = useState(false);
+  const [mountDir, setMountDir] = useState("");
   const [config, setConfig] = useState({
     model: "",
     maxTrials: 3,
@@ -213,6 +215,9 @@ export default function App() {
   const handleSubmit = async (question, submittedFiles = []) => {
     if (!question.trim() || isStreaming) return;
 
+    const sid = sessionId || crypto.randomUUID();
+    if (!sessionId) setSessionId(sid);
+
     if (submittedFiles.length > 0) {
       const fileMeta = submittedFiles.map((f) => ({
         name: f.name,
@@ -229,10 +234,14 @@ export default function App() {
     setIsStreaming(true);
 
     try {
+      if (submittedFiles.length > 0) {
+        await uploadFiles(sid, submittedFiles);
+      }
+
       await streamChat(
         {
           question,
-          sessionId,
+          sessionId: sid,
           model: config.model || undefined,
           maxTrials: config.maxTrials,
           confidenceThreshold: config.confidenceThreshold,
@@ -240,6 +249,7 @@ export default function App() {
             ? submittedFiles.map((f) => ({ name: f.name, size: f.size, type: f.type }))
             : undefined,
           skillIds: selectedSkillIds,
+          mountDir: mountDir || undefined,
         },
         (eventType, data) => {
           let msg = null;
@@ -354,6 +364,7 @@ export default function App() {
     setChatFiles([]);
     setStagedFiles([]);
     setSkipSkillConfirm(false);
+    setMountDir("");
     visibleAgentRef.current = null;
     sentinelRefs.current.clear();
   };
@@ -474,6 +485,8 @@ export default function App() {
               onSelectedSkillsChange={setSelectedSkillIds}
               skipConfirm={skipSkillConfirm}
               onSkipConfirmChange={setSkipSkillConfirm}
+              mountDir={mountDir}
+              onMountDirChange={setMountDir}
             />
           </div>
         </>
@@ -497,6 +510,8 @@ export default function App() {
               onSelectedSkillsChange={setSelectedSkillIds}
               skipConfirm={skipSkillConfirm}
               onSkipConfirmChange={setSkipSkillConfirm}
+              mountDir={mountDir}
+              onMountDirChange={setMountDir}
             />
           </div>
         </div>

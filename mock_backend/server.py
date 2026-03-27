@@ -1,8 +1,11 @@
 """
-Mock backend for frontend development.
+Backend for the Agent.
 
-Simulates the real Reflexion Finance Agent API with realistic SSE streaming,
-tool calls, self-evaluation, reflection loops, and evaluation data.
+Supports two modes controlled by environment:
+  - Mock mode (default): simulates agent behavior with realistic SSE streaming.
+  - Real agent mode: runs the OpenHands agent in Docker, streaming live events.
+
+Set MODEL, API_KEY, and BASE_URL in .env to enable the real agent.
 
 Run:  uvicorn server:app --reload --port 8000
 """
@@ -12,6 +15,7 @@ from __future__ import annotations
 import os
 import asyncio
 import json
+import logging
 import random
 import re
 import shutil
@@ -21,12 +25,44 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+import dotenv
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
 from mm_train import MMSkillTrainer
+
+dotenv.load_dotenv()
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Real-agent feature flag
+# ---------------------------------------------------------------------------
+REAL_AGENT_ENABLED = True
+
+_agent_import_error: str | None = None
+if REAL_AGENT_ENABLED:
+    try:
+        from agent import runtime as _agent_runtime
+        from openhands.sdk.event import (
+            ActionEvent,
+            ObservationEvent,
+            MessageEvent,
+            AgentErrorEvent,
+        )
+        from openhands.sdk.event.conversation_error import ConversationErrorEvent
+    except ImportError as exc:
+        _agent_import_error = str(exc)
+        REAL_AGENT_ENABLED = False
+
+if REAL_AGENT_ENABLED:
+    logger.info("Real agent mode ENABLED (model=%s)", os.getenv("MODEL"))
+elif _agent_import_error:
+    logger.warning("Real agent mode DISABLED — import error: %s", _agent_import_error)
+else:
+    logger.info("Real agent mode DISABLED — MODEL/API_KEY env vars not set")
 
 app = FastAPI(title="Mock Reflexion Finance Agent API")
 
@@ -74,13 +110,14 @@ _DEFAULT_TASK_AGENT = "agent-claude-full"
 _DEFAULT_CHAT_AGENT = "agent-conversational"
 
 _chats: dict[str, dict] = {}
+_upload_dirs: dict[str, str] = {}
 
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _resolve_agent(model: str | None, is_task: bool) -> dict:
+def _resolve_agent(model: str | None, is_task: bool = True) -> dict:
     """Pick the best matching agent for a given model string and query type."""
     if model:
         for agent in _AGENTS.values():
@@ -220,20 +257,20 @@ def _sse(event_type: str, data: dict[str, Any]) -> dict:
     return {"event": event_type, "data": json.dumps(data)}
 
 
-_TASK_KEYWORDS = [
-    "revenue", "earnings", "stock", "market cap", "profit", "SEC",
-    "filing", "10-K", "10-Q", "annual report", "quarterly",
-    "dividend", "balance sheet", "cash flow", "EPS", "P/E",
-    "share price", "financial", "fiscal", "EBITDA", "debt",
-    "net income", "gross margin", "operating", "valuation",
-    "IPO", "acquisition", "merger", "GDP", "inflation",
-]
+# _TASK_KEYWORDS = [
+#     "revenue", "earnings", "stock", "market cap", "profit", "SEC",
+#     "filing", "10-K", "10-Q", "annual report", "quarterly",
+#     "dividend", "balance sheet", "cash flow", "EPS", "P/E",
+#     "share price", "financial", "fiscal", "EBITDA", "debt",
+#     "net income", "gross margin", "operating", "valuation",
+#     "IPO", "acquisition", "merger", "GDP", "inflation",
+# ]
 
 
-def _is_task(question: str) -> bool:
-    """Determine whether the query requires the agent to work (use tools) vs just chat."""
-    q = question.lower()
-    return any(kw in q for kw in _TASK_KEYWORDS)
+# def _is_task(question: str) -> bool:
+#     """Determine whether the query requires the agent to work (use tools) vs just chat."""
+#     q = question.lower()
+#     return any(kw in q for kw in _TASK_KEYWORDS)
 
 
 # ---------------------------------------------------------------------------
@@ -405,6 +442,245 @@ async def _stream_conversation(question: str, session_id: str, agent: dict):
 
 
 # ---------------------------------------------------------------------------
+# Real agent streaming (enabled when REAL_AGENT_ENABLED is True)
+# ---------------------------------------------------------------------------
+
+_turn_counter: dict[str, int] = {}
+
+
+def _extract_text(obj: Any) -> str:
+    """Safely extract plain text from SDK content types.
+
+    Handles: str, TextContent (has .text), Sequence[TextContent], Observation
+    (has .content which may itself be str or list), and arbitrary objects.
+    """
+    if obj is None:
+        return ""
+    if isinstance(obj, str):
+        return obj
+    # Single TextContent-like object
+    if hasattr(obj, "text") and isinstance(getattr(obj, "text"), str):
+        return obj.text
+    # Sequence of TextContent-like objects (Sequence[TextContent])
+    if isinstance(obj, (list, tuple)):
+        parts = []
+        for item in obj:
+            if hasattr(item, "text") and isinstance(getattr(item, "text"), str):
+                parts.append(item.text)
+            elif isinstance(item, str):
+                parts.append(item)
+        if parts:
+            return " ".join(parts)
+    # Last resort — but avoid repr of SDK objects
+    return ""
+
+
+def _parse_tool_args(tc: Any) -> tuple[str, dict]:
+    """Extract (args_string, args_dict) from a MessageToolCall.
+
+    MessageToolCall uses OpenAI format: tc.function.name / tc.function.arguments
+    where arguments is a JSON-encoded string.
+    """
+    fn = getattr(tc, "function", None)
+    args_str = (getattr(fn, "arguments", None) or "") if fn else ""
+    try:
+        args_dict = json.loads(args_str) if args_str else {}
+    except (json.JSONDecodeError, TypeError):
+        args_dict = {}
+    return args_str, args_dict
+
+
+def _map_event_to_sse(event: Any, session_id: str) -> dict | None:
+    """Translate an OpenHands Event into the SSE dict format the frontend expects.
+
+    Returns None for events that have no meaningful SSE representation.
+    """
+    try:
+        # --- Agent chose to call a tool ---
+        if isinstance(event, ActionEvent):
+            if getattr(event, "tool_call", None):
+                tool_name = getattr(event, "tool_name", None) or "unknown"
+                _, args_dict = _parse_tool_args(event.tool_call)
+
+                # The "finish" tool signals task completion — emit its
+                # message as the final answer instead of a tool_call row.
+                if tool_name.lower() in ("finish", "finishtool"):
+                    finish_text = (
+                        args_dict.get("message", "")
+                        or args_dict.get("outputs", "")
+                        or args_dict.get("text", "")
+                    )
+                    # Also pull from thought if the args were empty
+                    if not finish_text:
+                        finish_text = _extract_text(getattr(event, "thought", None))
+                    if finish_text:
+                        return _sse("answer", {"text": finish_text})
+                    return None
+
+                detail = str(
+                    args_dict.get("command", args_dict.get("query", args_dict.get("path", "")))
+                )[:120]
+
+                _turn_counter.setdefault(session_id, 0)
+                _turn_counter[session_id] += 1
+
+                return _sse("tool_call", {
+                    "turn": _turn_counter[session_id],
+                    "tool": tool_name,
+                    "detail": detail or f"Calling {tool_name}",
+                })
+
+            # thought is Sequence[TextContent]
+            thought_text = _extract_text(getattr(event, "thought", None))
+            if thought_text:
+                return _sse("reasoning", {"text": thought_text})
+
+            reasoning = getattr(event, "reasoning_content", None)
+            if reasoning and isinstance(reasoning, str):
+                return _sse("reasoning", {"text": reasoning})
+
+            return None
+
+        # --- Tool execution result ---
+        if isinstance(event, ObservationEvent):
+            obs_tool = getattr(event, "tool_name", None) or ""
+            obs = getattr(event, "observation", None)
+            if obs is not None:
+                raw = getattr(obs, "content", None) or getattr(obs, "text", None)
+                content = _extract_text(raw) or str(obs)
+            else:
+                content = str(event)
+
+            # The finish tool's observation carries the agent's final message
+            if obs_tool.lower() in ("finish", "finishtool") and content.strip():
+                return _sse("answer", {"text": content})
+
+            return _sse("tool_result", {"text": content[:2000]})
+
+        # --- Agent's text message (often the final answer) ---
+        if isinstance(event, MessageEvent):
+            text = _extract_text(getattr(event, "extended_content", None))
+            if not text:
+                text = getattr(event, "reasoning_content", None) or ""
+            if text:
+                return _sse("answer", {"text": text})
+            return None
+
+        # --- Errors ---
+        if isinstance(event, AgentErrorEvent):
+            return _sse("error", {"message": getattr(event, "error", str(event))})
+
+        if isinstance(event, ConversationErrorEvent):
+            msg = getattr(event, "message", None) or getattr(event, "error", None) or str(event)
+            return _sse("error", {"message": msg})
+
+    except Exception:
+        logger.exception("Failed to map event to SSE: %s", type(event).__name__)
+
+    return None
+
+
+def _resolve_workspace(session_id: str, mount_dir: str | None) -> tuple[str | None, str | None]:
+    """Determine the effective mount directory and any staging dir to clean up.
+
+    If files were uploaded for this session, they live in a staging directory.
+    - If ``mount_dir`` is also set, copy uploaded files into it and use ``mount_dir``.
+    - Otherwise, use the staging directory itself as the mount.
+
+    Returns (effective_mount_dir, staging_dir_to_cleanup_or_None).
+    """
+    staging = _upload_dirs.pop(session_id, None)
+
+    if staging and mount_dir:
+        for name in os.listdir(staging):
+            src = os.path.join(staging, name)
+            dst = os.path.join(mount_dir, name)
+            if os.path.isdir(src):
+                shutil.copytree(src, dst, dirs_exist_ok=True)
+            else:
+                shutil.copy2(src, dst)
+        return mount_dir, staging
+
+    if staging:
+        return staging, staging
+
+    return mount_dir, None
+
+
+async def _stream_real_task(
+    question: str,
+    session_id: str,
+    agent_info: dict,
+    mount_dir: str | None = None,
+):
+    """Run the real OpenHands agent in a background thread, streaming events as SSE."""
+    queue: asyncio.Queue = asyncio.Queue()
+    loop = asyncio.get_running_loop()
+
+    effective_mount, staging_to_clean = _resolve_workspace(session_id, mount_dir)
+
+    _turn_counter[session_id] = 0
+
+    def _callback(event):
+        mapped = _map_event_to_sse(event, session_id)
+        if mapped:
+            loop.call_soon_threadsafe(queue.put_nowait, mapped)
+
+    def _run_agent():
+        error = None
+        try:
+            _agent_runtime(
+                repo_dir=effective_mount or "",
+                instruction=question,
+                mount_dir=effective_mount,
+                event_callback=_callback,
+            )
+        except Exception as exc:
+            error = str(exc)
+            logger.exception("Agent runtime failed")
+        finally:
+            if staging_to_clean:
+                shutil.rmtree(staging_to_clean, ignore_errors=True)
+            if error:
+                loop.call_soon_threadsafe(
+                    queue.put_nowait,
+                    _sse("error", {"message": error}),
+                )
+            loop.call_soon_threadsafe(queue.put_nowait, None)
+
+    yield _sse("session", {"session_id": session_id})
+    yield _sse("agent", agent_info)
+    yield _sse("status", {"message": f"Agent starting work — model: {agent_info.get('model', 'unknown')}"})
+
+    loop.run_in_executor(None, _run_agent)
+
+    got_answer = False
+    last_tool_text: str | None = None
+
+    while True:
+        item = await queue.get()
+        if item is None:
+            break
+        event_type = item["event"]
+        data = json.loads(item["data"])
+        _append_event(session_id, event_type, data)
+        yield item
+
+        if event_type == "answer":
+            got_answer = True
+        elif event_type == "tool_result":
+            last_tool_text = data.get("text")
+
+    if not got_answer and last_tool_text:
+        evt = {"text": last_tool_text}
+        yield _sse("answer", evt)
+        _append_event(session_id, "answer", evt)
+
+    _turn_counter.pop(session_id, None)
+    yield _sse("done", {"message": "Complete"})
+
+
+# ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
 
@@ -421,19 +697,46 @@ class ChatRequest(BaseModel):
     max_trials: int = 3
     confidence_threshold: float = 0.7
     files: list[FileMetadata] | None = None
+    mount_dir: str | None = None
+
+
+@app.post("/api/upload")
+async def upload_files(
+    files: list[UploadFile] = File(...),
+    session_id: str | None = None,
+):
+    """Save uploaded files to a staging directory for later Docker mounting."""
+    sid = session_id or str(uuid.uuid4())
+    staging = tempfile.mkdtemp(prefix="agent_uploads_")
+    saved: list[dict] = []
+
+    for upload in files:
+        dest = os.path.join(staging, upload.filename)
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        content = await upload.read()
+        with open(dest, "wb") as f:
+            f.write(content)
+        saved.append({
+            "name": upload.filename,
+            "size": len(content),
+            "type": upload.content_type,
+        })
+
+    _upload_dirs[sid] = staging
+    logger.info("Staged %d files for session %s at %s", len(saved), sid, staging)
+    return {"session_id": sid, "upload_dir": staging, "files": saved}
 
 
 @app.post("/api/chat")
 async def chat(req: ChatRequest):
     session_id = req.session_id or str(uuid.uuid4())
-    is_task = _is_task(req.question)
-    agent = _resolve_agent(req.model, is_task)
+    agent = _resolve_agent(req.model)
 
     file_dicts = [f.model_dump(exclude_none=True) for f in req.files] if req.files else None
     _upsert_chat(session_id, req.question, role="user", agent_id=agent["id"], files=file_dicts)
 
-    if is_task:
-        gen = _stream_task(req.question, session_id, req.max_trials, req.confidence_threshold, agent)
+    if REAL_AGENT_ENABLED:
+        gen = _stream_real_task(req.question, session_id, agent, mount_dir=req.mount_dir)
     else:
         gen = _stream_conversation(req.question, session_id, agent)
 
@@ -718,4 +1021,7 @@ async def train_skills(files: list[UploadFile] = File(...)):
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "real_agent_enabled": REAL_AGENT_ENABLED,
+    }
