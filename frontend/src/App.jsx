@@ -125,6 +125,8 @@ export default function App() {
   const [skills, setSkills] = useState([]);
   const [focusAgentId, setFocusAgentId] = useState(null);
   const [mountDir, setMountDir] = useState("");
+  const [selectedSkillIds, setSelectedSkillIds] = useState([]);
+  const [skipSkillConfirm, setSkipSkillConfirm] = useState(false);
   const [config, setConfig] = useState({
     model: "",
     maxTrials: 3,

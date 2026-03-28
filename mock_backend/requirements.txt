@@ -4,3 +4,7 @@ sse-starlette
 openai
 python-dotenv
 python-multipart
+openhands-sdk
+openhands-tools
+openhands-workspace
+openhands-agent-server
