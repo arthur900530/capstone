@@ -25,7 +25,7 @@ A React-based chat interface for interacting with the Finance Agent, a multi-tri
 
 ## Project Structure
 
-```
+```text
 capstone_frontend/
 ├── frontend/               # React application
 │   ├── public/
@@ -40,17 +40,36 @@ capstone_frontend/
 │   │       ├── WelcomeHeader.jsx  # Landing screen header
 │   │       ├── InputBox.jsx       # Chat input with config controls
 │   │       ├── ChatMessage.jsx    # Message rendering (all event types)
-│   │       ├── DataContext.jsx     # Uploaded data panel
+│   │       ├── DataContext.jsx    # Uploaded data panel
 │   │       ├── EvaluationView.jsx # Agent evaluation dashboard
 │   │       └── SkillsView.jsx     # Skill browser & editor
-│   ├── index.html
 │   ├── package.json
 │   └── vite.config.js
 ├── backend/                # FastAPI backend server
-│   ├── server.py
-│   ├── requirements.txt
-│   └── .venv/
-└── start.sh                # One-command launcher for both services
+│   ├── server.py # Main API entrypoint (FastAPI)
+│   ├── .env # Environment variables & api keys
+│   ├── requirements.txt # Backend dependencies
+│   │
+│   ├── skills/ # 📁 Persisted skill storage
+│   │   └── [skill-name]/SKILL.md # Individual skill definitions
+│   │   └── ...
+│   │
+│   ├── reflexion_agent/ # 📁 Agent Interaction Loop
+│   │   ├── agent.py # Core agent loop and OpenHands integration
+│   │   ├── evaluator.py # Assesses agent output correctness
+│   │   ├── reflector.py # Generates self-reflection feedback on failure
+│   │   └── memory.py # Manages conversation history/trajectory
+│   │
+│   ├── skills_ingestor/ # 📁 Skill Creation Tools
+│   │   ├── mm_train.py # Multimodal trainer (video/audio -> skills)
+│   │   └── prompts.py # System prompts for skill extraction
+│   │
+│   └── skillsbench/ # 📁 Automated Evaluation Framework
+│       ├── experiments/
+│       │   ├── skill_evaluation_framework.py # Orchestrator for evaluating skills against tasks
+│       │   └── skill-eval-runs/ # Evaluation results (JSON/CSV)
+│       └── tasks/ # 📁 Tasks/environments for evaluation
+└── start.sh                # One-command launcher for all services
 ```
 
 ## Prerequisites
@@ -60,45 +79,60 @@ capstone_frontend/
 
 ## Getting Started
 
-### Quick Start (recommended)
+### 1. Configuration
 
-The included `start.sh` script installs all dependencies and launches both the frontend dev server and the mock backend in one step:
+The real agent requires an LLM API key. 
+
+Copy the example environment variables:
+```bash
+cd backend
+cp .env.example .env
+```
+Then edit `backend/.env` and add your **OpenRouter / OpenAI** API Keys:
+```env
+OPENROUTER_API_KEY=sk-or-v1-...
+```
+
+*(If `.env` is missing or invalid, the backend will gracefully fall back to a "Mock Mode" that simulates an agent).*
+
+### 2. Quick Start (recommended)
+
+The included `start.sh` script installs all dependencies and launches everything in one step:
 
 ```bash
 ./start.sh
 ```
 
-This will:
+This will automatically:
+1. Install frontend npm dependencies
+2. Create `backend/.venv` and install all Python requirements (including OpenHands)
+3. Setup the `skillsbench` evaluation framework
+4. Start the backend API on **http://localhost:8000**
+5. Start the React frontend on **http://localhost:5173**
 
-1. Install frontend npm dependencies (if `node_modules` is missing)
-2. Create a Python virtual environment and install backend dependencies
-3. Start the mock backend on **http://localhost:8000**
-4. Start the Vite dev server on **http://localhost:5173**
-
-Press `Ctrl+C` to stop both services.
+Press `Ctrl+C` in the terminal to cleanly stop all services.
 
 ### Manual Setup
 
 If you prefer to run the services separately:
 
-**Frontend:**
-
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-The dev server starts at **http://localhost:5173** and proxies `/api` requests to `http://localhost:8000`.
-
 **Backend:**
-
 ```bash
 cd backend
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 .venv/bin/uvicorn server:app --reload --port 8000
 ```
+
+**Frontend:**
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+The frontend dev server starts at **http://localhost:5173** and proxies `/api` requests to the backend.
+
 
 ## Available Scripts
 
