@@ -1,0 +1,53 @@
+{
+  "job_name": "skill-eval-mesh-analysis-demo",
+  "created_at_utc": "2026-03-28T14:30:00+00:00",
+  "inputs": {
+    "skills_dir": "../skills",
+    "selected_skill_name": "Mesh Analysis",
+    "selected_skill_md": "../skills/mesh-analysis/SKILL.md",
+    "tasks_dir": "tasks",
+    "similarity_threshold": 0.55,
+    "embedding_model": "openai/text-embedding-3-small",
+    "base_config": null,
+    "agent_name": "codex",
+    "model_name": "openai/gpt-4o"
+  },
+  "selection": {
+    "n_total_tasks": 24,
+    "n_selected_tasks": 4,
+    "selected_task_names": [
+      "surface-area-cube",
+      "volume-sphere",
+      "normals-tetrahedron",
+      "manifold-check"
+    ],
+    "similarities": []
+  },
+  "artifacts": {
+    "workspace_dir": "experiments/skill-eval-runs/skill-eval-mesh-analysis-demo",
+    "harbor_config_path": "experiments/skill-eval-runs/skill-eval-mesh-analysis-demo/harbor_config.yaml",
+    "jobs_dir": "jobs",
+    "job_output_dir": "jobs/skill-eval-mesh-analysis-demo",
+    "in_place_skill_replacement": true
+  },
+  "evaluation": {
+    "n_trials": 4,
+    "n_scored_trials": 4,
+    "pass_rate": 0.75,
+    "mean_reward": 0.8125,
+    "mean_duration_sec": 11.2,
+    "mean_input_tokens": 1950,
+    "mean_output_tokens": 420,
+    "trials": []
+  },
+  "evaluation_no_skills": {
+    "n_trials": 4,
+    "n_scored_trials": 4,
+    "pass_rate": 0.5,
+    "mean_reward": 0.4375,
+    "mean_duration_sec": 13.1,
+    "mean_input_tokens": 2100,
+    "mean_output_tokens": 380,
+    "trials": []
+  }
+}

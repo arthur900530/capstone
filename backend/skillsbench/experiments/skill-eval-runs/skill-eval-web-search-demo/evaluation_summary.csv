@@ -1,0 +1,4 @@
+trial_name,task_name,reward,duration_sec,n_input_tokens,n_output_tokens,exception_info
+trial-001,news-summarization,1.0,17.1,3100,920,
+trial-002,fact-check-url,0.0,19.8,3350,780,
+trial-003,competitor-headlines,1.0,18.6,3150,970,

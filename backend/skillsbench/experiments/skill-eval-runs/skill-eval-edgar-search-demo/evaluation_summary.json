@@ -1,0 +1,54 @@
+{
+  "job_name": "skill-eval-edgar-search-demo",
+  "created_at_utc": "2026-03-26T16:45:00+00:00",
+  "inputs": {
+    "skills_dir": "../skills",
+    "selected_skill_name": "Edgar Search",
+    "selected_skill_md": "../skills/edgar-search/SKILL.md",
+    "tasks_dir": "tasks",
+    "similarity_threshold": 0.55,
+    "embedding_model": "openai/text-embedding-3-small",
+    "base_config": null,
+    "agent_name": "codex",
+    "model_name": "openai/gpt-4o-mini"
+  },
+  "selection": {
+    "n_total_tasks": 24,
+    "n_selected_tasks": 5,
+    "selected_task_names": [
+      "10k-extract-revenue",
+      "8k-risk-factors",
+      "insider-transactions",
+      "filing-deadline",
+      "cik-lookup"
+    ],
+    "similarities": []
+  },
+  "artifacts": {
+    "workspace_dir": "experiments/skill-eval-runs/skill-eval-edgar-search-demo",
+    "harbor_config_path": "experiments/skill-eval-runs/skill-eval-edgar-search-demo/harbor_config.yaml",
+    "jobs_dir": "jobs",
+    "job_output_dir": "jobs/skill-eval-edgar-search-demo",
+    "in_place_skill_replacement": true
+  },
+  "evaluation": {
+    "n_trials": 5,
+    "n_scored_trials": 5,
+    "pass_rate": 0.6,
+    "mean_reward": 0.64,
+    "mean_duration_sec": 22.3,
+    "mean_input_tokens": 4100,
+    "mean_output_tokens": 650,
+    "trials": []
+  },
+  "evaluation_no_skills": {
+    "n_trials": 5,
+    "n_scored_trials": 5,
+    "pass_rate": 0.4,
+    "mean_reward": 0.42,
+    "mean_duration_sec": 24.0,
+    "mean_input_tokens": 4300,
+    "mean_output_tokens": 580,
+    "trials": []
+  }
+}

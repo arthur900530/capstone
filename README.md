@@ -46,7 +46,7 @@ capstone_frontend/
 │   ├── index.html
 │   ├── package.json
 │   └── vite.config.js
-├── mock_backend/           # FastAPI mock server for development
+├── backend/                # FastAPI backend server
 │   ├── server.py
 │   ├── requirements.txt
 │   └── .venv/
@@ -56,7 +56,7 @@ capstone_frontend/
 ## Prerequisites
 
 - **Node.js** >= 18
-- **Python** >= 3.10 (for the mock backend)
+- **Python** >= 3.10 (for the backend)
 
 ## Getting Started
 
@@ -91,10 +91,10 @@ npm run dev
 
 The dev server starts at **http://localhost:5173** and proxies `/api` requests to `http://localhost:8000`.
 
-**Mock Backend:**
+**Backend:**
 
 ```bash
-cd mock_backend
+cd backend
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 .venv/bin/uvicorn server:app --reload --port 8000

@@ -2,19 +2,21 @@
 .venv/
 venv/
 env/
-skillsbench_backend/.venv/
+backend/skillsbench/.venv/
 
-# skillsbench_backend — generated outputs
-skillsbench_backend/experiments/skill-eval-runs/
-skillsbench_backend/experiments/skill-eval-logs/
-skillsbench_backend/jobs/
+# skillsbench — generated outputs (sample runs named *-demo/ stay tracked)
+backend/skillsbench/experiments/skill-eval-runs/*
+!backend/skillsbench/experiments/skill-eval-runs/*-demo/
+!backend/skillsbench/experiments/skill-eval-runs/*-demo/**
+backend/skillsbench/experiments/skill-eval-logs/
+backend/skillsbench/jobs/
 
-# skillsbench_backend — Python cache
-skillsbench_backend/**/__pycache__/
-skillsbench_backend/**/*.py[cod]
+# skillsbench — Python cache
+backend/skillsbench/**/__pycache__/
+backend/skillsbench/**/*.py[cod]
 
-# skillsbench_backend — Python version pin (machine-specific)
-skillsbench_backend/.python-version
+# skillsbench — Python version pin (machine-specific)
+backend/skillsbench/.python-version
 __pycache__/
 *.py[cod]
 *.pyo

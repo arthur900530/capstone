@@ -1,0 +1,6 @@
+trial_name,task_name,reward,duration_sec,n_input_tokens,n_output_tokens,exception_info
+trial-001,10k-extract-revenue,1.0,21.2,4200,720,
+trial-002,8k-risk-factors,1.0,23.5,4450,680,
+trial-003,insider-transactions,0.5,20.1,3980,590,
+trial-004,filing-deadline,0.0,24.8,4100,520,
+trial-005,cik-lookup,1.0,21.9,3870,740,

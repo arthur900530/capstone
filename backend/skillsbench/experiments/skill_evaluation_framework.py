@@ -80,7 +80,7 @@ def discover_skills(skills_pool: Path) -> list[SkillInfo]:
 
 def select_skill(skills: list[SkillInfo], skill_selector: str | None) -> SkillInfo:
     if not skills:
-        raise ValueError("No SKILL.md found in skills_pool.")
+        raise ValueError("No SKILL.md found under the given skills directory.")
 
     if skill_selector is None:
         if len(skills) > 1:
@@ -424,7 +424,15 @@ def run_harbor(config_path: Path) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Skill evaluation framework for SkillsBench.")
-    parser.add_argument("--skills-pool", type=Path, required=True, help="Folder containing candidate skills.")
+    parser.add_argument(
+        "--skills-dir",
+        "--skills-pool",
+        type=Path,
+        dest="skills_dir",
+        required=True,
+        metavar="PATH",
+        help="Root folder of skill packages (each subdirectory may contain SKILL.md).",
+    )
     parser.add_argument("--skill", type=str, default=None, help="Skill name or path to folder/SKILL.md.")
     parser.add_argument("--tasks-dir", type=Path, default=Path("tasks"), help="Tasks root directory.")
     parser.add_argument("--threshold", type=float, default=0.55, help="Similarity threshold to select tasks.")
@@ -460,7 +468,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    skills = discover_skills(args.skills_pool)
+    skills = discover_skills(args.skills_dir)
     selected_skill = select_skill(skills, args.skill)
     tasks = discover_tasks(args.tasks_dir)
     if not tasks:
@@ -543,9 +551,9 @@ def main() -> None:
         "job_name": job_name,
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
         "inputs": {
-            "skills_pool": str(args.skills_pool),
+            "skills_dir": str(args.skills_dir.resolve()),
             "selected_skill_name": selected_skill.name,
-            "selected_skill_md": str(selected_skill.skill_md),
+            "selected_skill_md": str(selected_skill.skill_md.resolve()),
             "tasks_dir": str(args.tasks_dir),
             "similarity_threshold": args.threshold,
             "embedding_model": args.embedding_model,

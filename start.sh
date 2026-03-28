@@ -1,10 +1,28 @@
 #!/usr/bin/env bash
+# =============================================================================
+# Capstone frontend + API — first-time and daily startup
+#
+# From a fresh clone (no node_modules, no venvs), this script will:
+#   1. Install frontend npm dependencies
+#   2. Create backend/.venv and install FastAPI stack (requirements.txt)
+#   3. Create backend/skillsbench/.venv and pip install -e the skillsbench
+#      package (pulls Harbor from GitHub — needs network + git)
+#   4. Start the API on http://localhost:8000 and Vite on http://localhost:5173
+#
+# Prerequisites on your machine:
+#   - Python 3.12+ (skillsbench declares requires-python >= 3.12)
+#   - Node.js 18+ and npm
+#   - git (for Harbor’s VCS dependency)
+#
+# Optional: skip skillsbench venv (API-only) with  SKIP_SKILLSBENCH=1 ./start.sh
+# =============================================================================
+
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 FRONTEND_DIR="$ROOT_DIR/frontend"
-BACKEND_DIR="$ROOT_DIR/mock_backend"
-SKILLSBENCH_DIR="$ROOT_DIR/skillsbench_backend"
+BACKEND_DIR="$ROOT_DIR/backend"
+SKILLSBENCH_DIR="$BACKEND_DIR/skillsbench"
 
 PIDS=()
 
@@ -20,40 +38,93 @@ cleanup() {
 
 trap cleanup SIGINT SIGTERM
 
-# -- Install frontend dependencies if needed --
-if [ ! -d "$FRONTEND_DIR/node_modules" ]; then
-  echo "Installing frontend dependencies..."
+die() {
+  echo "Error: $*" >&2
+  exit 1
+}
+
+echo "==> Project root: $ROOT_DIR"
+echo ""
+
+# -- Prerequisites --
+command -v python3 >/dev/null 2>&1 || die "python3 not found. Install Python 3.12+."
+command -v node >/dev/null 2>&1 || die "node not found. Install Node.js 18+."
+command -v npm >/dev/null 2>&1 || die "npm not found. Install Node.js (includes npm)."
+command -v git >/dev/null 2>&1 || die "git not found (needed to install Harbor for skillsbench)."
+
+# API venv: any reasonable python3. Skillsbench: requires >= 3.12 (see backend/skillsbench/pyproject.toml).
+PYTHON_API="python3"
+PYTHON_BENCH="python3"
+if command -v python3.12 >/dev/null 2>&1; then
+  PYTHON_BENCH="python3.12"
+elif command -v python3.13 >/dev/null 2>&1; then
+  PYTHON_BENCH="python3.13"
+fi
+
+bench_meets_312() {
+  "$PYTHON_BENCH" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 12) else 1)'
+}
+
+if [[ "${SKIP_SKILLSBENCH:-0}" != "1" ]]; then
+  bench_meets_312 || die "skillsbench needs Python >= 3.12. Found: $PYTHON_BENCH ($($PYTHON_BENCH --version 2>&1)). Install python3.12 or set SKIP_SKILLSBENCH=1 for API-only."
+fi
+
+[[ -d "$FRONTEND_DIR" ]] || die "Missing frontend directory: $FRONTEND_DIR"
+[[ -d "$BACKEND_DIR" ]] || die "Missing backend directory: $BACKEND_DIR"
+[[ -f "$BACKEND_DIR/requirements.txt" ]] || die "Missing $BACKEND_DIR/requirements.txt"
+[[ -f "$SKILLSBENCH_DIR/pyproject.toml" ]] || die "Missing skillsbench package at $SKILLSBENCH_DIR (expected pyproject.toml)"
+
+# -- Frontend (npm) --
+echo "==> Frontend"
+if [[ ! -d "$FRONTEND_DIR/node_modules" ]]; then
+  echo "    First run: installing npm dependencies (this may take a minute)..."
   (cd "$FRONTEND_DIR" && npm install)
+else
+  echo "    node_modules present; run 'cd frontend && npm install' manually if package.json changed."
 fi
+echo ""
 
-# -- Set up Python venv & install backend dependencies if needed --
-if [ ! -d "$BACKEND_DIR/.venv" ]; then
-  echo "Creating Python virtual environment..."
-  python3 -m venv "$BACKEND_DIR/.venv"
+# -- API virtualenv (lightweight) --
+echo "==> API virtualenv ($BACKEND_DIR/.venv)"
+if [[ ! -d "$BACKEND_DIR/.venv" ]]; then
+  echo "    Creating venv with $PYTHON_API ..."
+  "$PYTHON_API" -m venv "$BACKEND_DIR/.venv"
 fi
-
-echo "Installing backend dependencies..."
+echo "    Installing / updating API dependencies..."
+"$BACKEND_DIR/.venv/bin/python" -m pip install -q --upgrade pip
 "$BACKEND_DIR/.venv/bin/pip" install -q -r "$BACKEND_DIR/requirements.txt"
+echo ""
 
-# -- Set up skillsbench venv if needed --
-if [ ! -d "$SKILLSBENCH_DIR/.venv" ]; then
-  echo "Creating skillsbench virtual environment..."
-  python3 -m venv "$SKILLSBENCH_DIR/.venv"
+# -- Skillsbench virtualenv (Harbor / eval tooling) --
+if [[ "${SKIP_SKILLSBENCH:-0}" == "1" ]]; then
+  echo "==> Skillsbench virtualenv (skipped: SKIP_SKILLSBENCH=1)"
+  echo "    Skill evaluation subprocess will not work until you run:"
+  echo "      cd $SKILLSBENCH_DIR && $PYTHON_BENCH -m venv .venv && .venv/bin/pip install -e ."
+  echo ""
+else
+  echo "==> Skillsbench virtualenv ($SKILLSBENCH_DIR/.venv)"
+  echo "    Using interpreter: $PYTHON_BENCH (skillsbench requires Python >= 3.12)"
+  if [[ ! -d "$SKILLSBENCH_DIR/.venv" ]]; then
+    echo "    Creating venv (first run can take several minutes: Harbor installs from GitHub)..."
+    "$PYTHON_BENCH" -m venv "$SKILLSBENCH_DIR/.venv"
+  fi
+  echo "    Installing / updating editable skillsbench package..."
+  "$SKILLSBENCH_DIR/.venv/bin/python" -m pip install -q --upgrade pip
+  "$SKILLSBENCH_DIR/.venv/bin/pip" install -e "$SKILLSBENCH_DIR"
+  echo ""
 fi
 
-echo "Installing skillsbench dependencies..."
-"$SKILLSBENCH_DIR/.venv/bin/pip" install -q -e "$SKILLSBENCH_DIR"
+# -- Start processes --
+echo "==> Starting servers"
+echo "    API:      http://localhost:8000"
+echo "    Frontend: http://localhost:5173"
+echo ""
 
-# -- Start backend --
-echo "Starting backend on http://localhost:8000 ..."
-(cd "$BACKEND_DIR" && .venv/bin/uvicorn server:app --reload --port 8000) &
+(cd "$BACKEND_DIR" && .venv/bin/uvicorn server:app --reload --host 127.0.0.1 --port 8000) &
 PIDS+=($!)
 
-# -- Start frontend dev server --
-echo "Starting frontend on http://localhost:5173 ..."
 (cd "$FRONTEND_DIR" && npm run dev) &
 PIDS+=($!)
 
-echo ""
-echo "Both services are running. Press Ctrl+C to stop."
+echo "Press Ctrl+C to stop both."
 wait

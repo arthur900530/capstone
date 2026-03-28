@@ -1,0 +1,5 @@
+trial_name,task_name,reward,duration_sec,n_input_tokens,n_output_tokens,exception_info
+trial-001,surface-area-cube,1.0,10.2,1880,410,
+trial-002,volume-sphere,1.0,9.8,1720,395,
+trial-003,normals-tetrahedron,0.5,12.4,2050,480,
+trial-004,manifold-check,1.0,12.4,2250,415,
