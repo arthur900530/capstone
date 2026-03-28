@@ -1,5 +1,5 @@
 # Python virtual environments
-.venv/
+**.venv/
 venv/
 env/
 skillsbench_backend/.venv/
