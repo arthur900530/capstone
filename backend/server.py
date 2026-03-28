@@ -982,67 +982,6 @@ async def get_skill_file_content(skill_id: str, filename: str):
     if file_exists:
         return {"filename": filename, "content": f"# {filename}\n\n(File content placeholder)"}
     raise HTTPException(status_code=404, detail="File not found")
-async def _run_skill_eval_background(skill_id: str):
-    """Run skill evaluation in similarity-only mode (no Harbor) for a new skill."""
-    logger.info(f"[skill-eval-bg] Starting evaluation for new skill: {skill_id}")
-    try:
-        # Build command: python skillsbench/experiments/skill_evaluation_framework.py ...
-        eval_script = _SKILLSBENCH_ROOT / "experiments" / "skill_evaluation_framework.py"
-        tasks_dir = _SKILLSBENCH_ROOT / "tasks"
-        skills_dir = _SKILLS_DIR
-        
-        cmd = [
-            sys.executable, str(eval_script),
-            "--skills-dir", str(skills_dir),
-            "--skill", skill_id,
-            "--tasks-dir", str(tasks_dir),
-            # run in similarity-only mode, so NO --run flag
-        ]
-        
-        # Read optional env var overrides (the framework uses defaults if unset)
-        embedding_model = os.getenv("EVAL_EMBEDDING_MODEL")
-        if embedding_model:
-            cmd.extend(["--embedding-model", embedding_model])
-            
-        threshold = os.getenv("EVAL_THRESHOLD")
-        if threshold:
-            cmd.extend(["--threshold", threshold])
-            
-        agent_name = os.getenv("EVAL_AGENT_NAME")
-        if agent_name:
-            cmd.extend(["--agent-name", agent_name])
-            
-        model_name = os.getenv("EVAL_MODEL_NAME")
-        if model_name:
-            cmd.extend(["--model-name", model_name])
-            
-        base_config = os.getenv("EVAL_BASE_CONFIG")
-        if base_config:
-            # base config might be relative to skillsbench root
-            cmd.extend(["--base-config", base_config])
-            
-        # The framework uses OPENAI_API_KEY from environment directly via litellm
-        
-        logger.info(f"[skill-eval-bg] Command: {' '.join(cmd)}")
-        
-        process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=str(Path(__file__).resolve().parent) # run from backend/ so config paths resolve
-        )
-        
-        stdout, stderr = await process.communicate()
-        
-        if process.returncode == 0:
-            logger.info(f"[skill-eval-bg] Evaluation for {skill_id} completed successfully.")
-        else:
-            logger.error(f"[skill-eval-bg] Evaluation for {skill_id} failed with code {process.returncode}")
-            logger.error(f"[skill-eval-bg] STDOUT:\n{stdout.decode()}")
-            logger.error(f"[skill-eval-bg] STDERR:\n{stderr.decode()}")
-            
-    except Exception as e:
-        logger.error(f"[skill-eval-bg] Background evaluation crashed: {e}", exc_info=True)
 
 
 @app.post("/api/skills/train")
@@ -1072,8 +1011,6 @@ async def train_skills(files: list[UploadFile] = File(...)):
             if sid not in existing_ids:
                 _SKILLS[sid] = skill
                 new_skills.append(skill)
-                # Auto-trigger evaluation for the new skill!
-                asyncio.create_task(_run_skill_eval_background(sid))
             else:
                 _SKILLS[sid] = skill
 

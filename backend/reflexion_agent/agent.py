@@ -19,7 +19,7 @@ from openhands.tools.task_tracker import TaskTrackerTool
 from openhands.tools.terminal import TerminalTool
 from openhands.workspace import DockerWorkspace
 
-from reflexion import evaluate_trajectory, generate_reflection, ReflexionMemory
+from reflexion_agent import evaluate_trajectory, generate_reflection, ReflexionMemory
 
 
 # Reflexion configuration (read from .env, disabled by default)
