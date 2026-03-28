@@ -17,7 +17,7 @@ from prompts import MMSkillTrainer_PROMPT_TEMPLATE
 dotenv.load_dotenv()
 
 BASE_URL = os.getenv("BASE_URL")
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+OPENROUTER_API_KEY = os.getenv("API_KEY")
 MODEL_NAME = "google/gemini-3-flash-preview"
 
 client = openai.OpenAI(base_url=BASE_URL, api_key=OPENROUTER_API_KEY)
