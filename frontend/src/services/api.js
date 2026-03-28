@@ -122,7 +122,21 @@ export async function trainSkillsFromMedia(files) {
   return res.json();
 }
 
-export async function streamChat({ question, sessionId, model, maxTrials, confidenceThreshold, files }, onEvent) {
+export async function uploadFiles(sessionId, files) {
+  const form = new FormData();
+  for (const f of files) form.append("files", f);
+  const url = sessionId
+    ? `${API_BASE}/upload?session_id=${encodeURIComponent(sessionId)}`
+    : `${API_BASE}/upload`;
+  const res = await fetch(url, { method: "POST", body: form });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Upload failed: ${text}`);
+  }
+  return res.json();
+}
+
+export async function streamChat({ question, sessionId, model, maxTrials, confidenceThreshold, files, skillIds, mountDir }, onEvent) {
   const res = await fetch(`${API_BASE}/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -133,6 +147,8 @@ export async function streamChat({ question, sessionId, model, maxTrials, confid
       max_trials: maxTrials,
       confidence_threshold: confidenceThreshold,
       files: files || undefined,
+      skill_ids: skillIds?.length ? skillIds : undefined,
+      mount_dir: mountDir || undefined,
     }),
   });
 

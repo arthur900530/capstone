@@ -5,6 +5,10 @@ import {
   ChevronDown,
   ArrowUp,
   Loader2,
+  X,
+  Wrench,
+  Check,
+  FolderOpen,
 } from "lucide-react";
 
 const MODEL_OPTIONS = [
@@ -22,15 +26,42 @@ export default function InputBox({
   onConfigChange,
   stagedFiles,
   onFilesChange,
+  skills = [],
+  selectedSkillIds = [],
+  onSelectedSkillsChange,
+  skipConfirm = false,
+  onSkipConfirmChange,
+  mountDir = "",
+  onMountDirChange,
 }) {
   const [text, setText] = useState("");
   const [isFocused, setIsFocused] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
   const [showModelPicker, setShowModelPicker] = useState(false);
+  const [showSkillPicker, setShowSkillPicker] = useState(false);
+  const [showWorkspacePicker, setShowWorkspacePicker] = useState(false);
+  const [workspaceInput, setWorkspaceInput] = useState("");
+  const [pendingSubmit, setPendingSubmit] = useState(null);
   const fileInputRef = useRef(null);
   const modelRef = useRef(null);
+  const skillRef = useRef(null);
+  const workspaceRef = useRef(null);
 
   const files = stagedFiles ?? [];
+
+  const closeAllPopups = () => {
+    setShowModelPicker(false);
+    setShowSkillPicker(false);
+    setShowWorkspacePicker(false);
+  };
+
+  const toggleSkill = (skillId) => {
+    onSelectedSkillsChange?.(
+      selectedSkillIds.includes(skillId)
+        ? selectedSkillIds.filter((id) => id !== skillId)
+        : [...selectedSkillIds, skillId]
+    );
+  };
 
   const handleFileChange = (e) => {
     const picked = Array.from(e.target.files);
@@ -96,6 +127,41 @@ export default function InputBox({
           </div>
         )}
 
+        {selectedSkillIds.length > 0 && (
+          <div className="flex flex-wrap gap-1.5 px-5 pt-3">
+            {selectedSkills.map((skill) => (
+              <span
+                key={skill.id}
+                className="flex items-center gap-1.5 rounded-md bg-accent-teal/10 px-2.5 py-1 text-[11px] font-medium text-accent-teal"
+              >
+                <Wrench size={11} />
+                {skill.name}
+                <button
+                  onClick={() => toggleSkill(skill.id)}
+                  className="ml-0.5 text-accent-teal/60 hover:text-accent-teal"
+                >
+                  <X size={11} />
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+
+        {mountDir && (
+          <div className="flex flex-wrap gap-1.5 px-5 pt-3">
+            <span className="flex items-center gap-1.5 rounded-md bg-accent-deep/15 px-2.5 py-1 text-[11px] font-medium text-accent-deep">
+              <FolderOpen size={11} />
+              {mountDir}
+              <button
+                onClick={() => onMountDirChange?.("")}
+                className="ml-0.5 text-accent-deep/60 hover:text-accent-deep"
+              >
+                <X size={11} />
+              </button>
+            </span>
+          </div>
+        )}
+
         <textarea
           value={text}
           onChange={(e) => setText(e.target.value)}
@@ -126,6 +192,139 @@ export default function InputBox({
               <span className="text-xs">Files</span>
             </button>
 
+            <div className="relative" ref={skillRef}>
+              <button
+                onClick={() => {
+                  setShowSkillPicker(!showSkillPicker);
+                  setShowModelPicker(false);
+                }}
+                className={`flex h-8 items-center gap-1 rounded-lg px-2 transition-colors hover:bg-surface-hover ${
+                  selectedSkillIds.length > 0
+                    ? "text-accent-teal"
+                    : "text-text-muted hover:text-text-secondary"
+                }`}
+              >
+                <Wrench size={14} />
+                <span className="text-xs">Skills</span>
+                {selectedSkillIds.length > 0 && (
+                  <span className="flex h-4 min-w-4 items-center justify-center rounded-full bg-accent-teal/20 px-1 text-[10px] font-semibold text-accent-teal">
+                    {selectedSkillIds.length}
+                  </span>
+                )}
+              </button>
+
+              {showSkillPicker && (
+                <div className="absolute bottom-10 left-0 z-50 w-72 rounded-xl border border-border bg-charcoal shadow-xl">
+                  <div className="flex items-center justify-between px-3 py-2.5 border-b border-border/50">
+                    <span className="text-xs font-medium text-text-primary">Skills</span>
+                    <button onClick={() => setShowSkillPicker(false)} className="text-text-muted hover:text-text-primary">
+                      <X size={14} />
+                    </button>
+                  </div>
+                  {skills.length === 0 ? (
+                    <p className="px-3 py-4 text-center text-xs text-text-muted">No skills available</p>
+                  ) : (
+                    <div className="max-h-52 overflow-y-auto py-1">
+                      {skills.map((skill) => (
+                        <button
+                          key={skill.id}
+                          onClick={() => toggleSkill(skill.id)}
+                          className="flex w-full items-start gap-2.5 px-3 py-2 text-left transition-colors hover:bg-surface"
+                        >
+                          <div
+                            className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded border transition-colors ${
+                              selectedSkillIds.includes(skill.id)
+                                ? "border-accent-teal bg-accent-teal"
+                                : "border-text-muted/50"
+                            }`}
+                          >
+                            {selectedSkillIds.includes(skill.id) && (
+                              <Check size={10} className="text-white" />
+                            )}
+                          </div>
+                          <div className="min-w-0">
+                            <p className="text-xs font-medium text-text-primary">{skill.name}</p>
+                            <p className="truncate text-[11px] text-text-muted">{skill.description}</p>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            <div className="relative" ref={workspaceRef}>
+              <button
+                onClick={() => {
+                  setShowWorkspacePicker(!showWorkspacePicker);
+                  setShowModelPicker(false);
+                  setShowSkillPicker(false);
+                  if (!showWorkspacePicker) setWorkspaceInput(mountDir);
+                }}
+                className={`flex h-8 items-center gap-1 rounded-lg px-2 transition-colors hover:bg-surface-hover ${
+                  mountDir
+                    ? "text-accent-deep"
+                    : "text-text-muted hover:text-text-secondary"
+                }`}
+              >
+                <FolderOpen size={14} />
+                <span className="text-xs">Workspace</span>
+              </button>
+
+              {showWorkspacePicker && (
+                <div className="absolute bottom-10 left-0 z-50 w-80 rounded-xl border border-border bg-charcoal shadow-xl">
+                  <div className="flex items-center justify-between px-3 py-2.5 border-b border-border/50">
+                    <span className="text-xs font-medium text-text-primary">Mount Directory</span>
+                    <button onClick={() => setShowWorkspacePicker(false)} className="text-text-muted hover:text-text-primary">
+                      <X size={14} />
+                    </button>
+                  </div>
+                  <div className="p-3">
+                    <p className="mb-2 text-[11px] text-text-muted">
+                      Absolute path to mount into the agent container
+                    </p>
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        value={workspaceInput}
+                        onChange={(e) => setWorkspaceInput(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            onMountDirChange?.(workspaceInput.trim());
+                            setShowWorkspacePicker(false);
+                          }
+                        }}
+                        placeholder="/path/to/project"
+                        className="flex-1 rounded-lg border border-border bg-surface px-3 py-1.5 text-xs text-text-primary placeholder-text-muted outline-none focus:border-accent-teal/50"
+                        autoFocus
+                      />
+                      <button
+                        onClick={() => {
+                          onMountDirChange?.(workspaceInput.trim());
+                          setShowWorkspacePicker(false);
+                        }}
+                        className="rounded-lg bg-accent-teal px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-accent-teal/90"
+                      >
+                        Set
+                      </button>
+                    </div>
+                    {mountDir && (
+                      <button
+                        onClick={() => {
+                          onMountDirChange?.("");
+                          setWorkspaceInput("");
+                          setShowWorkspacePicker(false);
+                        }}
+                        className="mt-2 text-[11px] text-text-muted hover:text-red-400 transition-colors"
+                      >
+                        Clear workspace
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
 
           <div className="flex items-center gap-2">

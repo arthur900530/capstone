@@ -66,6 +66,36 @@ elif _agent_import_error:
 else:
     logger.info("Real agent mode DISABLED — MODEL/API_KEY env vars not set")
 
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Real-agent feature flag
+# ---------------------------------------------------------------------------
+REAL_AGENT_ENABLED = True
+
+_agent_import_error: str | None = None
+if REAL_AGENT_ENABLED:
+    try:
+        from agent import runtime as _agent_runtime
+        from openhands.sdk.event import (
+            ActionEvent,
+            ObservationEvent,
+            MessageEvent,
+            AgentErrorEvent,
+        )
+        from openhands.sdk.event.conversation_error import ConversationErrorEvent
+    except ImportError as exc:
+        _agent_import_error = str(exc)
+        REAL_AGENT_ENABLED = False
+
+if REAL_AGENT_ENABLED:
+    logger.info("Real agent mode ENABLED (model=%s)", os.getenv("MODEL"))
+elif _agent_import_error:
+    logger.warning("Real agent mode DISABLED — import error: %s", _agent_import_error)
+else:
+    logger.info("Real agent mode DISABLED — MODEL/API_KEY env vars not set")
+
 app = FastAPI(title="Mock Reflexion Finance Agent API")
 
 app.add_middleware(

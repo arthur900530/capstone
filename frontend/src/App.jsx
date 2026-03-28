@@ -9,6 +9,7 @@ import EvaluationView from "./components/EvaluationView";
 import SkillsView from "./components/SkillsView";
 import {
   streamChat,
+  uploadFiles,
   fetchChats,
   fetchChatById,
   fetchAgents,
@@ -123,6 +124,9 @@ export default function App() {
   const [stagedFiles, setStagedFiles] = useState([]);
   const [skills, setSkills] = useState([]);
   const [focusAgentId, setFocusAgentId] = useState(null);
+  const [mountDir, setMountDir] = useState("");
+  const [selectedSkillIds, setSelectedSkillIds] = useState([]);
+  const [skipSkillConfirm, setSkipSkillConfirm] = useState(false);
   const [config, setConfig] = useState({
     model: "",
     maxTrials: 3,
@@ -211,6 +215,9 @@ export default function App() {
   const handleSubmit = async (question, submittedFiles = []) => {
     if (!question.trim() || isStreaming) return;
 
+    const sid = sessionId || crypto.randomUUID();
+    if (!sessionId) setSessionId(sid);
+
     if (submittedFiles.length > 0) {
       const fileMeta = submittedFiles.map((f) => ({
         name: f.name,
@@ -227,16 +234,22 @@ export default function App() {
     setIsStreaming(true);
 
     try {
+      if (submittedFiles.length > 0) {
+        await uploadFiles(sid, submittedFiles);
+      }
+
       await streamChat(
         {
           question,
-          sessionId,
+          sessionId: sid,
           model: config.model || undefined,
           maxTrials: config.maxTrials,
           confidenceThreshold: config.confidenceThreshold,
           files: submittedFiles.length > 0
             ? submittedFiles.map((f) => ({ name: f.name, size: f.size, type: f.type }))
             : undefined,
+          skillIds: selectedSkillIds,
+          mountDir: mountDir || undefined,
         },
         (eventType, data) => {
           let msg = null;
@@ -350,6 +363,8 @@ export default function App() {
     setVisibleAgent(null);
     setChatFiles([]);
     setStagedFiles([]);
+    setSkipSkillConfirm(false);
+    setMountDir("");
     visibleAgentRef.current = null;
     sentinelRefs.current.clear();
   };
@@ -464,6 +479,13 @@ export default function App() {
               onConfigChange={setConfig}
               stagedFiles={stagedFiles}
               onFilesChange={setStagedFiles}
+              skills={skills}
+              selectedSkillIds={selectedSkillIds}
+              onSelectedSkillsChange={setSelectedSkillIds}
+              skipConfirm={skipSkillConfirm}
+              onSkipConfirmChange={setSkipSkillConfirm}
+              mountDir={mountDir}
+              onMountDirChange={setMountDir}
             />
           </div>
         </>
@@ -482,6 +504,13 @@ export default function App() {
               onConfigChange={setConfig}
               stagedFiles={stagedFiles}
               onFilesChange={setStagedFiles}
+              skills={skills}
+              selectedSkillIds={selectedSkillIds}
+              onSelectedSkillsChange={setSelectedSkillIds}
+              skipConfirm={skipSkillConfirm}
+              onSkipConfirmChange={setSkipSkillConfirm}
+              mountDir={mountDir}
+              onMountDirChange={setMountDir}
             />
           </div>
         </div>
