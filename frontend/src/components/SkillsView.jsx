@@ -9,8 +9,6 @@ import {
   Save,
   X,
   Code,
-  Shield,
-  User,
   Pencil,
   Paperclip,
   ChevronDown,
@@ -462,14 +460,8 @@ function SkillListItem({ skill, isSelected, onSelect, onFileClick }) {
             : "text-text-secondary hover:bg-surface/50 hover:text-text-primary"
         }`}
       >
-        <div
-          className={`mt-0.5 shrink-0 rounded-md p-1.5 ${
-            skill.type === "builtin"
-              ? "bg-accent-teal/10 text-accent-teal"
-              : "bg-purple-500/10 text-purple-400"
-          }`}
-        >
-          {skill.type === "builtin" ? <Shield size={13} /> : <User size={13} />}
+        <div className="mt-0.5 shrink-0 rounded-md p-1.5 bg-accent-teal/10 text-accent-teal">
+          <Wrench size={13} />
         </div>
         <div className="min-w-0 flex-1">
           <p className="truncate text-sm font-medium">{skill.name}</p>
@@ -656,8 +648,6 @@ function SkillEditor({ skill, onSaved, onDeleted, viewingFile, onViewFile }) {
     }
   };
 
-  const isBuiltin = skill.type === "builtin";
-
   if (viewingFile) {
     return (
       <FileViewer
@@ -675,18 +665,9 @@ function SkillEditor({ skill, onSaved, onDeleted, viewingFile, onViewFile }) {
         <div className="flex items-center gap-2">
           <Code size={15} className="text-accent-teal" />
           <h3 className="text-sm font-medium text-text-primary">{skill.name}</h3>
-          <span
-            className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${
-              isBuiltin
-                ? "bg-accent-teal/10 text-accent-teal"
-                : "bg-purple-500/10 text-purple-400"
-            }`}
-          >
-            {skill.type}
-          </span>
         </div>
         <div className="flex items-center gap-1.5">
-          {dirty && !isBuiltin && (
+          {dirty && (
             <button
               onClick={handleSave}
               disabled={saving}
@@ -696,14 +677,12 @@ function SkillEditor({ skill, onSaved, onDeleted, viewingFile, onViewFile }) {
               Save
             </button>
           )}
-          {!isBuiltin && (
-            <button
-              onClick={handleDelete}
-              className="rounded-lg p-1.5 text-text-muted transition-colors hover:bg-red-500/10 hover:text-red-400"
-            >
-              <Trash2 size={14} />
-            </button>
-          )}
+          <button
+            onClick={handleDelete}
+            className="rounded-lg p-1.5 text-text-muted transition-colors hover:bg-red-500/10 hover:text-red-400"
+          >
+            <Trash2 size={14} />
+          </button>
         </div>
       </div>
 
@@ -714,36 +693,24 @@ function SkillEditor({ skill, onSaved, onDeleted, viewingFile, onViewFile }) {
               <Pencil size={12} />
               Name
             </label>
-            {isBuiltin ? (
-              <p className="rounded-lg border border-border/60 bg-[#2a2c31] px-3 py-2 text-sm text-text-primary shadow-[0_2px_12px_rgba(0,0,0,0.25)]">
-                {name}
-              </p>
-            ) : (
-              <input
-                value={name}
-                onChange={handleFieldChange(setName)}
-                className="w-full rounded-lg border border-border/50 bg-charcoal px-3 py-2 text-sm text-text-primary outline-none transition-colors focus:border-accent-teal focus:ring-1 focus:ring-accent-teal/30"
-              />
-            )}
+            <input
+              value={name}
+              onChange={handleFieldChange(setName)}
+              className="w-full rounded-lg border border-border/50 bg-charcoal px-3 py-2 text-sm text-text-primary outline-none transition-colors focus:border-accent-teal focus:ring-1 focus:ring-accent-teal/30"
+            />
           </div>
 
           <div>
             <label className="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-text-secondary">
-              {isBuiltin ? <Shield size={12} /> : <User size={12} />}
+              <Pencil size={12} />
               Description
             </label>
-            {isBuiltin ? (
-              <p className="rounded-lg border border-border/60 bg-[#2a2c31] px-3 py-2 text-sm leading-relaxed text-text-primary shadow-[0_2px_12px_rgba(0,0,0,0.25)]">
-                {description}
-              </p>
-            ) : (
-              <textarea
-                value={description}
-                onChange={handleFieldChange(setDescription)}
-                rows={3}
-                className="w-full resize-none rounded-lg border border-border/50 bg-charcoal px-3 py-2 text-sm text-text-primary outline-none transition-colors focus:border-accent-teal focus:ring-1 focus:ring-accent-teal/30"
-              />
-            )}
+            <textarea
+              value={description}
+              onChange={handleFieldChange(setDescription)}
+              rows={3}
+              className="w-full resize-none rounded-lg border border-border/50 bg-charcoal px-3 py-2 text-sm text-text-primary outline-none transition-colors focus:border-accent-teal focus:ring-1 focus:ring-accent-teal/30"
+            />
           </div>
 
           {/* Files section */}
@@ -758,24 +725,20 @@ function SkillEditor({ skill, onSaved, onDeleted, viewingFile, onViewFile }) {
                   </span>
                 )}
               </label>
-              {!isBuiltin && (
-                <>
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    multiple
-                    onChange={handleAddFiles}
-                    className="hidden"
-                  />
-                  <button
-                    onClick={() => fileInputRef.current?.click()}
-                    className="flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium text-accent-teal transition-colors hover:bg-accent-teal/10"
-                  >
-                    <Upload size={11} />
-                    Add Files
-                  </button>
-                </>
-              )}
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                onChange={handleAddFiles}
+                className="hidden"
+              />
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                className="flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium text-accent-teal transition-colors hover:bg-accent-teal/10"
+              >
+                <Upload size={11} />
+                Add Files
+              </button>
             </div>
             {files.length > 0 ? (
               <div className="rounded-lg border border-border/60 bg-[#2a2c31] shadow-[0_2px_12px_rgba(0,0,0,0.25)]">
@@ -801,14 +764,12 @@ function SkillEditor({ skill, onSaved, onDeleted, viewingFile, onViewFile }) {
                       >
                         {file.name}
                       </button>
-                      {!isBuiltin && (
-                        <button
-                          onClick={() => handleRemoveFile(file.name)}
-                          className="shrink-0 rounded p-0.5 text-text-muted opacity-0 transition-all group-hover:opacity-100 hover:text-red-400"
-                        >
-                          <X size={13} />
-                        </button>
-                      )}
+                      <button
+                        onClick={() => handleRemoveFile(file.name)}
+                        className="shrink-0 rounded p-0.5 text-text-muted opacity-0 transition-all group-hover:opacity-100 hover:text-red-400"
+                      >
+                        <X size={13} />
+                      </button>
                     </div>
                   );
                 })}
@@ -825,18 +786,12 @@ function SkillEditor({ skill, onSaved, onDeleted, viewingFile, onViewFile }) {
               <Code size={12} />
               Definition
             </label>
-            {isBuiltin ? (
-              <pre className="overflow-x-auto rounded-lg border border-border/60 bg-[#2a2c31] p-4 font-mono text-xs leading-relaxed text-text-primary shadow-[0_2px_12px_rgba(0,0,0,0.25)]">
-                {definition}
-              </pre>
-            ) : (
-              <textarea
-                value={definition}
-                onChange={handleFieldChange(setDefinition)}
-                rows={14}
-                className="w-full resize-none rounded-lg border border-border/50 bg-charcoal px-4 py-3 font-mono text-xs leading-relaxed text-text-primary outline-none transition-colors focus:border-accent-teal focus:ring-1 focus:ring-accent-teal/30"
-              />
-            )}
+            <textarea
+              value={definition}
+              onChange={handleFieldChange(setDefinition)}
+              rows={14}
+              className="w-full resize-none rounded-lg border border-border/50 bg-charcoal px-4 py-3 font-mono text-xs leading-relaxed text-text-primary outline-none transition-colors focus:border-accent-teal focus:ring-1 focus:ring-accent-teal/30"
+            />
           </div>
 
           {error && (

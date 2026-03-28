@@ -50,7 +50,7 @@ function AgentBanner({ agent, onViewEval, files = [], onRemoveFile }) {
             </button>
           )}
           <button
-            onClick={() => onViewEval(agent.id)}
+            onClick={onViewEval}
             className="flex items-center gap-1.5 rounded-md bg-accent-teal/10 px-2.5 py-1 text-xs font-medium text-accent-teal transition-colors hover:bg-accent-teal/20"
           >
             <BarChart3 size={13} />
@@ -117,14 +117,12 @@ export default function App() {
   const [isStreaming, setIsStreaming] = useState(false);
   const [sessionId, setSessionId] = useState(null);
   const [visibleAgent, setVisibleAgent] = useState(null);
-  const [focusAgentId, setFocusAgentId] = useState(null);
   const [agents, setAgents] = useState([]);
   const [chats, setChats] = useState([]);
   const [chatFiles, setChatFiles] = useState([]);
   const [stagedFiles, setStagedFiles] = useState([]);
   const [skills, setSkills] = useState([]);
-  const [selectedSkillIds, setSelectedSkillIds] = useState([]);
-  const [skipSkillConfirm, setSkipSkillConfirm] = useState(false);
+  const [focusAgentId, setFocusAgentId] = useState(null);
   const [config, setConfig] = useState({
     model: "",
     maxTrials: 3,
@@ -239,7 +237,6 @@ export default function App() {
           files: submittedFiles.length > 0
             ? submittedFiles.map((f) => ({ name: f.name, size: f.size, type: f.type }))
             : undefined,
-          skillIds: selectedSkillIds,
         },
         (eventType, data) => {
           let msg = null;
@@ -353,7 +350,6 @@ export default function App() {
     setVisibleAgent(null);
     setChatFiles([]);
     setStagedFiles([]);
-    setSkipSkillConfirm(false);
     visibleAgentRef.current = null;
     sentinelRefs.current.clear();
   };
@@ -383,7 +379,6 @@ export default function App() {
       setMessages(restored);
       setChatFiles(chat.files ?? []);
       setStagedFiles([]);
-      setSkipSkillConfirm(false);
       if (agent) {
         visibleAgentRef.current = agent.id;
         setVisibleAgent(agent);
@@ -414,8 +409,8 @@ export default function App() {
     }
   };
 
-  const handleViewAgentEval = (agentId) => {
-    setFocusAgentId(agentId);
+  const handleViewEval = (agentId) => {
+    if (agentId) setFocusAgentId(agentId);
     setActiveTab("evaluation");
   };
 
@@ -440,7 +435,7 @@ export default function App() {
           >
             <AgentBanner
               agent={visibleAgent}
-              onViewEval={handleViewAgentEval}
+              onViewEval={() => handleViewEval(visibleAgent?.id)}
               files={chatFiles}
               onRemoveFile={(i) => setChatFiles((prev) => prev.filter((_, idx) => idx !== i))}
             />
@@ -469,11 +464,6 @@ export default function App() {
               onConfigChange={setConfig}
               stagedFiles={stagedFiles}
               onFilesChange={setStagedFiles}
-              skills={skills}
-              selectedSkillIds={selectedSkillIds}
-              onSelectedSkillsChange={setSelectedSkillIds}
-              skipConfirm={skipSkillConfirm}
-              onSkipConfirmChange={setSkipSkillConfirm}
             />
           </div>
         </>
@@ -492,11 +482,6 @@ export default function App() {
               onConfigChange={setConfig}
               stagedFiles={stagedFiles}
               onFilesChange={setStagedFiles}
-              skills={skills}
-              selectedSkillIds={selectedSkillIds}
-              onSelectedSkillsChange={setSelectedSkillIds}
-              skipConfirm={skipSkillConfirm}
-              onSkipConfirmChange={setSkipSkillConfirm}
             />
           </div>
         </div>

@@ -1,14 +1,14 @@
 const API_BASE = "/api";
 
-export async function fetchEvaluations() {
-  const res = await fetch(`${API_BASE}/evaluations`);
-  if (!res.ok) throw new Error(`Failed to load evaluations: ${res.status}`);
-  return res.json();
-}
-
 export async function fetchSkillEvals() {
   const res = await fetch(`${API_BASE}/skill-evals`);
   if (!res.ok) throw new Error(`Failed to load skill evals: ${res.status}`);
+  return res.json();
+}
+
+export async function fetchEvaluations() {
+  const res = await fetch(`${API_BASE}/evaluations`);
+  if (!res.ok) throw new Error(`Failed to load evaluations: ${res.status}`);
   return res.json();
 }
 
@@ -122,7 +122,7 @@ export async function trainSkillsFromMedia(files) {
   return res.json();
 }
 
-export async function streamChat({ question, sessionId, model, maxTrials, confidenceThreshold, files, skillIds }, onEvent) {
+export async function streamChat({ question, sessionId, model, maxTrials, confidenceThreshold, files }, onEvent) {
   const res = await fetch(`${API_BASE}/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -133,7 +133,6 @@ export async function streamChat({ question, sessionId, model, maxTrials, confid
       max_trials: maxTrials,
       confidence_threshold: confidenceThreshold,
       files: files || undefined,
-      skill_ids: skillIds?.length ? skillIds : undefined,
     }),
   });
 

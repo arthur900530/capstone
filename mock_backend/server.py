@@ -13,7 +13,6 @@ import os
 import asyncio
 import csv as _csv
 import json
-import os
 import pathlib as _pathlib
 import random
 import re
@@ -24,6 +23,9 @@ import uuid
 import yaml as _yaml
 from datetime import datetime, timezone
 from typing import Any
+
+from dotenv import load_dotenv
+load_dotenv()
 
 from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -93,56 +95,8 @@ def _resolve_agent(model: str | None, is_task: bool) -> dict:
     return _AGENTS[_DEFAULT_TASK_AGENT if is_task else _DEFAULT_CHAT_AGENT]
 
 
-_SKILLS_DIR = os.path.join(os.path.dirname(__file__), "skills")
+_SKILLS: dict[str, dict] = {}
 
-
-def _load_skills_from_disk() -> dict[str, dict]:
-    """Scan ./skills/ and return a dict of skill objects keyed by id."""
-    skills: dict[str, dict] = {}
-    if not os.path.isdir(_SKILLS_DIR):
-        return skills
-    for skill in os.listdir(_SKILLS_DIR):
-        skill_path = os.path.join(_SKILLS_DIR, skill)
-        skill_md = os.path.join(skill_path, "SKILL.md")
-        if not os.path.isdir(skill_path) or not os.path.isfile(skill_md):
-            continue
-        fs = []
-        for _root, _dirs, filenames in os.walk(skill_path):
-            for fname in filenames:
-                # Capture only the file structure relative to that skill
-                fpath_relative = os.path.relpath(_root, skill_path)
-                fpath_relative = os.path.join(fpath_relative, fname)
-                fpath = os.path.join(_root, fname)
-                fs.append({"name": fpath_relative, "size": os.path.getsize(fpath), "type": mimetypes.guess_type(fpath)[0]})
-        skills[skill] = {
-            "id": skill,
-            "name": " ".join(word.capitalize() for word in skill.split("-")),
-            "description": "Placeholder description for the skill",
-            "type": "builtin",
-            "files": fs,
-            "definition": open(skill_md).read(),
-            "created_at": os.path.getctime(skill_md),
-            "updated_at": os.path.getmtime(skill_md),
-        }
-    return skills
-
-
-
-def _load_file_contents_from_disk() -> dict[str, dict[str, str]]:
-    """Scan ./skills/ and return a dict of file contents keyed by skill id and file path."""
-    file_contents: dict[str, dict[str, str]] = {}
-    for skill in _SKILLS.values():
-        if skill["id"] not in file_contents:
-            file_contents[skill["id"]] = {}
-        for file in skill["files"]:
-            fpath = os.path.join(_SKILLS_DIR, skill["id"], file["name"])
-            file_contents[skill["id"]][file["name"]] = open(fpath).read()
-    return file_contents
-
-
-_SKILLS: dict[str, dict] = _load_skills_from_disk()
-_FILE_CONTENTS: dict[str, dict[str, str]] = _load_file_contents_from_disk()
-        
 
 _COMPANY_PATTERNS = re.compile(
     r"\b(Apple|Google|Alphabet|Microsoft|Tesla|Amazon|Meta|Facebook|Netflix|Nvidia"
@@ -492,84 +446,6 @@ async def list_agents():
     return list(_AGENTS.values())
 
 
-@app.get("/api/evaluations")
-async def evaluations():
-    return [
-        {
-            "run_id": "20250310_14-30-22_bench",
-            "agent_id": "agent-claude-full",
-            "timestamp": "2025-03-10 14:30:22",
-            "task_success": {"passed": 16, "total": 20, "rate": 0.80},
-            "step_success": {"passed": 142, "total": 168, "rate": 0.845},
-            "category_success": {
-                "Web Search": {"passed": 45, "total": 50, "rate": 0.90},
-                "SEC Filing Retrieval": {"passed": 28, "total": 35, "rate": 0.80},
-                "Numerical Reasoning": {"passed": 38, "total": 45, "rate": 0.844},
-                "Data Synthesis": {"passed": 31, "total": 38, "rate": 0.816},
-            },
-            "latency": {
-                "avg_ms": 3200,
-                "p50_ms": 2800,
-                "p95_ms": 6500,
-                "p99_ms": 9200,
-            },
-            "hallucination": {
-                "total_claims": 120,
-                "hallucinated": 8,
-                "rate": 0.067,
-            },
-        },
-        {
-            "run_id": "20250308_09-15-47_bench",
-            "agent_id": "agent-gpt4o-web",
-            "timestamp": "2025-03-08 09:15:47",
-            "task_success": {"passed": 14, "total": 20, "rate": 0.70},
-            "step_success": {"passed": 128, "total": 172, "rate": 0.744},
-            "category_success": {
-                "Web Search": {"passed": 42, "total": 50, "rate": 0.84},
-                "SEC Filing Retrieval": {"passed": 22, "total": 35, "rate": 0.629},
-                "Numerical Reasoning": {"passed": 35, "total": 45, "rate": 0.778},
-                "Data Synthesis": {"passed": 29, "total": 42, "rate": 0.690},
-            },
-            "latency": {
-                "avg_ms": 4100,
-                "p50_ms": 3600,
-                "p95_ms": 8200,
-                "p99_ms": 11500,
-            },
-            "hallucination": {
-                "total_claims": 115,
-                "hallucinated": 14,
-                "rate": 0.122,
-            },
-        },
-        {
-            "run_id": "20250305_18-02-11_bench",
-            "agent_id": "agent-claude-lite",
-            "timestamp": "2025-03-05 18:02:11",
-            "task_success": {"passed": 15, "total": 20, "rate": 0.75},
-            "step_success": {"passed": 135, "total": 170, "rate": 0.794},
-            "category_success": {
-                "Web Search": {"passed": 44, "total": 50, "rate": 0.88},
-                "SEC Filing Retrieval": {"passed": 26, "total": 35, "rate": 0.743},
-                "Numerical Reasoning": {"passed": 36, "total": 45, "rate": 0.80},
-                "Data Synthesis": {"passed": 29, "total": 40, "rate": 0.725},
-            },
-            "latency": {
-                "avg_ms": 3500,
-                "p50_ms": 3000,
-                "p95_ms": 7100,
-                "p99_ms": 9800,
-            },
-            "hallucination": {
-                "total_claims": 118,
-                "hallucinated": 10,
-                "rate": 0.085,
-            },
-        },
-    ]
-
-
 class SkillFileMetadata(BaseModel):
     name: str
     size: int | None = None
@@ -609,7 +485,7 @@ async def create_skill(body: SkillCreate, background_tasks: BackgroundTasks):
         "id": skill_id,
         "name": body.name,
         "description": body.description,
-        "type": "user",
+        "type": "skill",
         "files": [f.model_dump(exclude_none=True) for f in body.files] if body.files else [],
         "definition": body.definition,
         "created_at": _now_iso(),
@@ -617,8 +493,8 @@ async def create_skill(body: SkillCreate, background_tasks: BackgroundTasks):
     }
     print(f"\n[skill pipeline] Step 1/3 — Writing '{body.name}' to skills-pool (id: {skill_id})")
     try:
-        folder_name = _write_skill_to_pool(skill)  # pool is source of truth
-        _load_skills_from_pool()                    # sync cache from pool
+        folder_name = _write_skill_to_pool(skill)
+        _load_skills_from_pool()
         print(f"[skill pipeline] Step 2/3 — SKILL.md written to skills-pool/{folder_name}/")
         background_tasks.add_task(_run_skill_eval, folder_name)
         print(f"[skill pipeline] Step 3/3 — Evaluation scheduled (runs in background)")
@@ -670,8 +546,6 @@ async def remove_skill_file(skill_id: str, filename: str):
 async def delete_skill(skill_id: str):
     if skill_id not in _SKILLS:
         raise HTTPException(status_code=404, detail="Skill not found")
-    if _SKILLS[skill_id]["type"] == "builtin":
-        raise HTTPException(status_code=403, detail="Cannot delete builtin skills")
     del _SKILLS[skill_id]
     return {"ok": True}
 
@@ -680,12 +554,10 @@ async def delete_skill(skill_id: str):
 async def get_skill_file_content(skill_id: str, filename: str):
     if skill_id not in _SKILLS:
         raise HTTPException(status_code=404, detail="Skill not found")
-    skill_files = _FILE_CONTENTS.get(skill_id, {})
-    if filename in skill_files:
-        return {"filename": filename, "content": skill_files[filename]}
-    file_exists = any(f["name"] == filename for f in _SKILLS[skill_id].get("files", []))
-    if file_exists:
-        return {"filename": filename, "content": f"# {filename}\n\n(File content placeholder)"}
+    folder_name = skill_id.replace("_", "-")
+    fpath = _SKILLS_POOL_DIR / folder_name / filename
+    if fpath.exists() and fpath.is_file():
+        return {"filename": filename, "content": fpath.read_text(encoding="utf-8")}
     raise HTTPException(status_code=404, detail="File not found")
 
 
@@ -710,14 +582,8 @@ async def train_skills(files: list[UploadFile] = File(...)):
         trainer = MMSkillTrainer()
         await asyncio.to_thread(trainer.train, saved_paths)
 
-        refreshed = _load_skills_from_disk()
-        new_skills = []
-        for sid, skill in refreshed.items():
-            if sid not in existing_ids:
-                _SKILLS[sid] = skill
-                new_skills.append(skill)
-            else:
-                _SKILLS[sid] = skill
+        _load_skills_from_pool()
+        new_skills = [s for sid, s in _SKILLS.items() if sid not in existing_ids]
 
         return new_skills
     except Exception as e:
@@ -725,6 +591,10 @@ async def train_skills(files: list[UploadFile] = File(...)):
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
+
+# ---------------------------------------------------------------------------
+# Skillsbench integration — skills pool, evaluation pipeline, eval results
+# ---------------------------------------------------------------------------
 
 _SKILLSBENCH_ROOT = _pathlib.Path(__file__).parent.parent / "skillsbench_backend"
 _SKILLSBENCH_RUNS = _SKILLSBENCH_ROOT / "experiments" / "skill-eval-runs"
@@ -761,14 +631,7 @@ def _write_skill_to_pool(skill: dict) -> str:
 
 
 def _load_skills_from_pool() -> None:
-    """Load all skills from skillsbench/skills-pool into _SKILLS on startup.
-
-    - Provides persistence: user-created skills survive server restarts
-      because they were already written to the pool on creation.
-    - Makes pool skills (e.g. mesh-analysis, azure-bgp) visible in the
-      frontend Skills tab without any frontend changes.
-    - Skips builtin skills already registered in _SKILLS (e.g. web_search).
-    """
+    """Load all skills from skillsbench/skills-pool into _SKILLS on startup."""
     if not _SKILLS_POOL_DIR.exists():
         return
     for skill_dir in sorted(_SKILLS_POOL_DIR.iterdir()):
@@ -781,7 +644,7 @@ def _load_skills_from_pool() -> None:
         folder_name = skill_dir.name
         skill_id = folder_name.replace("-", "_")
         if skill_id in _SKILLS:
-            continue  # builtin already registered — don't overwrite
+            continue
 
         content = skill_md_path.read_text(encoding="utf-8")
         parts = content.split("---", 2)
@@ -790,19 +653,25 @@ def _load_skills_from_pool() -> None:
         description = str(fm.get("description", ""))
         body = parts[2].strip() if len(parts) >= 3 else content
 
-        skill_type = "user" if folder_name.startswith("user-") else "pool"
+        fs = []
+        for _root, _dirs, filenames in os.walk(skill_dir):
+            for fname in filenames:
+                rel = os.path.relpath(os.path.join(_root, fname), skill_dir)
+                full = os.path.join(_root, fname)
+                fs.append({"name": rel, "size": os.path.getsize(full), "type": mimetypes.guess_type(full)[0]})
+
         now = _now_iso()
         _SKILLS[skill_id] = {
             "id": skill_id,
             "name": name,
             "description": description,
-            "type": skill_type,
-            "files": [],
+            "type": "skill",
+            "files": fs,
             "definition": body,
             "created_at": now,
             "updated_at": now,
         }
-        print(f"[pool] Loaded '{name}' ({skill_type})")
+        print(f"[pool] Loaded '{name}'")
 
 
 _load_skills_from_pool()
@@ -820,17 +689,25 @@ _EVAL_MODEL_NAME = os.getenv("EVAL_MODEL_NAME", "openai/gpt-5.2-codex")
 
 
 async def _run_skill_eval(folder_name: str) -> None:
-    """Run skill_evaluation_framework.py for a newly added skill (background task).
-
-    Uses the skillsbench .venv python and prepends its bin/ to PATH so that
-    harbor (installed there) is resolvable by the framework's subprocess calls.
-    Logs to skillsbench/experiments/skill-eval-logs/<folder_name>.log.
-    """
+    """Run skill_evaluation_framework.py for a newly added skill (background task)."""
     venv_bin = _SKILLSBENCH_ROOT / ".venv" / "bin"
-    python = str(venv_bin / "python3")
+    python = venv_bin / "python3"
+
+    if not python.exists():
+        print(
+            f"[skill eval] SKIPPED — skillsbench venv not found at {venv_bin}. "
+            f"Set up the venv to enable automatic evaluation:\n"
+            f"  cd {_SKILLSBENCH_ROOT} && python3 -m venv .venv && .venv/bin/pip install -e ."
+        )
+        return
+
+    framework = _SKILLSBENCH_ROOT / "experiments" / "skill_evaluation_framework.py"
+    if not framework.exists():
+        print(f"[skill eval] SKIPPED — framework script not found at {framework}")
+        return
 
     cmd = [
-        python,
+        str(python),
         "experiments/skill_evaluation_framework.py",
         "--skills-pool", "skills-pool",
         "--skill", folder_name,
@@ -843,8 +720,6 @@ async def _run_skill_eval(folder_name: str) -> None:
         "--run",
     ]
 
-    # Inherit the current environment but put the skillsbench venv bin first
-    # so that `harbor` (and any other venv tools) are found by the framework.
     env = os.environ.copy()
     env["PATH"] = str(venv_bin) + ":" + env.get("PATH", "")
     env["VIRTUAL_ENV"] = str(_SKILLSBENCH_ROOT / ".venv")
@@ -870,47 +745,226 @@ async def _run_skill_eval(folder_name: str) -> None:
             print(f"[skill eval] '{folder_name}' evaluation finished with exit code {proc.returncode} — check {log_path}")
 
 
+_DEMO_EVALS = [
+    {
+        "run_name": "mesh-analysis-2026-03-25-1830",
+        "skill_name": "Mesh Analysis",
+        "model_name": "openai/gpt-5.1",
+        "created_at": "2026-03-25T18:30:00Z",
+        "selected_tasks": ["surface-area-cube", "volume-sphere", "normals-tetrahedron", "manifold-check"],
+        "pass_rate": 0.85,
+        "mean_reward": 0.82,
+        "n_trials": 4,
+        "pass_rate_no_skills": 0.50,
+        "mean_reward_no_skills": 0.45,
+        "trials": [
+            {"trial_name": "trial-1", "task_name": "surface-area-cube", "reward": "1.0", "duration_sec": "12.3", "n_input_tokens": "1850", "n_output_tokens": "420"},
+            {"trial_name": "trial-2", "task_name": "volume-sphere", "reward": "1.0", "duration_sec": "8.7", "n_input_tokens": "1620", "n_output_tokens": "380"},
+            {"trial_name": "trial-3", "task_name": "normals-tetrahedron", "reward": "0.5", "duration_sec": "15.1", "n_input_tokens": "2100", "n_output_tokens": "510"},
+            {"trial_name": "trial-4", "task_name": "manifold-check", "reward": "1.0", "duration_sec": "9.4", "n_input_tokens": "1730", "n_output_tokens": "350"},
+        ],
+    },
+    {
+        "run_name": "algorithmic-art-2026-03-24-1415",
+        "skill_name": "Algorithmic Art",
+        "model_name": "openai/gpt-4o",
+        "created_at": "2026-03-24T14:15:00Z",
+        "selected_tasks": ["fractal-tree", "voronoi-diagram", "perlin-landscape", "mandelbrot-zoom", "lissajous-curves"],
+        "pass_rate": 0.72,
+        "mean_reward": 0.68,
+        "n_trials": 5,
+        "pass_rate_no_skills": 0.40,
+        "mean_reward_no_skills": 0.35,
+        "trials": [
+            {"trial_name": "trial-1", "task_name": "fractal-tree", "reward": "1.0", "duration_sec": "22.5", "n_input_tokens": "3200", "n_output_tokens": "890"},
+            {"trial_name": "trial-2", "task_name": "voronoi-diagram", "reward": "1.0", "duration_sec": "18.3", "n_input_tokens": "2900", "n_output_tokens": "750"},
+            {"trial_name": "trial-3", "task_name": "perlin-landscape", "reward": "0.0", "duration_sec": "25.8", "n_input_tokens": "3500", "n_output_tokens": "1020"},
+            {"trial_name": "trial-4", "task_name": "mandelbrot-zoom", "reward": "0.5", "duration_sec": "30.1", "n_input_tokens": "3800", "n_output_tokens": "1150"},
+            {"trial_name": "trial-5", "task_name": "lissajous-curves", "reward": "1.0", "duration_sec": "14.7", "n_input_tokens": "2400", "n_output_tokens": "620"},
+        ],
+    },
+    {
+        "run_name": "excel-worksheet-mgmt-2026-03-23-0900",
+        "skill_name": "Excel Worksheet Management",
+        "model_name": "anthropic/claude-sonnet-4-5-20250929",
+        "created_at": "2026-03-23T09:00:00Z",
+        "selected_tasks": ["pivot-table", "vlookup-migration", "conditional-formatting"],
+        "pass_rate": 0.93,
+        "mean_reward": 0.91,
+        "n_trials": 3,
+        "pass_rate_no_skills": 0.67,
+        "mean_reward_no_skills": 0.60,
+        "trials": [
+            {"trial_name": "trial-1", "task_name": "pivot-table", "reward": "1.0", "duration_sec": "10.2", "n_input_tokens": "1500", "n_output_tokens": "400"},
+            {"trial_name": "trial-2", "task_name": "vlookup-migration", "reward": "1.0", "duration_sec": "13.8", "n_input_tokens": "1800", "n_output_tokens": "520"},
+            {"trial_name": "trial-3", "task_name": "conditional-formatting", "reward": "0.8", "duration_sec": "11.5", "n_input_tokens": "1650", "n_output_tokens": "460"},
+        ],
+    },
+    {
+        "run_name": "email-drafting-2026-03-22-1100",
+        "skill_name": "Email Drafting",
+        "model_name": "openai/gpt-4o-mini",
+        "created_at": "2026-03-22T11:00:00Z",
+        "selected_tasks": ["formal-reply", "meeting-request", "follow-up", "complaint-response", "newsletter"],
+        "pass_rate": 0.46,
+        "mean_reward": 0.42,
+        "n_trials": 5,
+        "pass_rate_no_skills": 0.38,
+        "mean_reward_no_skills": 0.35,
+        "trials": [
+            {"trial_name": "trial-1", "task_name": "formal-reply", "reward": "1.0", "duration_sec": "6.1", "n_input_tokens": "980", "n_output_tokens": "310"},
+            {"trial_name": "trial-2", "task_name": "meeting-request", "reward": "0.5", "duration_sec": "5.4", "n_input_tokens": "870", "n_output_tokens": "280"},
+            {"trial_name": "trial-3", "task_name": "follow-up", "reward": "0.0", "duration_sec": "7.2", "n_input_tokens": "1100", "n_output_tokens": "350"},
+            {"trial_name": "trial-4", "task_name": "complaint-response", "reward": "0.0", "duration_sec": "8.9", "n_input_tokens": "1300", "n_output_tokens": "420"},
+            {"trial_name": "trial-5", "task_name": "newsletter", "reward": "0.5", "duration_sec": "9.5", "n_input_tokens": "1400", "n_output_tokens": "480"},
+        ],
+    },
+]
+
+
 @app.get("/api/skill-evals")
 async def list_skill_evals():
     """Return skill evaluation runs from the skillsbench experiments folder."""
     results = []
-    if not _SKILLSBENCH_RUNS.exists():
-        return results
-    for run_dir in sorted(_SKILLSBENCH_RUNS.iterdir(), reverse=True):
-        if not run_dir.is_dir():
-            continue
-        summary_path = run_dir / "evaluation_summary.json"
-        csv_path = run_dir / "evaluation_summary.csv"
-        if not summary_path.exists():
-            continue
-        with open(summary_path) as f:
-            summary = json.load(f)
-        trials = []
-        if csv_path.exists():
-            with open(csv_path) as f:
-                trials = list(_csv.DictReader(f))
-        ev = summary.get("evaluation") or {}
-        ev_no = summary.get("evaluation_no_skills") or {}
+    if _SKILLSBENCH_RUNS.exists():
+        for run_dir in sorted(_SKILLSBENCH_RUNS.iterdir(), reverse=True):
+            if not run_dir.is_dir():
+                continue
+            summary_path = run_dir / "evaluation_summary.json"
+            csv_path = run_dir / "evaluation_summary.csv"
+            if not summary_path.exists():
+                continue
+            with open(summary_path) as f:
+                summary = json.load(f)
+            trials = []
+            if csv_path.exists():
+                with open(csv_path) as f:
+                    trials = list(_csv.DictReader(f))
+            ev = summary.get("evaluation") or {}
+            ev_no = summary.get("evaluation_no_skills") or {}
 
-        def _adjusted_pass_rate(e: dict) -> float | None:
-            """pass_rate from JSON excludes errored trials; scale back by n_scored/n_trials."""
-            p, scored, total = e.get("pass_rate"), e.get("n_scored_trials"), e.get("n_trials")
-            return round(p * scored / total, 4) if (p and scored and total) else p
+            def _adjusted_pass_rate(e: dict) -> float | None:
+                p, scored, total = e.get("pass_rate"), e.get("n_scored_trials"), e.get("n_trials")
+                return round(p * scored / total, 4) if (p and scored and total) else p
 
-        results.append({
-            "run_name": run_dir.name,
-            "skill_name": summary.get("inputs", {}).get("selected_skill_name", run_dir.name),
-            "model_name": summary.get("inputs", {}).get("model_name"),
-            "created_at": summary.get("created_at_utc"),
-            "selected_tasks": summary.get("selection", {}).get("selected_task_names", []),
-            "pass_rate": _adjusted_pass_rate(ev),
-            "mean_reward": ev.get("mean_reward"),
-            "n_trials": ev.get("n_trials"),
-            "pass_rate_no_skills": _adjusted_pass_rate(ev_no),
-            "mean_reward_no_skills": ev_no.get("mean_reward"),
-            "trials": trials,
-        })
+            results.append({
+                "run_name": run_dir.name,
+                "skill_name": summary.get("inputs", {}).get("selected_skill_name", run_dir.name),
+                "model_name": summary.get("inputs", {}).get("model_name"),
+                "created_at": summary.get("created_at_utc"),
+                "selected_tasks": summary.get("selection", {}).get("selected_task_names", []),
+                "pass_rate": _adjusted_pass_rate(ev),
+                "mean_reward": ev.get("mean_reward"),
+                "n_trials": ev.get("n_trials"),
+                "pass_rate_no_skills": _adjusted_pass_rate(ev_no),
+                "mean_reward_no_skills": ev_no.get("mean_reward"),
+                "trials": trials,
+            })
+    if not results:
+        return _DEMO_EVALS
     return results
+
+
+_DEMO_AGENT_EVALS = [
+    {
+        "agent_id": "agent-claude-full",
+        "agent_name": "Equity Research Analyst",
+        "model": "anthropic/claude-sonnet-4-5-20250929",
+        "evaluated_at": "2026-03-26T10:00:00Z",
+        "overall_score": 0.88,
+        "task_success_rate": 0.85,
+        "avg_latency_sec": 14.2,
+        "avg_tokens_per_task": 4850,
+        "hallucination_rate": 0.04,
+        "total_tasks_run": 40,
+        "category_scores": {
+            "Financial Analysis": 0.92,
+            "Data Retrieval": 0.88,
+            "Report Generation": 0.84,
+            "Risk Assessment": 0.86,
+        },
+        "recent_runs": [
+            {"run_id": "run-era-001", "date": "2026-03-26T10:00:00Z", "score": 0.88, "tasks": 10},
+            {"run_id": "run-era-002", "date": "2026-03-24T15:30:00Z", "score": 0.85, "tasks": 10},
+            {"run_id": "run-era-003", "date": "2026-03-22T09:00:00Z", "score": 0.82, "tasks": 10},
+            {"run_id": "run-era-004", "date": "2026-03-20T11:00:00Z", "score": 0.80, "tasks": 10},
+        ],
+    },
+    {
+        "agent_id": "agent-gpt4o-web",
+        "agent_name": "Market Intelligence Associate",
+        "model": "openai/gpt-4o",
+        "evaluated_at": "2026-03-25T16:00:00Z",
+        "overall_score": 0.76,
+        "task_success_rate": 0.73,
+        "avg_latency_sec": 11.8,
+        "avg_tokens_per_task": 3920,
+        "hallucination_rate": 0.08,
+        "total_tasks_run": 30,
+        "category_scores": {
+            "Market Research": 0.82,
+            "Competitive Analysis": 0.74,
+            "Trend Forecasting": 0.68,
+            "Data Synthesis": 0.78,
+        },
+        "recent_runs": [
+            {"run_id": "run-mia-001", "date": "2026-03-25T16:00:00Z", "score": 0.76, "tasks": 10},
+            {"run_id": "run-mia-002", "date": "2026-03-23T14:00:00Z", "score": 0.72, "tasks": 10},
+            {"run_id": "run-mia-003", "date": "2026-03-21T10:00:00Z", "score": 0.70, "tasks": 10},
+        ],
+    },
+    {
+        "agent_id": "agent-claude-lite",
+        "agent_name": "Portfolio Risk Analyst",
+        "model": "anthropic/claude-sonnet-4-5-20250929",
+        "evaluated_at": "2026-03-25T12:00:00Z",
+        "overall_score": 0.81,
+        "task_success_rate": 0.80,
+        "avg_latency_sec": 9.5,
+        "avg_tokens_per_task": 3200,
+        "hallucination_rate": 0.05,
+        "total_tasks_run": 25,
+        "category_scores": {
+            "Risk Modeling": 0.86,
+            "Portfolio Optimization": 0.82,
+            "Stress Testing": 0.78,
+            "Regulatory Compliance": 0.76,
+        },
+        "recent_runs": [
+            {"run_id": "run-pra-001", "date": "2026-03-25T12:00:00Z", "score": 0.81, "tasks": 10},
+            {"run_id": "run-pra-002", "date": "2026-03-23T08:00:00Z", "score": 0.78, "tasks": 10},
+            {"run_id": "run-pra-003", "date": "2026-03-20T14:00:00Z", "score": 0.75, "tasks": 5},
+        ],
+    },
+    {
+        "agent_id": "agent-conversational",
+        "agent_name": "Financial Advisor Assistant",
+        "model": "anthropic/claude-sonnet-4-5-20250929",
+        "evaluated_at": "2026-03-24T18:00:00Z",
+        "overall_score": 0.69,
+        "task_success_rate": 0.65,
+        "avg_latency_sec": 6.3,
+        "avg_tokens_per_task": 2100,
+        "hallucination_rate": 0.11,
+        "total_tasks_run": 20,
+        "category_scores": {
+            "Client Communication": 0.78,
+            "Product Explanation": 0.72,
+            "Compliance Guidance": 0.62,
+            "General Q&A": 0.64,
+        },
+        "recent_runs": [
+            {"run_id": "run-faa-001", "date": "2026-03-24T18:00:00Z", "score": 0.69, "tasks": 10},
+            {"run_id": "run-faa-002", "date": "2026-03-22T12:00:00Z", "score": 0.64, "tasks": 10},
+        ],
+    },
+]
+
+
+@app.get("/api/evaluations")
+async def evaluations():
+    """Return agent-centric evaluation data."""
+    return _DEMO_AGENT_EVALS
 
 
 @app.get("/api/health")

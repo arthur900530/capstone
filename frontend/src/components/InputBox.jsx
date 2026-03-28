@@ -1,13 +1,10 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef } from "react";
 import {
   Plus,
   Paperclip,
   ChevronDown,
   ArrowUp,
   Loader2,
-  X,
-  Wrench,
-  Check,
 } from "lucide-react";
 
 const MODEL_OPTIONS = [
@@ -25,36 +22,15 @@ export default function InputBox({
   onConfigChange,
   stagedFiles,
   onFilesChange,
-  skills = [],
-  selectedSkillIds = [],
-  onSelectedSkillsChange,
-  skipConfirm = false,
-  onSkipConfirmChange,
 }) {
   const [text, setText] = useState("");
   const [isFocused, setIsFocused] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
   const [showModelPicker, setShowModelPicker] = useState(false);
-  const [showSkillPicker, setShowSkillPicker] = useState(false);
-  const [pendingSubmit, setPendingSubmit] = useState(null);
   const fileInputRef = useRef(null);
   const modelRef = useRef(null);
-  const skillRef = useRef(null);
 
   const files = stagedFiles ?? [];
-
-  const closeAllPopups = () => {
-    setShowModelPicker(false);
-    setShowSkillPicker(false);
-  };
-
-  const toggleSkill = (skillId) => {
-    onSelectedSkillsChange?.(
-      selectedSkillIds.includes(skillId)
-        ? selectedSkillIds.filter((id) => id !== skillId)
-        : [...selectedSkillIds, skillId]
-    );
-  };
 
   const handleFileChange = (e) => {
     const picked = Array.from(e.target.files);
@@ -68,39 +44,11 @@ export default function InputBox({
 
   const handleSubmit = () => {
     if (!text.trim() || isStreaming) return;
-    closeAllPopups();
-    if (skipConfirm) {
-      onSubmit(text.trim(), [...files]);
-      setText("");
-      onFilesChange?.([]);
-      return;
-    }
-    setPendingSubmit({ text: text.trim(), files: [...files] });
-  };
-
-  const handleConfirm = () => {
-    if (!pendingSubmit) return;
-    onSubmit(pendingSubmit.text, pendingSubmit.files);
+    setShowModelPicker(false);
+    onSubmit(text.trim(), [...files]);
     setText("");
     onFilesChange?.([]);
-    setPendingSubmit(null);
   };
-
-  const handleCancelConfirm = () => {
-    setPendingSubmit(null);
-  };
-
-  useEffect(() => {
-    if (!pendingSubmit) return;
-    const onKeyDown = (e) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        setPendingSubmit(null);
-      }
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [pendingSubmit]);
 
   const handleKeyDown = (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -112,8 +60,6 @@ export default function InputBox({
   const displayModel = config.model
     ? config.model.split("/").pop()
     : "openai/gpt-5.1";
-
-  const selectedSkills = skills.filter((s) => selectedSkillIds.includes(s.id));
 
   return (
     <div className="mx-auto w-full max-w-4xl px-4">
@@ -150,26 +96,6 @@ export default function InputBox({
           </div>
         )}
 
-        {selectedSkillIds.length > 0 && (
-          <div className="flex flex-wrap gap-1.5 px-5 pt-3">
-            {selectedSkills.map((skill) => (
-              <span
-                key={skill.id}
-                className="flex items-center gap-1.5 rounded-md bg-accent-teal/10 px-2.5 py-1 text-[11px] font-medium text-accent-teal"
-              >
-                <Wrench size={11} />
-                {skill.name}
-                <button
-                  onClick={() => toggleSkill(skill.id)}
-                  className="ml-0.5 text-accent-teal/60 hover:text-accent-teal"
-                >
-                  <X size={11} />
-                </button>
-              </span>
-            ))}
-          </div>
-        )}
-
         <textarea
           value={text}
           onChange={(e) => setText(e.target.value)}
@@ -200,67 +126,6 @@ export default function InputBox({
               <span className="text-xs">Files</span>
             </button>
 
-            <div className="relative" ref={skillRef}>
-              <button
-                onClick={() => {
-                  setShowSkillPicker(!showSkillPicker);
-                  setShowModelPicker(false);
-                }}
-                className={`flex h-8 items-center gap-1 rounded-lg px-2 transition-colors hover:bg-surface-hover ${
-                  selectedSkillIds.length > 0
-                    ? "text-accent-teal"
-                    : "text-text-muted hover:text-text-secondary"
-                }`}
-              >
-                <Wrench size={14} />
-                <span className="text-xs">Skills</span>
-                {selectedSkillIds.length > 0 && (
-                  <span className="flex h-4 min-w-4 items-center justify-center rounded-full bg-accent-teal/20 px-1 text-[10px] font-semibold text-accent-teal">
-                    {selectedSkillIds.length}
-                  </span>
-                )}
-              </button>
-
-              {showSkillPicker && (
-                <div className="absolute bottom-10 left-0 z-50 w-72 rounded-xl border border-border bg-charcoal shadow-xl">
-                  <div className="flex items-center justify-between px-3 py-2.5 border-b border-border/50">
-                    <span className="text-xs font-medium text-text-primary">Skills</span>
-                    <button onClick={() => setShowSkillPicker(false)} className="text-text-muted hover:text-text-primary">
-                      <X size={14} />
-                    </button>
-                  </div>
-                  {skills.length === 0 ? (
-                    <p className="px-3 py-4 text-center text-xs text-text-muted">No skills available</p>
-                  ) : (
-                    <div className="max-h-52 overflow-y-auto py-1">
-                      {skills.map((skill) => (
-                        <button
-                          key={skill.id}
-                          onClick={() => toggleSkill(skill.id)}
-                          className="flex w-full items-start gap-2.5 px-3 py-2 text-left transition-colors hover:bg-surface"
-                        >
-                          <div
-                            className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded border transition-colors ${
-                              selectedSkillIds.includes(skill.id)
-                                ? "border-accent-teal bg-accent-teal"
-                                : "border-text-muted/50"
-                            }`}
-                          >
-                            {selectedSkillIds.includes(skill.id) && (
-                              <Check size={10} className="text-white" />
-                            )}
-                          </div>
-                          <div className="min-w-0">
-                            <p className="text-xs font-medium text-text-primary">{skill.name}</p>
-                            <p className="truncate text-[11px] text-text-muted">{skill.description}</p>
-                          </div>
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
           </div>
 
           <div className="flex items-center gap-2">
@@ -268,7 +133,6 @@ export default function InputBox({
               <button
                 onClick={() => {
                   setShowModelPicker(!showModelPicker);
-                  setShowSkillPicker(false);
                 }}
                 className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium text-text-secondary transition-colors hover:bg-surface-hover"
               >
@@ -319,78 +183,6 @@ export default function InputBox({
           </div>
         </div>
       </div>
-
-      {pendingSubmit && (
-        <div
-          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm"
-          onClick={handleCancelConfirm}
-        >
-          <div
-            className="w-full max-w-md rounded-2xl border border-border bg-charcoal p-6 shadow-2xl"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <h3 className="mb-1 text-sm font-semibold text-text-primary">
-              Confirm Skills
-            </h3>
-            <p className="mb-4 text-xs text-text-muted">
-              Review the skills that will be used for this message.
-            </p>
-
-            {selectedSkills.length > 0 ? (
-              <div className="mb-5 space-y-2">
-                {selectedSkills.map((skill) => (
-                  <div
-                    key={skill.id}
-                    className="flex items-start gap-2.5 rounded-lg bg-surface p-3"
-                  >
-                    <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-accent-teal/15">
-                      <Wrench size={13} className="text-accent-teal" />
-                    </div>
-                    <div className="min-w-0">
-                      <p className="text-xs font-medium text-text-primary">{skill.name}</p>
-                      <p className="mt-0.5 text-[11px] leading-relaxed text-text-muted">
-                        {skill.description}
-                      </p>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div className="mb-5 rounded-lg bg-surface px-4 py-3">
-                <p className="text-xs text-text-muted">
-                  No skills selected. The agent will use its default capabilities.
-                </p>
-              </div>
-            )}
-
-            <div className="flex items-center justify-between">
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={skipConfirm}
-                  onChange={(e) => onSkipConfirmChange?.(e.target.checked)}
-                  className="h-3.5 w-3.5 rounded border-text-muted/50 accent-accent-teal"
-                />
-                <span className="text-[11px] text-text-muted">Never ask again</span>
-              </label>
-              <div className="flex gap-2">
-                <button
-                  onClick={handleCancelConfirm}
-                  className="rounded-lg px-4 py-2 text-xs font-medium text-text-secondary transition-colors hover:bg-surface-hover"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={handleConfirm}
-                  className="rounded-lg bg-accent-teal px-4 py-2 text-xs font-medium text-white transition-colors hover:bg-accent-teal/90"
-                >
-                  Confirm &amp; Send
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
