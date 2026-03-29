@@ -16,8 +16,13 @@ import {
   ChevronRight,
   ArrowLeft,
   TrendingUp,
+  Play,
 } from "lucide-react";
-import { fetchEvaluations, fetchSkillEvals } from "../services/api";
+import {
+  fetchEvaluations,
+  fetchSkillEvals,
+  runSkillEval,
+} from "../services/api";
 
 function RateBar({ rate }) {
   const pct = (rate ?? 0) * 100;
@@ -136,7 +141,32 @@ function AgentListItem({ agent, run, isSelected, onSelect }) {
   );
 }
 
-function SkillEvalsPage({ skillEvals, onBack }) {
+function SkillEvalsPage({ skillEvals, onSkillEvalsUpdate, onBack }) {
+  const [running, setRunning] = useState(false);
+  const handleRun = async () => {
+    setRunning(true);
+    try {
+      await runSkillEval();
+      const initialCount = skillEvals.length;
+      const poll = setInterval(async () => {
+        try {
+          const latest = await fetchSkillEvals();
+          if (latest.length > initialCount) {
+            clearInterval(poll);
+            setRunning(false);
+            onSkillEvalsUpdate(latest);
+          }
+        } catch {
+          clearInterval(poll);
+          setRunning(false);
+        }
+      }, 5000);
+    } catch (e) {
+      console.error(e);
+      setRunning(false);
+    }
+  };
+
   const fmt = (v) => (v != null ? (v * 100).toFixed(1) + "%" : "—");
   const rateColor = (v) =>
     v >= 0.8
@@ -164,6 +194,18 @@ function SkillEvalsPage({ skillEvals, onBack }) {
         <span className="rounded-full bg-surface px-1.5 py-0.5 text-[10px] text-text-muted">
           {skillEvals.length} run{skillEvals.length !== 1 ? "s" : ""}
         </span>
+        <button
+          onClick={handleRun}
+          disabled={running}
+          className="ml-auto flex items-center gap-1.5 rounded-md bg-accent-teal px-3 py-1.5 text-xs font-semibold text-black hover:bg-accent-teal/80 transition-colors shadow-sm disabled:opacity-60 disabled:cursor-not-allowed"
+        >
+          {running ? (
+            <Loader2 size={11} className="animate-spin" />
+          ) : (
+            <Play size={11} fill="currentColor" />
+          )}
+          {running ? "Running…" : "Run Evaluation"}
+        </button>
       </div>
 
       {/* Content */}
@@ -617,6 +659,7 @@ export default function EvaluationView({
         {showSkillEvals ? (
           <SkillEvalsPage
             skillEvals={skillEvals}
+            onSkillEvalsUpdate={setSkillEvals}
             onBack={() => setShowSkillEvals(false)}
           />
         ) : selectedRun ? (

@@ -6,6 +6,17 @@ export async function fetchSkillEvals() {
   return res.json();
 }
 
+export async function runSkillEval(
+  skillId = "user-citation-checker111-e8e34d",
+) {
+  const res = await fetch(
+    `${API_BASE}/skill-evals/run?skill_id=${encodeURIComponent(skillId)}`,
+    { method: "POST" },
+  );
+  if (!res.ok) throw new Error(`Failed to run skill eval: ${res.status}`);
+  return res.json();
+}
+
 export async function fetchEvaluations() {
   const res = await fetch(`${API_BASE}/evaluations`);
   if (!res.ok) throw new Error(`Failed to load evaluations: ${res.status}`);
@@ -89,21 +100,28 @@ export async function addSkillFiles(skillId, files) {
 }
 
 export async function removeSkillFile(skillId, filename) {
-  const res = await fetch(`${API_BASE}/skills/${skillId}/files/${encodeURIComponent(filename)}`, {
-    method: "DELETE",
-  });
+  const res = await fetch(
+    `${API_BASE}/skills/${skillId}/files/${encodeURIComponent(filename)}`,
+    {
+      method: "DELETE",
+    },
+  );
   if (!res.ok) throw new Error(`Failed to remove file: ${res.status}`);
   return res.json();
 }
 
 export async function fetchSkillFileContent(skillId, filename) {
-  const res = await fetch(`${API_BASE}/skills/${skillId}/files/${encodeURIComponent(filename)}`);
+  const res = await fetch(
+    `${API_BASE}/skills/${skillId}/files/${encodeURIComponent(filename)}`,
+  );
   if (!res.ok) throw new Error(`Failed to load file: ${res.status}`);
   return res.json();
 }
 
 export async function deleteSkill(skillId) {
-  const res = await fetch(`${API_BASE}/skills/${skillId}`, { method: "DELETE" });
+  const res = await fetch(`${API_BASE}/skills/${skillId}`, {
+    method: "DELETE",
+  });
   if (!res.ok) throw new Error(`Failed to delete skill: ${res.status}`);
   return res.json();
 }
@@ -136,7 +154,19 @@ export async function uploadFiles(sessionId, files) {
   return res.json();
 }
 
-export async function streamChat({ question, sessionId, model, maxTrials, confidenceThreshold, files, skillIds, mountDir }, onEvent) {
+export async function streamChat(
+  {
+    question,
+    sessionId,
+    model,
+    maxTrials,
+    confidenceThreshold,
+    files,
+    skillIds,
+    mountDir,
+  },
+  onEvent,
+) {
   const res = await fetch(`${API_BASE}/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
