@@ -149,11 +149,16 @@ def _load_skills_from_disk() -> dict[str, dict]:
                 fpath_relative = os.path.join(fpath_relative, fname)
                 fpath = os.path.join(_root, fname)
                 fs.append({"name": fpath_relative, "size": os.path.getsize(fpath), "type": mimetypes.guess_type(fpath)[0]})
+        skill_type = "user" if skill.startswith("user_") else "builtin"
+        if skill_type == "user":
+            display_name = "_".join(skill.split("_")[1:-1]).replace("_", " ").title()
+        else:
+            display_name = " ".join(word.capitalize() for word in skill.split("-"))
         skills[skill] = {
             "id": skill,
-            "name": " ".join(word.capitalize() for word in skill.split("-")),
+            "name": display_name,
             "description": "Placeholder description for the skill",
-            "type": "builtin",
+            "type": skill_type,
             "files": fs,
             "definition": open(skill_md).read(),
             "created_at": os.path.getctime(skill_md),
@@ -919,6 +924,10 @@ async def create_skill(body: SkillCreate):
         "updated_at": now,
     }
     _SKILLS[skill_id] = skill
+    skill_dir = os.path.join(_SKILLS_DIR, skill_id)
+    os.makedirs(skill_dir, exist_ok=True)
+    with open(os.path.join(skill_dir, "SKILL.md"), "w") as f:
+        f.write(body.definition)
     return skill
 
 
@@ -933,6 +942,10 @@ async def update_skill(skill_id: str, body: SkillUpdate):
         skill["description"] = body.description
     if body.definition is not None:
         skill["definition"] = body.definition
+        skill_md = os.path.join(_SKILLS_DIR, skill_id, "SKILL.md")
+        if os.path.isfile(skill_md):
+            with open(skill_md, "w") as f:
+                f.write(body.definition)
     skill["updated_at"] = _now_iso()
     return skill
 
@@ -968,6 +981,9 @@ async def delete_skill(skill_id: str):
     if _SKILLS[skill_id]["type"] == "builtin":
         raise HTTPException(status_code=403, detail="Cannot delete builtin skills")
     del _SKILLS[skill_id]
+    skill_dir = os.path.join(_SKILLS_DIR, skill_id)
+    if os.path.isdir(skill_dir):
+        shutil.rmtree(skill_dir)
     return {"ok": True}
 
 
@@ -1023,6 +1039,34 @@ async def train_skills(files: list[UploadFile] = File(...)):
 
 _SKILLSBENCH_ROOT = Path(__file__).resolve().parent / "skillsbench"
 _SKILLSBENCH_RUNS = _SKILLSBENCH_ROOT / "experiments" / "skill-eval-runs"
+
+
+@app.post("/api/skill-evals/run", status_code=202)
+async def run_skill_eval(skill_id: str = "user-citation-checker111-e8e34d"):
+    """Launch skill_evaluation_framework.py for the given skill in the background."""
+    script = _SKILLSBENCH_ROOT / "experiments" / "skill_evaluation_framework.py"
+    venv_bin = _SKILLSBENCH_ROOT / ".venv" / "bin"
+    py_bin = str(venv_bin / "python") if (venv_bin / "python").exists() else "python3"
+    existing_path = os.environ.get("PATH", "")
+    env = {**os.environ, "PYTHONUNBUFFERED": "1", "PATH": f"{venv_bin}:{existing_path}"}
+    asyncio.create_task(
+        asyncio.create_subprocess_exec(
+            py_bin, str(script),
+            "--skills-dir", str(_SKILLS_DIR),
+            "--skill", skill_id,
+            "--tasks-dir", str(_SKILLSBENCH_ROOT / "tasks"),
+            "--workspace-dir", str(_SKILLSBENCH_RUNS),
+            "--threshold", "0.357",
+            "--embedding-model", "openai/text-embedding-3-small",
+            "--base-config", str(_SKILLSBENCH_ROOT / "experiments" / "configs" / "sanity-check.yaml"),
+            "--agent-name", "codex",
+            "--model-name", "openai/gpt-5.2-codex",
+            "--run",
+            env=env,
+            cwd=str(_SKILLSBENCH_ROOT),
+        )
+    )
+    return {"ok": True, "skill_id": skill_id}
 
 
 @app.get("/api/skill-evals")
