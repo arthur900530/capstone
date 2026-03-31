@@ -136,7 +136,20 @@ export async function uploadFiles(sessionId, files) {
   return res.json();
 }
 
-export async function streamChat({ question, sessionId, model, maxTrials, confidenceThreshold, files, skillIds, mountDir }, onEvent) {
+export async function streamChat(
+  {
+    question,
+    sessionId,
+    model,
+    maxTrials,
+    confidenceThreshold,
+    useReflexion,
+    files,
+    skillIds,
+    mountDir,
+  },
+  onEvent,
+) {
   const res = await fetch(`${API_BASE}/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -146,6 +159,7 @@ export async function streamChat({ question, sessionId, model, maxTrials, confid
       model: model || undefined,
       max_trials: maxTrials,
       confidence_threshold: confidenceThreshold,
+      use_reflexion: useReflexion ?? false,
       files: files || undefined,
       skill_ids: skillIds?.length ? skillIds : undefined,
       mount_dir: mountDir || undefined,

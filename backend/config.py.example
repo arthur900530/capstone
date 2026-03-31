@@ -1,3 +1,9 @@
+# Copy to config.py. Optional Reflexion defaults via .env (see reflexion_agent/agent.py):
+#   ENABLE_REFLEXION=true|false — used when running the agent CLI without an explicit flag.
+#   MAX_REFLEXION_ATTEMPTS=3
+# The web UI sends use_reflexion on each POST /api/chat request (default false); that
+# overrides the env default for that run.
+
 BASE_URL = "https://openrouter.ai/api/v1"
 API_KEY = "PASTE-YOUR-KEY-HERE"
 AGENT_MODEL = "openrouter/minimax/minimax-m2.7"

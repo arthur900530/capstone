@@ -22,10 +22,16 @@ from openhands.workspace import DockerWorkspace
 from reflexion_agent import evaluate_trajectory, generate_reflection, ReflexionMemory
 from config import BASE_URL, API_KEY, AGENT_MODEL
 
+dotenv.load_dotenv()
 
-# Reflexion configuration (read from .env, disabled by default)
-ENABLE_REFLEXION = False
-MAX_REFLEXION_ATTEMPTS = 3
+
+def _env_bool(name: str, default: str = "false") -> bool:
+    return os.getenv(name, default).strip().lower() in ("1", "true", "yes")
+
+
+# Reflexion defaults from .env; per-request override via runtime(use_reflexion=...)
+ENABLE_REFLEXION = _env_bool("ENABLE_REFLEXION", "false")
+MAX_REFLEXION_ATTEMPTS = int(os.getenv("MAX_REFLEXION_ATTEMPTS", "3") or "3")
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +84,7 @@ def runtime(
     instruction: str,
     mount_dir: str = None,
     event_callback: Callable | None = None,
+    use_reflexion: bool | None = None,
 ):
     if mount_dir:
         abs_mount = str(Path(mount_dir).resolve())
@@ -89,6 +96,11 @@ def runtime(
 
     llm = LLM(model=model, api_key=SecretStr(api_key), base_url=base_url, service_id="agent")
     skills = load_project_skills(work_dir=repo_dir)
+    logger.info(
+        "project_skills_count=%d work_dir=%s",
+        len(skills),
+        repo_dir or "(empty)",
+    )
     agent_context = AgentContext(skills=skills)
     agent = Agent(
         llm=llm,
@@ -99,14 +111,21 @@ def runtime(
         ],
         agent_context=agent_context,
     )
-    logger.info("model=%s, base_url=%s, mounted_dir=%s", model, base_url, mount_dir)
+    use_rx = ENABLE_REFLEXION if use_reflexion is None else use_reflexion
+    logger.info(
+        "model=%s, base_url=%s, mounted_dir=%s, use_reflexion=%s",
+        model,
+        base_url,
+        mount_dir,
+        use_rx,
+    )
     with DockerWorkspace(
         server_image="ghcr.io/openhands/agent-server:latest-python",
         host_port=_find_port(),
         platform=_detect_platform(),
         volumes=volumes,
     ) as workspace:
-        if ENABLE_REFLEXION:
+        if use_rx:
             _run_with_reflexion(agent, llm, instruction, workspace, callbacks=callbacks)
         else:
             _run_without_reflexion(agent, instruction, workspace, callbacks=callbacks)

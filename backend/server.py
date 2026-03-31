@@ -609,17 +609,143 @@ def _resolve_workspace(session_id: str, mount_dir: str | None) -> tuple[str | No
     return mount_dir, None
 
 
+def _copy_dir_contents(src_dir: str, dst_dir: str) -> None:
+    """Copy top-level entries from src_dir into dst_dir (merge / overwrite files)."""
+    if not os.path.isdir(src_dir):
+        return
+    for name in os.listdir(src_dir):
+        src = os.path.join(src_dir, name)
+        dst = os.path.join(dst_dir, name)
+        if os.path.isdir(src):
+            shutil.copytree(src, dst, dirs_exist_ok=True)
+        else:
+            shutil.copy2(src, dst)
+
+
+def _validate_skills_for_runtime(skill_ids: list[str]) -> None:
+    """Ensure each skill can be materialized under workspace/skills/."""
+    for sid in skill_ids:
+        if sid not in _SKILLS:
+            raise HTTPException(status_code=400, detail=f"Unknown skill_id: {sid}")
+        skill = _SKILLS[sid]
+        by_name = _FILE_CONTENTS.get(sid, {})
+        for meta in skill.get("files") or []:
+            rel = meta["name"].replace("\\", "/")
+            if rel == "SKILL.md" or rel.endswith("/SKILL.md"):
+                continue
+            if rel in by_name:
+                continue
+            if skill.get("type") == "builtin":
+                disk_path = os.path.join(_SKILLS_DIR, sid, rel)
+                if os.path.isfile(disk_path):
+                    continue
+            raise HTTPException(
+                status_code=400,
+                detail=f"Skill {sid} file {rel} has no retrievable content",
+            )
+
+
+def _materialize_skill_package(skills_root: str, skill_id: str) -> None:
+    """Write one skill package (SKILL.md + auxiliary files) under skills_root/skill_id/."""
+    skill = _SKILLS[skill_id]
+    pkg = os.path.join(skills_root, skill_id)
+    os.makedirs(pkg, exist_ok=True)
+    definition = skill.get("definition") or ""
+    with open(os.path.join(pkg, "SKILL.md"), "w", encoding="utf-8") as f:
+        f.write(definition)
+    by_name = _FILE_CONTENTS.get(skill_id, {})
+    for meta in skill.get("files") or []:
+        rel = meta["name"].replace("\\", "/")
+        if rel == "SKILL.md" or rel.endswith("/SKILL.md"):
+            continue
+        dest = os.path.join(pkg, rel)
+        dest_parent = os.path.dirname(dest)
+        if dest_parent:
+            os.makedirs(dest_parent, exist_ok=True)
+        if rel in by_name:
+            text = by_name[rel]
+        else:
+            disk_path = os.path.join(_SKILLS_DIR, skill_id, rel)
+            with open(disk_path, encoding="utf-8") as f:
+                text = f.read()
+        with open(dest, "w", encoding="utf-8") as f:
+            f.write(text)
+
+
+def _resolve_workspace_for_runtime(
+    session_id: str,
+    mount_dir: str | None,
+    skill_ids: list[str] | None,
+) -> tuple[str | None, list[str]]:
+    """Resolve Docker mount path and directories to remove after the run.
+
+    When ``skill_ids`` is non-empty, builds a temp workspace: copies ``mount_dir``
+    and upload staging into it, replaces ``skills/`` with only the selected packages,
+    and returns that path plus cleanup list (temp root and staging if any).
+    """
+    if not skill_ids:
+        effective, staging = _resolve_workspace(session_id, mount_dir)
+        cleanup: list[str] = [staging] if staging else []
+        return effective, cleanup
+
+    staging = _upload_dirs.pop(session_id, None)
+    root = tempfile.mkdtemp(prefix="agent_workspace_")
+    workspace = os.path.join(root, "ws")
+    os.makedirs(workspace, exist_ok=True)
+
+    try:
+        if mount_dir and os.path.isdir(mount_dir):
+            _copy_dir_contents(mount_dir, workspace)
+        if staging:
+            _copy_dir_contents(staging, workspace)
+
+        # OpenHands loads project skills from .agents/skills/ (and legacy .openhands/*).
+        # Replace those trees so the request sees only the selected skill packages.
+        for rel in (
+            os.path.join(".agents", "skills"),
+            os.path.join(".openhands", "skills"),
+            os.path.join(".openhands", "microagents"),
+        ):
+            p = os.path.join(workspace, rel)
+            if os.path.isdir(p):
+                shutil.rmtree(p)
+        skills_dir = os.path.join(workspace, ".agents", "skills")
+        os.makedirs(skills_dir, exist_ok=True)
+        for sid in skill_ids:
+            _materialize_skill_package(skills_dir, sid)
+    except Exception:
+        if staging:
+            _upload_dirs[session_id] = staging
+        shutil.rmtree(root, ignore_errors=True)
+        raise
+
+    cleanup = [root]
+    if staging:
+        cleanup.append(staging)
+    return workspace, cleanup
+
+
 async def _stream_real_task(
     question: str,
     session_id: str,
     agent_info: dict,
     mount_dir: str | None = None,
+    use_reflexion: bool = False,
+    skill_ids: list[str] | None = None,
 ):
     """Run the real OpenHands agent in a background thread, streaming events as SSE."""
     queue: asyncio.Queue = asyncio.Queue()
     loop = asyncio.get_running_loop()
 
-    effective_mount, staging_to_clean = _resolve_workspace(session_id, mount_dir)
+    effective_mount, cleanup_dirs = _resolve_workspace_for_runtime(
+        session_id, mount_dir, skill_ids
+    )
+    if skill_ids:
+        logger.info(
+            "Request-scoped workspace=%s skill_ids=%s",
+            effective_mount,
+            skill_ids,
+        )
 
     _turn_counter[session_id] = 0
 
@@ -636,13 +762,15 @@ async def _stream_real_task(
                 instruction=question,
                 mount_dir=effective_mount,
                 event_callback=_callback,
+                use_reflexion=use_reflexion,
             )
         except Exception as exc:
             error = str(exc)
             logger.exception("Agent runtime failed")
         finally:
-            if staging_to_clean:
-                shutil.rmtree(staging_to_clean, ignore_errors=True)
+            for path in cleanup_dirs:
+                if path and os.path.isdir(path):
+                    shutil.rmtree(path, ignore_errors=True)
             if error:
                 loop.call_soon_threadsafe(
                     queue.put_nowait,
@@ -698,8 +826,10 @@ class ChatRequest(BaseModel):
     model: str | None = None
     max_trials: int = 3
     confidence_threshold: float = 0.7
+    use_reflexion: bool = False
     files: list[FileMetadata] | None = None
     mount_dir: str | None = None
+    skill_ids: list[str] | None = None
 
 
 @app.post("/api/upload")
@@ -737,8 +867,19 @@ async def chat(req: ChatRequest):
     file_dicts = [f.model_dump(exclude_none=True) for f in req.files] if req.files else None
     _upsert_chat(session_id, req.question, role="user", agent_id=agent["id"], files=file_dicts)
 
+    skill_ids = req.skill_ids if req.skill_ids else None
+    if skill_ids:
+        _validate_skills_for_runtime(skill_ids)
+
     if REAL_AGENT_ENABLED:
-        gen = _stream_real_task(req.question, session_id, agent, mount_dir=req.mount_dir)
+        gen = _stream_real_task(
+            req.question,
+            session_id,
+            agent,
+            mount_dir=req.mount_dir,
+            use_reflexion=req.use_reflexion,
+            skill_ids=skill_ids,
+        )
     else:
         gen = _stream_conversation(req.question, session_id, agent)
 

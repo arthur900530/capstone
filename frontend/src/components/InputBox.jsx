@@ -54,6 +54,7 @@ export default function InputBox({
     setShowSkillPicker(false);
     setShowWorkspacePicker(false);
   };
+  const selectedSkills = skills.filter((s) => selectedSkillIds.includes(s.id));
 
   const toggleSkill = (skillId) => {
     onSelectedSkillsChange?.(
@@ -328,6 +329,34 @@ export default function InputBox({
           </div>
 
           <div className="flex items-center gap-2">
+            <button
+              type="button"
+              role="switch"
+              aria-checked={Boolean(config.useReflexion)}
+              onClick={() =>
+                onConfigChange({ ...config, useReflexion: !config.useReflexion })
+              }
+              title="Enable Reflexion (evaluate, reflect, retry on failure)"
+              className={`flex h-8 items-center gap-2 rounded-lg px-2.5 text-xs font-medium transition-colors ${
+                config.useReflexion
+                  ? "bg-accent-teal/20 text-accent-teal"
+                  : "text-text-muted hover:bg-surface-hover hover:text-text-secondary"
+              }`}
+            >
+              <span
+                className={`relative inline-flex h-4 w-7 shrink-0 items-center rounded-full transition-colors ${
+                  config.useReflexion ? "bg-accent-teal" : "bg-border"
+                }`}
+              >
+                <span
+                  className={`absolute top-0.5 left-0.5 h-3 w-3 rounded-full bg-white shadow transition-transform ${
+                    config.useReflexion ? "translate-x-3" : "translate-x-0"
+                  }`}
+                />
+              </span>
+              Reflexion
+            </button>
+
             <div className="relative" ref={modelRef}>
               <button
                 onClick={() => {

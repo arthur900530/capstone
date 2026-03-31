@@ -123,6 +123,39 @@ relative to the package's own directory via `__file__`).
 These variables are read in `agent.py`, not inside the `reflexion/` package.
 The package itself has no knowledge of `.env` files.
 
+### 5.1 Per-request override (HTTP API)
+
+The FastAPI backend accepts `use_reflexion` (boolean, default `false`) on each
+`POST /api/chat` body. The server passes this into `runtime(..., use_reflexion=...)`.
+When `use_reflexion` is `true`, the Reflexion loop runs for that request even if
+`ENABLE_REFLEXION` in `.env` is unset or false. When `use_reflexion` is `false`,
+Reflexion is skipped for that request even if `ENABLE_REFLEXION=true` in `.env`.
+
+For the CLI entrypoint (`python -m reflexion_agent.agent` or direct `runtime()` calls),
+omit `use_reflexion` so it stays `None` and the effective behavior follows
+`ENABLE_REFLEXION` / `MAX_REFLEXION_ATTEMPTS` from the environment.
+
+### 5.2 Selected skills (`skill_ids`)
+
+The FastAPI backend accepts an optional `skill_ids` field on each `POST /api/chat`
+body: a list of skill identifiers matching the catalog returned by `GET /api/skills`.
+
+When `skill_ids` is **non-empty**, the server builds a temporary workspace for that
+request: it copies the optional `mount_dir` and any uploaded files into that
+workspace, then **replaces** OpenHands project skill locations
+(`.agents/skills/`, `.openhands/skills/`, and legacy `.openhands/microagents/`)
+with packages materialized **only** for the listed IDs. The agent runtime’s
+`load_project_skills(work_dir=...)` therefore sees exactly those skills for that
+request (not a union with pre-existing skill trees from the copied mount).
+
+When `skill_ids` is omitted or empty, behavior is unchanged from before: the
+effective mount is the resolved upload staging and/or `mount_dir` without this
+injection step.
+
+Unknown IDs produce `400` with `Unknown skill_id: ...`. A skill that lists
+auxiliary files in metadata but has no retrievable content (e.g. missing on disk
+and not in memory) produces `400` with a clear message.
+
 ## 6. Python Version
 
 The Reflexion modules use:

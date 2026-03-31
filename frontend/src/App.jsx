@@ -131,6 +131,7 @@ export default function App() {
     model: "",
     maxTrials: 3,
     confidenceThreshold: 0.7,
+    useReflexion: false,
   });
 
   const messagesEndRef = useRef(null);
@@ -245,6 +246,7 @@ export default function App() {
           model: config.model || undefined,
           maxTrials: config.maxTrials,
           confidenceThreshold: config.confidenceThreshold,
+          useReflexion: config.useReflexion,
           files: submittedFiles.length > 0
             ? submittedFiles.map((f) => ({ name: f.name, size: f.size, type: f.type }))
             : undefined,
