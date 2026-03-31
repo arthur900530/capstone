@@ -1,5 +1,4 @@
 import base64
-import dotenv
 import json
 import mimetypes
 import os
@@ -12,15 +11,12 @@ import openai
 from typing import *
 from pathlib import Path
 from .prompts import MMSkillTrainer_PROMPT_TEMPLATE
+from config import BASE_URL, API_KEY, SKILL_MODEL
 
 
-dotenv.load_dotenv()
+MODEL_NAME = SKILL_MODEL
 
-BASE_URL = os.getenv("BASE_URL")
-OPENROUTER_API_KEY = os.getenv("API_KEY")
-MODEL_NAME = "google/gemini-3-flash-preview"
-
-client = openai.OpenAI(base_url=BASE_URL, api_key=OPENROUTER_API_KEY)
+client = openai.OpenAI(base_url=BASE_URL, api_key=API_KEY)
 
 
 class MMSkillTrainer:

@@ -37,6 +37,8 @@ frontend/.env.*.local
 .env.local
 .env.*
 !.env.example
+*config.py*
+!config.py.example
 
 # macOS
 .DS_Store

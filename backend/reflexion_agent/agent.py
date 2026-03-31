@@ -20,6 +20,7 @@ from openhands.tools.terminal import TerminalTool
 from openhands.workspace import DockerWorkspace
 
 from reflexion_agent import evaluate_trajectory, generate_reflection, ReflexionMemory
+from config import BASE_URL, API_KEY, AGENT_MODEL
 
 
 # Reflexion configuration (read from .env, disabled by default)
@@ -29,10 +30,9 @@ MAX_REFLEXION_ATTEMPTS = 3
 logger = logging.getLogger(__name__)
 
 
-dotenv.load_dotenv()
-base_url = os.getenv("BASE_URL")
-api_key = os.getenv("OPENROUTER_API_KEY")
-model = os.getenv("MODEL")
+base_url = BASE_URL
+api_key = API_KEY
+model = AGENT_MODEL
 
 
 def _detect_platform():
