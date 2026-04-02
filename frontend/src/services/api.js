@@ -1,16 +1,20 @@
 const API_BASE = "/api";
 
+export async function fetchAgentSkills() {
+  const res = await fetch(`${API_BASE}/agent-skills`);
+  if (!res.ok) throw new Error(`Failed to load agent skills: ${res.status}`);
+  return res.json();
+}
+
 export async function fetchSkillEvals() {
   const res = await fetch(`${API_BASE}/skill-evals`);
   if (!res.ok) throw new Error(`Failed to load skill evals: ${res.status}`);
   return res.json();
 }
 
-export async function runSkillEval(
-  skillId = "user-citation-checker111-e8e34d",
-) {
+export async function runSkillEval(agentId) {
   const res = await fetch(
-    `${API_BASE}/skill-evals/run?skill_id=${encodeURIComponent(skillId)}`,
+    `${API_BASE}/skill-evals/run?agent_id=${encodeURIComponent(agentId)}`,
     { method: "POST" },
   );
   if (!res.ok) throw new Error(`Failed to run skill eval: ${res.status}`);

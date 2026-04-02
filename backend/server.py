@@ -150,7 +150,11 @@ def _load_skills_from_disk() -> dict[str, dict]:
                 fpath = os.path.join(_root, fname)
                 fs.append({"name": fpath_relative, "size": os.path.getsize(fpath), "type": mimetypes.guess_type(fpath)[0]})
         skill_type = "user" if skill.startswith("user_") else "builtin"
-        if skill_type == "user":
+        definition = open(skill_md).read()
+        fm = re.search(r'^name:\s*["\']?([^\n"\']+)["\']?', definition, re.MULTILINE)
+        if fm:
+            display_name = fm.group(1).strip()
+        elif skill_type == "user":
             display_name = "_".join(skill.split("_")[1:-1]).replace("_", " ").title()
         else:
             display_name = " ".join(word.capitalize() for word in skill.split("-"))
@@ -160,7 +164,7 @@ def _load_skills_from_disk() -> dict[str, dict]:
             "description": "Placeholder description for the skill",
             "type": skill_type,
             "files": fs,
-            "definition": open(skill_md).read(),
+            "definition": definition,
             "created_at": os.path.getctime(skill_md),
             "updated_at": os.path.getmtime(skill_md),
         }
@@ -926,8 +930,9 @@ async def create_skill(body: SkillCreate):
     _SKILLS[skill_id] = skill
     skill_dir = os.path.join(_SKILLS_DIR, skill_id)
     os.makedirs(skill_dir, exist_ok=True)
+    frontmatter = f'---\nname: "{body.name}"\ndescription: "{body.description}"\n---\n\n'
     with open(os.path.join(skill_dir, "SKILL.md"), "w") as f:
-        f.write(body.definition)
+        f.write(frontmatter + body.definition)
     return skill
 
 
@@ -944,8 +949,9 @@ async def update_skill(skill_id: str, body: SkillUpdate):
         skill["definition"] = body.definition
         skill_md = os.path.join(_SKILLS_DIR, skill_id, "SKILL.md")
         if os.path.isfile(skill_md):
+            frontmatter = f'---\nname: "{skill["name"]}"\ndescription: "{skill["description"]}"\n---\n\n'
             with open(skill_md, "w") as f:
-                f.write(body.definition)
+                f.write(frontmatter + body.definition)
     skill["updated_at"] = _now_iso()
     return skill
 
@@ -1041,32 +1047,74 @@ _SKILLSBENCH_ROOT = Path(__file__).resolve().parent / "skillsbench"
 _SKILLSBENCH_RUNS = _SKILLSBENCH_ROOT / "experiments" / "skill-eval-runs"
 
 
+@app.get("/api/agent-skills")
+async def get_agent_skills():
+    """Return agent→skills mapping from agent_skills.json, with display names resolved."""
+    path = _SKILLSBENCH_ROOT / "agent_skills.json"
+    if not path.is_file():
+        return {}
+    with open(path) as f:
+        data = json.load(f)
+    for agent_data in data.values():
+        agent_data["skill_details"] = [
+            {"id": sid, "name": _SKILLS.get(sid, {}).get("name", sid)}
+            for sid in agent_data.get("skills", [])
+        ]
+    return data
+
+
 @app.post("/api/skill-evals/run", status_code=202)
-async def run_skill_eval(skill_id: str = "user-citation-checker111-e8e34d"):
-    """Launch skill_evaluation_framework.py for the given skill in the background."""
+async def run_skill_eval(agent_id: str):
+    """For each skill of the agent, run eval only if no existing result exists."""
+    agent_skills_path = _SKILLSBENCH_ROOT / "agent_skills.json"
+    if not agent_skills_path.is_file():
+        raise HTTPException(status_code=404, detail="agent_skills.json not found")
+    with open(agent_skills_path) as f:
+        agent_skills_data = json.load(f)
+    skill_ids = agent_skills_data.get(agent_id, {}).get("skills", [])
+
+    # Collect skill names that already have eval results
+    existing_names: set[str] = set()
+    if _SKILLSBENCH_RUNS.is_dir():
+        for run_dir in _SKILLSBENCH_RUNS.iterdir():
+            summary = run_dir / "evaluation_summary.json"
+            if summary.is_file():
+                with open(summary) as f:
+                    d = json.load(f)
+                name = d.get("inputs", {}).get("selected_skill_name")
+                if name:
+                    existing_names.add(name)
+
     script = _SKILLSBENCH_ROOT / "experiments" / "skill_evaluation_framework.py"
     venv_bin = _SKILLSBENCH_ROOT / ".venv" / "bin"
     py_bin = str(venv_bin / "python") if (venv_bin / "python").exists() else "python3"
-    existing_path = os.environ.get("PATH", "")
-    env = {**os.environ, "PYTHONUNBUFFERED": "1", "PATH": f"{venv_bin}:{existing_path}"}
-    asyncio.create_task(
-        asyncio.create_subprocess_exec(
-            py_bin, str(script),
-            "--skills-dir", str(_SKILLS_DIR),
-            "--skill", skill_id,
-            "--tasks-dir", str(_SKILLSBENCH_ROOT / "tasks"),
-            "--workspace-dir", str(_SKILLSBENCH_RUNS),
-            "--threshold", "0.357",
-            "--embedding-model", "openai/text-embedding-3-small",
-            "--base-config", str(_SKILLSBENCH_ROOT / "experiments" / "configs" / "sanity-check.yaml"),
-            "--agent-name", "codex",
-            "--model-name", "openai/gpt-5.2-codex",
-            "--run",
-            env=env,
-            cwd=str(_SKILLSBENCH_ROOT),
+    env = {**os.environ, "PYTHONUNBUFFERED": "1", "PATH": f"{venv_bin}:{os.environ.get('PATH', '')}"}
+
+    ran, skipped = [], []
+    for skill_id in skill_ids:
+        skill_name = _SKILLS.get(skill_id, {}).get("name", skill_id)
+        if skill_name in existing_names:
+            skipped.append(skill_id)
+            continue
+        asyncio.create_task(
+            asyncio.create_subprocess_exec(
+                py_bin, str(script),
+                "--skills-dir", str(_SKILLS_DIR),
+                "--skill", skill_id,
+                "--tasks-dir", str(_SKILLSBENCH_ROOT / "tasks"),
+                "--workspace-dir", str(_SKILLSBENCH_RUNS),
+                "--threshold", "0.357",
+                "--embedding-model", "openai/text-embedding-3-small",
+                "--base-config", str(_SKILLSBENCH_ROOT / "experiments" / "configs" / "sanity-check.yaml"),
+                "--agent-name", "codex",
+                "--model-name", "openai/gpt-5.2-codex",
+                "--run",
+                env=env,
+                cwd=str(_SKILLSBENCH_ROOT),
+            )
         )
-    )
-    return {"ok": True, "skill_id": skill_id}
+        ran.append(skill_id)
+    return {"ok": True, "ran": ran, "skipped": skipped}
 
 
 @app.get("/api/skill-evals")

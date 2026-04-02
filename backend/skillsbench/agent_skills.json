@@ -1,0 +1,14 @@
+{
+  "agent-claude-full": {
+    "name": "Equity Research Analyst",
+    "skills": ["user-citation-checker111-e8e34d", "user_dialogue_parser_2_5667e4"]
+  },
+  "agent-gpt4o-web": {
+    "name": "Market Intelligence Associate",
+    "skills": ["user_dialogue_parser_2_5667e4"]
+  },
+  "agent-claude-lite": {
+    "name": "Portfolio Risk Analyst",
+    "skills": ["user-citation-checker111-e8e34d"]
+  }
+}

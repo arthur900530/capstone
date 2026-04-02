@@ -21,6 +21,7 @@ import {
 import {
   fetchEvaluations,
   fetchSkillEvals,
+  fetchAgentSkills,
   runSkillEval,
 } from "../services/api";
 
@@ -141,12 +142,13 @@ function AgentListItem({ agent, run, isSelected, onSelect }) {
   );
 }
 
-function SkillEvalsPage({ skillEvals, onSkillEvalsUpdate, onBack }) {
+function SkillEvalsPage({ skillEvals, onSkillEvalsUpdate, onBack, agentId }) {
   const [running, setRunning] = useState(false);
   const handleRun = async () => {
     setRunning(true);
     try {
-      await runSkillEval();
+      const { ran } = await runSkillEval(agentId);
+      if (ran.length === 0) { setRunning(false); return; }
       const initialCount = skillEvals.length;
       const poll = setInterval(async () => {
         try {
@@ -249,9 +251,11 @@ function SkillEvalsPage({ skillEvals, onSkillEvalsUpdate, onBack }) {
                         With Skill
                       </p>
                       <p
-                        className={`text-3xl font-bold ${rateColor(ev.pass_rate)}`}
+                        className={`text-3xl font-bold ${rateColor(ev.mean_reward)}`}
                       >
-                        {fmt(ev.pass_rate)}
+                        {ev.mean_reward != null
+                          ? `${(ev.mean_reward * 100).toFixed(1)}%`
+                          : "—"}
                       </p>
                       <p className="mt-1 text-[11px] text-text-muted">
                         {ev.n_trials} trial{ev.n_trials !== 1 ? "s" : ""}
@@ -262,9 +266,11 @@ function SkillEvalsPage({ skillEvals, onSkillEvalsUpdate, onBack }) {
                         Without Skill
                       </p>
                       <p
-                        className={`text-3xl font-bold ${rateColor(ev.pass_rate_no_skills)}`}
+                        className={`text-3xl font-bold ${rateColor(ev.mean_reward_no_skills)}`}
                       >
-                        {fmt(ev.pass_rate_no_skills)}
+                        {ev.mean_reward_no_skills != null
+                          ? `${(ev.mean_reward_no_skills * 100).toFixed(1)}%`
+                          : "—"}
                       </p>
                       <p className="mt-1 text-[11px] text-text-muted">
                         baseline
@@ -363,8 +369,20 @@ function SkillEvalsPage({ skillEvals, onSkillEvalsUpdate, onBack }) {
   );
 }
 
-function RunDetail({ run, agent, onViewSkillEvals }) {
-  const categoryEntries = Object.entries(run.category_success || {});
+function RunDetail({
+  run,
+  agent,
+  agentSkillMap,
+  skillEvals,
+  onViewSkillEvals,
+}) {
+  const agentEntry = agentSkillMap?.[run.agent_id];
+  const skillDetails = agentEntry?.skill_details ?? [];
+  // For each skill, find the latest eval result by matching skill name
+  const skillRows = skillDetails.map((s) => {
+    const latest = skillEvals.find((e) => e.skill_name === s.name);
+    return { name: s.name, rate: latest?.mean_reward ?? null };
+  });
 
   return (
     <div className="flex h-full flex-col">
@@ -437,24 +455,26 @@ function RunDetail({ run, agent, onViewSkillEvals }) {
               label="Financial Skill Proficiency"
               onViewDetails={onViewSkillEvals}
             >
-              {categoryEntries.length > 0 ? (
+              {skillRows.length > 0 ? (
                 <div className="space-y-2.5">
-                  {categoryEntries.map(([category, stats]) => (
-                    <div key={category}>
+                  {skillRows.map((s) => (
+                    <div key={s.name}>
                       <div className="mb-0.5 flex items-center justify-between">
                         <span className="text-xs text-text-muted">
-                          {category}
+                          {s.name}
                         </span>
                         <span className="text-xs text-text-muted">
-                          {stats.passed}/{stats.total}
+                          {s.rate != null
+                            ? `${(s.rate * 100).toFixed(1)}%`
+                            : "—"}
                         </span>
                       </div>
-                      <RateBar rate={stats.rate} />
+                      <RateBar rate={s.rate} />
                     </div>
                   ))}
                 </div>
               ) : (
-                <p className="text-xs text-text-muted">No category data</p>
+                <p className="text-xs text-text-muted">No skills mapped</p>
               )}
             </MetricCard>
 
@@ -506,6 +526,7 @@ export default function EvaluationView({
   const [search, setSearch] = useState("");
   const [skillEvals, setSkillEvals] = useState([]);
   const [showSkillEvals, setShowSkillEvals] = useState(false);
+  const [agentSkills, setAgentSkills] = useState({});
 
   useEffect(() => {
     let cancelled = false;
@@ -534,6 +555,11 @@ export default function EvaluationView({
     fetchSkillEvals()
       .then((data) => {
         if (!cancelled) setSkillEvals(data);
+      })
+      .catch(() => {});
+    fetchAgentSkills()
+      .then((data) => {
+        if (!cancelled) setAgentSkills(data);
       })
       .catch(() => {});
     return () => {
@@ -658,15 +684,24 @@ export default function EvaluationView({
       <div className="flex flex-1 flex-col bg-workspace">
         {showSkillEvals ? (
           <SkillEvalsPage
-            skillEvals={skillEvals}
+            skillEvals={skillEvals.filter((e) => {
+              const names =
+                agentSkills[selectedAgentId]?.skill_details?.map(
+                  (s) => s.name,
+                ) ?? [];
+              return names.length === 0 || names.includes(e.skill_name);
+            })}
             onSkillEvalsUpdate={setSkillEvals}
             onBack={() => setShowSkillEvals(false)}
+            agentId={selectedAgentId}
           />
         ) : selectedRun ? (
           <RunDetail
             key={selectedRun.run_id}
             run={selectedRun}
             agent={agentMap[selectedRun.agent_id]}
+            agentSkillMap={agentSkills}
+            skillEvals={skillEvals}
             onViewSkillEvals={() => setShowSkillEvals(true)}
           />
         ) : (

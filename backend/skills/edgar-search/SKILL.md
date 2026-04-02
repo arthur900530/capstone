@@ -1,5 +1,5 @@
 ---
-name: edgar-search
+name: "Edgar Search"
 description: "Query the SEC EDGAR database to retrieve official company filings including 10-K, 10-Q, 8-K, and proxy statements."
 ---
 
