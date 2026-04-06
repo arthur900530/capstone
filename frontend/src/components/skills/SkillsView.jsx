@@ -5,8 +5,8 @@ import {
 } from "lucide-react";
 import { fetchSkills } from "../../services/api";
 import SkillCard from "./SkillCard";
-import SkillListItem from "./SkillListItem";
 import SkillEditor from "./SkillEditor";
+import SkillDetailPanel from "./SkillDetailPanel";
 import CreateSkillModal from "./CreateSkillModal";
 import TrainSkillModal from "./TrainSkillModal";
 
@@ -271,17 +271,25 @@ export default function SkillsView({ onSkillsChanged }) {
                 )}
               </div>
 
-              {/* Detail / editor panel */}
+              {/* Detail panel — browse uses read-only detail, installed uses editor */}
               {selectedSkill && (
                 <div className="w-[400px] shrink-0 border-l border-border/40 bg-workspace xl:w-[480px]">
-                  <SkillEditor
-                    key={selectedSkill.id}
-                    skill={selectedSkill}
-                    onSaved={handleSaved}
-                    onDeleted={handleDeleted}
-                    viewingFile={viewingFile}
-                    onViewFile={setViewingFile}
-                  />
+                  {subTab === "installed" ? (
+                    <SkillEditor
+                      key={selectedSkill.id}
+                      skill={selectedSkill}
+                      onSaved={handleSaved}
+                      onDeleted={handleDeleted}
+                      viewingFile={viewingFile}
+                      onViewFile={setViewingFile}
+                    />
+                  ) : (
+                    <SkillDetailPanel
+                      key={selectedSkill.id}
+                      skill={selectedSkill}
+                      onClose={() => setSelectedId(null)}
+                    />
+                  )}
                 </div>
               )}
             </>
