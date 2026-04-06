@@ -1,20 +1,104 @@
 import { useState } from "react";
 import {
   X, Download, Trash2, Cloud, CheckCircle, Paperclip,
-  ChevronDown, ChevronRight, ExternalLink,
+  ChevronDown, ChevronRight, ExternalLink, Copy, Check, Maximize2,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { fileIcon } from "./utils";
 import FileViewer from "./FileViewer";
 
+/* ── Shared markdown component map ──────────────────────────────────────── */
+
+const mdComponents = {
+  h1: ({ children }) => <h1 className="mb-3 mt-1 text-base font-semibold text-text-primary">{children}</h1>,
+  h2: ({ children }) => <h2 className="mb-2 mt-5 border-b border-border/20 pb-1.5 text-[13px] font-semibold text-text-primary">{children}</h2>,
+  h3: ({ children }) => <h3 className="mb-1.5 mt-3 text-xs font-semibold text-text-primary">{children}</h3>,
+  p: ({ children }) => <p className="mb-2.5 text-[13px] leading-[1.7] text-text-secondary">{children}</p>,
+  ul: ({ children }) => <ul className="mb-2.5 ml-4 list-disc space-y-1 text-[13px] text-text-secondary">{children}</ul>,
+  ol: ({ children }) => <ol className="mb-2.5 ml-4 list-decimal space-y-1 text-[13px] text-text-secondary">{children}</ol>,
+  li: ({ children }) => <li className="text-[13px] leading-[1.6] text-text-secondary">{children}</li>,
+  a: ({ href, children }) => <a href={href} className="text-accent-teal hover:text-accent-light hover:underline">{children}</a>,
+  strong: ({ children }) => <strong className="font-semibold text-text-primary">{children}</strong>,
+  em: ({ children }) => <em className="text-text-secondary/80">{children}</em>,
+  code: ({ className, children, ...props }) => {
+    const isBlock = className?.includes("language-");
+    if (isBlock) {
+      return (
+        <pre className="my-3 overflow-x-auto rounded-lg border border-border/20 bg-charcoal/80 px-4 py-3">
+          <code className="text-xs font-mono leading-relaxed text-accent-light/90">{children}</code>
+        </pre>
+      );
+    }
+    return <code className="rounded-md bg-accent-teal/8 px-1.5 py-0.5 text-xs font-mono text-accent-teal" {...props}>{children}</code>;
+  },
+  pre: ({ children }) => <>{children}</>,
+  blockquote: ({ children }) => (
+    <blockquote className="my-3 border-l-2 border-accent-teal/30 pl-3.5 text-[13px] italic text-text-muted">{children}</blockquote>
+  ),
+  hr: () => <hr className="my-5 border-border/20" />,
+};
+
+/* ── Pop-out modal ──────────────────────────────────────────────────────── */
+
+function DefinitionModal({ definition, skillName, onClose }) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = async () => {
+    await navigator.clipboard.writeText(definition);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-8">
+      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative z-10 flex max-h-[85vh] w-full max-w-3xl flex-col rounded-2xl border border-border/30 bg-workspace shadow-2xl shadow-black/40">
+        {/* Modal header */}
+        <div className="flex items-center justify-between border-b border-border/30 px-5 py-3">
+          <span className="text-sm font-medium text-text-primary">{skillName}</span>
+          <div className="flex items-center gap-1">
+            <button
+              onClick={handleCopy}
+              className="rounded-lg p-1.5 text-text-muted transition-colors hover:bg-surface hover:text-text-secondary"
+              title="Copy definition"
+            >
+              {copied ? <Check size={15} className="text-green-400" /> : <Copy size={15} />}
+            </button>
+            <button
+              onClick={onClose}
+              className="rounded-lg p-1.5 text-text-muted transition-colors hover:bg-surface hover:text-text-secondary"
+            >
+              <X size={15} />
+            </button>
+          </div>
+        </div>
+        {/* Modal body */}
+        <div className="flex-1 overflow-y-auto px-8 py-6">
+          <ReactMarkdown components={mdComponents}>{definition}</ReactMarkdown>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ── Main panel ─────────────────────────────────────────────────────────── */
+
 export default function SkillDetailPanel({ skill, onClose, onInstall, onUninstall }) {
   const [viewingFile, setViewingFile] = useState(null);
   const [filesExpanded, setFilesExpanded] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [showModal, setShowModal] = useState(false);
 
   const files = skill.files ?? [];
   const isCloudOnly = skill.is_cloud_only;
   const isBuiltin = skill.is_builtin || skill.type === "builtin";
   const tags = skill.tags ?? [];
+
+  const handleCopy = async () => {
+    await navigator.clipboard.writeText(skill.definition);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
 
   if (viewingFile) {
     return (
@@ -137,37 +221,30 @@ export default function SkillDetailPanel({ skill, onClose, onInstall, onUninstal
 
           {/* Rendered SKILL.md */}
           {skill.definition && (
-            <div className="rounded-xl border border-border/30 bg-surface/50 px-5 py-4">
-              <div className="skill-markdown text-sm leading-relaxed text-text-secondary">
-                <ReactMarkdown
-                  components={{
-                    h1: ({ children }) => <h1 className="mb-3 mt-1 text-lg font-semibold text-text-primary">{children}</h1>,
-                    h2: ({ children }) => <h2 className="mb-2 mt-4 text-sm font-semibold text-text-primary">{children}</h2>,
-                    h3: ({ children }) => <h3 className="mb-1.5 mt-3 text-xs font-semibold text-text-primary">{children}</h3>,
-                    p: ({ children }) => <p className="mb-2 text-sm leading-relaxed text-text-secondary">{children}</p>,
-                    ul: ({ children }) => <ul className="mb-2 ml-4 list-disc space-y-1 text-sm text-text-secondary">{children}</ul>,
-                    ol: ({ children }) => <ol className="mb-2 ml-4 list-decimal space-y-1 text-sm text-text-secondary">{children}</ol>,
-                    li: ({ children }) => <li className="text-sm text-text-secondary">{children}</li>,
-                    a: ({ href, children }) => <a href={href} className="text-accent-teal hover:underline">{children}</a>,
-                    strong: ({ children }) => <strong className="font-semibold text-text-primary">{children}</strong>,
-                    code: ({ className, children, ...props }) => {
-                      const isBlock = className?.includes("language-");
-                      if (isBlock) {
-                        return (
-                          <pre className="my-3 overflow-x-auto rounded-lg border border-border/30 bg-charcoal px-4 py-3">
-                            <code className="text-xs font-mono leading-relaxed text-text-primary">{children}</code>
-                          </pre>
-                        );
-                      }
-                      return <code className="rounded bg-surface px-1.5 py-0.5 text-xs font-mono text-accent-teal" {...props}>{children}</code>;
-                    },
-                    pre: ({ children }) => <>{children}</>,
-                    blockquote: ({ children }) => (
-                      <blockquote className="my-2 border-l-2 border-accent-teal/40 pl-3 text-sm italic text-text-muted">{children}</blockquote>
-                    ),
-                    hr: () => <hr className="my-4 border-border/30" />,
-                  }}
-                >{skill.definition}</ReactMarkdown>
+            <div className="group relative rounded-xl border border-border/20 bg-gradient-to-b from-surface/40 to-transparent p-[1px]">
+              <div className="rounded-[11px] bg-workspace px-5 py-4">
+                {/* Toolbar */}
+                <div className="mb-3 flex items-center justify-between">
+                  <span className="text-[11px] font-medium tracking-wide text-text-muted uppercase">Definition</span>
+                  <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+                    <button
+                      onClick={handleCopy}
+                      className="rounded-md p-1.5 text-text-muted transition-colors hover:bg-surface hover:text-text-secondary"
+                      title="Copy to clipboard"
+                    >
+                      {copied ? <Check size={14} className="text-green-400" /> : <Copy size={14} />}
+                    </button>
+                    <button
+                      onClick={() => setShowModal(true)}
+                      className="rounded-md p-1.5 text-text-muted transition-colors hover:bg-surface hover:text-text-secondary"
+                      title="Expand"
+                    >
+                      <Maximize2 size={14} />
+                    </button>
+                  </div>
+                </div>
+                {/* Markdown */}
+                <ReactMarkdown components={mdComponents}>{skill.definition}</ReactMarkdown>
               </div>
             </div>
           )}
@@ -193,6 +270,15 @@ export default function SkillDetailPanel({ skill, onClose, onInstall, onUninstal
           </div>
         </div>
       </div>
+
+      {/* Pop-out modal */}
+      {showModal && (
+        <DefinitionModal
+          definition={skill.definition}
+          skillName={skill.name}
+          onClose={() => setShowModal(false)}
+        />
+      )}
     </div>
   );
 }
