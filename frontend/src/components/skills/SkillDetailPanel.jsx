@@ -52,7 +52,7 @@ function DefinitionModal({ definition, skillName, onClose }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-8">
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative z-10 flex max-h-[85vh] w-full max-w-3xl flex-col rounded-2xl border border-border/30 bg-workspace shadow-2xl shadow-black/40">
+      <div className="relative z-10 flex max-h-[85vh] w-full max-w-3xl animate-scale-in flex-col rounded-2xl border border-border/30 bg-workspace shadow-2xl shadow-black/40">
         {/* Modal header */}
         <div className="flex items-center justify-between border-b border-border/30 px-5 py-3">
           <span className="text-sm font-medium text-text-primary">{skillName}</span>

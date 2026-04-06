@@ -297,7 +297,7 @@ export default function SkillsView({ onSkillsChanged }) {
                     )}
                   </div>
                 ) : viewMode === "grid" ? (
-                  <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+                  <div className="animate-fade-in grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
                     {filtered.map((skill) => (
                       <SkillCard
                         key={skill.id}
@@ -325,7 +325,7 @@ export default function SkillsView({ onSkillsChanged }) {
 
               {/* Detail panel — hidden on small screens, side panel on lg+ */}
               {selectedSkill && (
-                <div className="hidden w-[480px] shrink-0 border-l border-border/40 bg-workspace lg:block xl:w-[560px]">
+                <div className="hidden w-[480px] shrink-0 animate-slide-in-right border-l border-border/40 bg-workspace lg:block xl:w-[560px]">
                   {subTab === "installed" ? (
                     <SkillEditor
                       key={selectedSkill.id}
