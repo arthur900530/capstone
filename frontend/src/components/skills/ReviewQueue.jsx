@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import {
   Loader2, AlertCircle, ClipboardCheck, CheckCircle, XCircle,
-  GitMerge, ChevronDown, ChevronRight, MessageSquare,
+  ChevronDown, ChevronRight, MessageSquare,
 } from "lucide-react";
 import { fetchSubmissions, reviewSubmission } from "../../services/api";
 
@@ -34,7 +34,6 @@ function ReviewItem({ sub, onDecision }) {
             <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
               sub.status === "accepted" ? "bg-green-500/10 text-green-400"
               : sub.status === "discarded" ? "bg-red-500/10 text-red-400"
-              : sub.status === "kept_both" ? "bg-blue-500/10 text-blue-400"
               : sub.status === "duplicate_check_complete" ? "bg-yellow-500/10 text-yellow-400"
               : "bg-charcoal text-text-muted"
             }`}>
@@ -60,14 +59,6 @@ function ReviewItem({ sub, onDecision }) {
             >
               {acting ? <Loader2 size={13} className="animate-spin" /> : <CheckCircle size={13} />}
               Accept
-            </button>
-            <button
-              onClick={() => handleDecision("keep_both")}
-              disabled={acting}
-              className="flex items-center gap-1 rounded-lg bg-yellow-500/10 px-2.5 py-1.5 text-xs font-medium text-yellow-400 transition-colors hover:bg-yellow-500/20 disabled:opacity-50"
-            >
-              <GitMerge size={13} />
-              Keep Both
             </button>
             <button
               onClick={() => handleDecision("discard")}
