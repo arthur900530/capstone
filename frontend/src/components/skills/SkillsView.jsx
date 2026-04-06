@@ -3,7 +3,7 @@ import {
   Wrench, Plus, Loader2, AlertCircle, Search, Sparkles,
   LayoutGrid, List, Store, Download, Upload as UploadIcon, ClipboardCheck,
 } from "lucide-react";
-import { fetchSkills } from "../../services/api";
+import { fetchSkills, installSkill, uninstallSkill } from "../../services/api";
 import SkillCard from "./SkillCard";
 import SkillEditor from "./SkillEditor";
 import SkillDetailPanel from "./SkillDetailPanel";
@@ -113,8 +113,38 @@ export default function SkillsView({ onSkillsChanged }) {
 
   if (loading) {
     return (
-      <div className="flex flex-1 items-center justify-center">
-        <Loader2 size={24} className="animate-spin text-accent-teal" />
+      <div className="flex flex-1 flex-col overflow-hidden pt-12 lg:pt-0">
+        <div className="border-b border-border/40 bg-charcoal/30 px-4 py-3">
+          <div className="h-5 w-40 animate-pulse rounded bg-surface" />
+          <div className="mt-3 flex gap-2">
+            {[1, 2, 3, 4].map((i) => (
+              <div key={i} className="h-7 w-20 animate-pulse rounded-lg bg-surface" />
+            ))}
+          </div>
+        </div>
+        <div className="flex-1 overflow-y-auto p-4">
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+            {[1, 2, 3, 4, 5, 6].map((i) => (
+              <div key={i} className="rounded-xl border border-border/40 bg-surface p-4">
+                <div className="flex items-center gap-2.5">
+                  <div className="h-9 w-9 animate-pulse rounded-lg bg-surface-hover" />
+                  <div className="flex-1 space-y-1.5">
+                    <div className="h-4 w-32 animate-pulse rounded bg-surface-hover" />
+                    <div className="h-3 w-20 animate-pulse rounded bg-surface-hover" />
+                  </div>
+                </div>
+                <div className="mt-3 space-y-1.5">
+                  <div className="h-3 w-full animate-pulse rounded bg-surface-hover" />
+                  <div className="h-3 w-2/3 animate-pulse rounded bg-surface-hover" />
+                </div>
+                <div className="mt-3 flex gap-2">
+                  <div className="h-5 w-14 animate-pulse rounded-full bg-surface-hover" />
+                  <div className="h-5 w-10 animate-pulse rounded-full bg-surface-hover" />
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
       </div>
     );
   }
@@ -274,9 +304,9 @@ export default function SkillsView({ onSkillsChanged }) {
                 )}
               </div>
 
-              {/* Detail panel — browse uses read-only detail, installed uses editor */}
+              {/* Detail panel — hidden on small screens, side panel on lg+ */}
               {selectedSkill && (
-                <div className="w-[480px] shrink-0 border-l border-border/40 bg-workspace xl:w-[560px]">
+                <div className="hidden w-[480px] shrink-0 border-l border-border/40 bg-workspace lg:block xl:w-[560px]">
                   {subTab === "installed" ? (
                     <SkillEditor
                       key={selectedSkill.id}
@@ -292,6 +322,16 @@ export default function SkillsView({ onSkillsChanged }) {
                       key={selectedSkill.id}
                       skill={selectedSkill}
                       onClose={() => setSelectedId(null)}
+                      onInstall={async (id) => {
+                        await installSkill(id);
+                        const refreshed = await fetchSkills();
+                        setSkills(refreshed);
+                      }}
+                      onUninstall={async (id) => {
+                        await uninstallSkill(id);
+                        const refreshed = await fetchSkills();
+                        setSkills(refreshed);
+                      }}
                     />
                   )}
                 </div>

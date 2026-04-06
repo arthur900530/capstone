@@ -1,7 +1,7 @@
 import { useState } from "react";
 import {
   X, Download, Trash2, Cloud, CheckCircle, Paperclip,
-  ChevronDown, ChevronRight, ExternalLink, Copy, Check, Maximize2,
+  ChevronDown, ChevronRight, ExternalLink, Copy, Check, Maximize2, Loader2,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { fileIcon } from "./utils";
@@ -88,6 +88,7 @@ export default function SkillDetailPanel({ skill, onClose, onInstall, onUninstal
   const [filesExpanded, setFilesExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
   const [showModal, setShowModal] = useState(false);
+  const [installing, setInstalling] = useState(false);
 
   const files = skill.files ?? [];
   const isCloudOnly = skill.is_cloud_only;
@@ -98,6 +99,24 @@ export default function SkillDetailPanel({ skill, onClose, onInstall, onUninstal
     await navigator.clipboard.writeText(skill.definition);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  };
+
+  const handleInstall = async () => {
+    setInstalling(true);
+    try {
+      await onInstall?.(skill.id);
+    } finally {
+      setInstalling(false);
+    }
+  };
+
+  const handleUninstall = async () => {
+    setInstalling(true);
+    try {
+      await onUninstall?.(skill.id);
+    } finally {
+      setInstalling(false);
+    }
   };
 
   if (viewingFile) {
@@ -167,19 +186,21 @@ export default function SkillDetailPanel({ skill, onClose, onInstall, onUninstal
           {/* Install / Uninstall action */}
           {isCloudOnly ? (
             <button
-              onClick={() => onInstall?.(skill.id)}
-              className="flex items-center gap-2 rounded-lg bg-accent-teal px-4 py-2 text-sm font-medium text-charcoal transition-colors hover:bg-accent-light"
+              onClick={handleInstall}
+              disabled={installing}
+              className="flex items-center gap-2 rounded-lg bg-accent-teal px-4 py-2 text-sm font-medium text-charcoal transition-colors hover:bg-accent-light disabled:opacity-50"
             >
-              <Download size={15} />
-              Install Skill
+              {installing ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />}
+              {installing ? "Installing..." : "Install Skill"}
             </button>
           ) : !isBuiltin && (
             <button
-              onClick={() => onUninstall?.(skill.id)}
-              className="flex items-center gap-2 rounded-lg border border-border/40 px-4 py-2 text-sm text-text-secondary transition-colors hover:bg-surface"
+              onClick={handleUninstall}
+              disabled={installing}
+              className="flex items-center gap-2 rounded-lg border border-border/40 px-4 py-2 text-sm text-text-secondary transition-colors hover:bg-surface disabled:opacity-50"
             >
-              <Trash2 size={14} />
-              Uninstall
+              {installing ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
+              {installing ? "Removing..." : "Uninstall"}
             </button>
           )}
 
