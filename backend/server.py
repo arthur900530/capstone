@@ -69,6 +69,7 @@ from contextlib import asynccontextmanager
 from db.engine import engine
 from db.seed import seed_from_filesystem
 from routers.skills import router as skills_router
+from routers.marketplace import router as marketplace_router
 
 
 @asynccontextmanager
@@ -100,6 +101,7 @@ app.add_middleware(
 )
 
 app.include_router(skills_router)
+app.include_router(marketplace_router)
 
 
 # ---------------------------------------------------------------------------
