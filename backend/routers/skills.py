@@ -229,9 +229,14 @@ async def get_skill_file_content(skill_id: str, filename: str):
     if skill_id not in skills:
         raise HTTPException(status_code=404, detail="Skill not found")
     skill_files = file_contents.get(skill_id, {})
-    if filename in skill_files:
-        return {"filename": filename, "content": skill_files[filename]}
-    file_exists = any(f["name"] == filename for f in skills[skill_id].get("files", []))
+    # Normalize: try both with and without ./ prefix
+    for candidate in (filename, f"./{filename}", filename.lstrip("./")):
+        if candidate in skill_files:
+            return {"filename": filename, "content": skill_files[candidate]}
+    file_exists = any(
+        f["name"] == filename or f["name"] == f"./{filename}" or f["name"].lstrip("./") == filename
+        for f in skills[skill_id].get("files", [])
+    )
     if file_exists:
         return {"filename": filename, "content": f"# {filename}\n\n(File content placeholder)"}
     raise HTTPException(status_code=404, detail="File not found")
