@@ -59,7 +59,19 @@ async def create_submission(
     )
     session.add(sub)
     await session.flush()
-    return _submission_to_dict(sub)
+    # Return dict directly — no relationships to load on a fresh object
+    return {
+        "id": str(sub.id),
+        "proposed_name": sub.proposed_name,
+        "proposed_description": sub.proposed_description,
+        "proposed_skill_md": sub.proposed_skill_md,
+        "submission_type": sub.submission_type,
+        "status": sub.status,
+        "created_at": sub.created_at.isoformat() if sub.created_at else "",
+        "updated_at": sub.updated_at.isoformat() if sub.updated_at else "",
+        "reviewed_at": None,
+        "similarity_results": [],
+    }
 
 
 async def list_submissions(

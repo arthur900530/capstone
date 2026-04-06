@@ -22,34 +22,29 @@ export default function SkillCard({ skill, isSelected, onClick, viewMode = "grid
     return (
       <button
         onClick={onClick}
-        className={`flex w-full items-center gap-4 rounded-lg px-4 py-3 text-left transition-colors ${
+        className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left transition-colors ${
           isSelected
             ? "bg-surface border border-accent-teal/30"
             : "border border-transparent hover:bg-surface/50"
         } ${isCloudOnly ? "opacity-60" : ""}`}
       >
-        <div className="shrink-0 rounded-lg bg-accent-teal/10 p-2 text-accent-teal">
-          <Wrench size={16} />
+        <div className="shrink-0 rounded-md bg-accent-teal/10 p-1.5 text-accent-teal">
+          <Wrench size={14} />
         </div>
-        <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-medium text-text-primary">{skill.name}</p>
-          <p className="mt-0.5 truncate text-xs text-text-muted">{skill.description || skill.id}</p>
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
-            typeBadge === "builtin"
-              ? "bg-blue-500/10 text-blue-400"
-              : "bg-purple-500/10 text-purple-400"
-          }`}>
-            {typeBadge}
-          </span>
-          {isCloudOnly ? (
-            <Cloud size={14} className="text-text-muted" />
-          ) : (
-            <CheckCircle size={14} className="text-green-400" />
-          )}
-          <span className="text-[10px] text-text-muted">{timeAgo(skill.updated_at)}</span>
-        </div>
+        <p className="min-w-0 flex-1 truncate text-sm font-medium text-text-primary">{skill.name}</p>
+        <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium ${
+          typeBadge === "builtin"
+            ? "bg-blue-500/10 text-blue-400"
+            : "bg-purple-500/10 text-purple-400"
+        }`}>
+          {typeBadge}
+        </span>
+        {isCloudOnly ? (
+          <Cloud size={12} className="shrink-0 text-text-muted" />
+        ) : (
+          <CheckCircle size={12} className="shrink-0 text-green-400" />
+        )}
+        <span className="shrink-0 text-[10px] text-text-muted">{timeAgo(skill.updated_at)}</span>
       </button>
     );
   }
