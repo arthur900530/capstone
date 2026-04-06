@@ -137,17 +137,37 @@ export default function SkillDetailPanel({ skill, onClose, onInstall, onUninstal
 
           {/* Rendered SKILL.md */}
           {skill.definition && (
-            <div className="rounded-lg border border-border/40 bg-charcoal/30 p-4">
-              <div className="prose prose-invert prose-sm max-w-none
-                prose-headings:text-text-primary prose-headings:font-semibold
-                prose-p:text-text-secondary prose-p:leading-relaxed
-                prose-a:text-accent-teal prose-a:no-underline hover:prose-a:underline
-                prose-code:rounded prose-code:bg-surface prose-code:px-1.5 prose-code:py-0.5 prose-code:text-accent-teal prose-code:text-xs
-                prose-pre:rounded-lg prose-pre:border prose-pre:border-border/40 prose-pre:bg-[#2a2c31]
-                prose-li:text-text-secondary
-                prose-strong:text-text-primary
-              ">
-                <ReactMarkdown>{skill.definition}</ReactMarkdown>
+            <div className="rounded-xl border border-border/30 bg-surface/50 px-5 py-4">
+              <div className="skill-markdown text-sm leading-relaxed text-text-secondary">
+                <ReactMarkdown
+                  components={{
+                    h1: ({ children }) => <h1 className="mb-3 mt-1 text-lg font-semibold text-text-primary">{children}</h1>,
+                    h2: ({ children }) => <h2 className="mb-2 mt-4 text-sm font-semibold text-text-primary">{children}</h2>,
+                    h3: ({ children }) => <h3 className="mb-1.5 mt-3 text-xs font-semibold text-text-primary">{children}</h3>,
+                    p: ({ children }) => <p className="mb-2 text-sm leading-relaxed text-text-secondary">{children}</p>,
+                    ul: ({ children }) => <ul className="mb-2 ml-4 list-disc space-y-1 text-sm text-text-secondary">{children}</ul>,
+                    ol: ({ children }) => <ol className="mb-2 ml-4 list-decimal space-y-1 text-sm text-text-secondary">{children}</ol>,
+                    li: ({ children }) => <li className="text-sm text-text-secondary">{children}</li>,
+                    a: ({ href, children }) => <a href={href} className="text-accent-teal hover:underline">{children}</a>,
+                    strong: ({ children }) => <strong className="font-semibold text-text-primary">{children}</strong>,
+                    code: ({ className, children, ...props }) => {
+                      const isBlock = className?.includes("language-");
+                      if (isBlock) {
+                        return (
+                          <pre className="my-3 overflow-x-auto rounded-lg border border-border/30 bg-charcoal px-4 py-3">
+                            <code className="text-xs font-mono leading-relaxed text-text-primary">{children}</code>
+                          </pre>
+                        );
+                      }
+                      return <code className="rounded bg-surface px-1.5 py-0.5 text-xs font-mono text-accent-teal" {...props}>{children}</code>;
+                    },
+                    pre: ({ children }) => <>{children}</>,
+                    blockquote: ({ children }) => (
+                      <blockquote className="my-2 border-l-2 border-accent-teal/40 pl-3 text-sm italic text-text-muted">{children}</blockquote>
+                    ),
+                    hr: () => <hr className="my-4 border-border/30" />,
+                  }}
+                >{skill.definition}</ReactMarkdown>
               </div>
             </div>
           )}
