@@ -114,6 +114,21 @@ else
   echo ""
 fi
 
+# -- PostgreSQL check (optional) --
+echo "==> PostgreSQL"
+if command -v pg_isready >/dev/null 2>&1; then
+  if pg_isready -h localhost -p 5432 -q 2>/dev/null; then
+    echo "    PostgreSQL is running. Skill marketplace will use DB."
+    echo "    Running Alembic migrations..."
+    (cd "$BACKEND_DIR" && .venv/bin/python -m alembic upgrade head 2>&1) || echo "    Migration skipped (DB may need setup)"
+  else
+    echo "    PostgreSQL is not running. Skill marketplace will fall back to in-memory mode."
+  fi
+else
+  echo "    pg_isready not found. Skipping DB check (in-memory fallback active)."
+fi
+echo ""
+
 # -- Start processes --
 echo "==> Starting servers"
 echo "    API:      http://localhost:8000"
