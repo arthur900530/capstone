@@ -58,13 +58,14 @@ async def run_similarity_check(session: AsyncSession, submission_id: str) -> lis
 
         overall = name_sim * 0.3 + content_sim * 0.7
 
-        # Decide recommendation
+        # Only store results with meaningful overlap (>= 50%)
+        if overall < 0.5:
+            continue
+
         if overall > 0.8:
             recommendation = "discard"
-        elif overall > 0.5:
-            recommendation = "keep_both"
         else:
-            recommendation = "accept"
+            recommendation = "keep_both"
 
         sim_result = SkillSimilarityResult(
             submission_id=sub.id,
@@ -73,7 +74,7 @@ async def run_similarity_check(session: AsyncSession, submission_id: str) -> lis
             content_similarity=round(content_sim, 4),
             overall_overlap_score=round(overall, 4),
             decision_recommendation=recommendation,
-            rationale=f"Name similarity: {name_sim:.2%}, Content similarity: {content_sim:.2%}",
+            rationale=f"Name: {name_sim:.0%}, Content: {content_sim:.0%} (Ratcliff/Obershelp)",
         )
         session.add(sim_result)
         results.append({
