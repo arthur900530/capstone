@@ -197,8 +197,8 @@ export default function SkillsView({ onSkillsChanged }) {
             </div>
           </div>
 
-          {/* Sub-tabs */}
-          <div className="mt-3 flex flex-wrap items-center gap-1">
+          {/* Sub-tabs row */}
+          <div className="mt-3 flex items-center gap-1">
             {TABS.map(({ id, label, icon: TabIcon }) => {
               const count = id === "installed" ? installedCount
                 : id === "review" ? reviewCount
@@ -223,35 +223,31 @@ export default function SkillsView({ onSkillsChanged }) {
                 </button>
               );
             })}
+          </div>
 
-            <div className="flex-1" />
+          {/* Controls row — always visible */}
+          {(subTab === "browse" || subTab === "installed") && (
+            <div className="mt-2 flex items-center gap-2">
+              <div className="relative flex-1">
+                <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-text-muted" />
+                <input
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Search skills…"
+                  className="w-full rounded-lg border border-border/40 bg-charcoal py-1.5 pl-8 pr-3 text-xs text-text-primary placeholder:text-text-muted outline-none transition-colors focus:border-accent-teal"
+                />
+              </div>
 
-            {/* Type filter */}
-            {(subTab === "browse" || subTab === "installed") && (
               <select
                 value={typeFilter}
                 onChange={(e) => setTypeFilter(e.target.value)}
-                className="rounded-lg border border-border/40 bg-charcoal px-2.5 py-1.5 text-xs text-text-primary outline-none transition-colors focus:border-accent-teal"
+                className="shrink-0 rounded-lg border border-border/40 bg-charcoal px-2.5 py-1.5 text-xs text-text-primary outline-none transition-colors focus:border-accent-teal"
               >
                 <option value="all">All Types</option>
                 <option value="builtin">Builtin</option>
                 <option value="user">User</option>
               </select>
-            )}
 
-            {/* Search */}
-            <div className="relative">
-              <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-text-muted" />
-              <input
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search skills…"
-                className="w-40 rounded-lg border border-border/40 bg-charcoal py-1.5 pl-8 pr-3 text-xs text-text-primary placeholder:text-text-muted outline-none transition-colors focus:border-accent-teal focus:w-56"
-              />
-            </div>
-
-            {/* View toggle */}
-            {(subTab === "browse" || subTab === "installed") && (
               <div className="flex shrink-0 items-center rounded-lg border border-border/40 bg-charcoal">
                 <button
                   onClick={() => setViewMode("grid")}
@@ -270,8 +266,8 @@ export default function SkillsView({ onSkillsChanged }) {
                   <List size={14} />
                 </button>
               </div>
-            )}
-          </div>
+            </div>
+          )}
         </div>
 
         {/* Content area */}
