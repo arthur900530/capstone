@@ -657,9 +657,38 @@ def _copy_dir_contents(src_dir: str, dst_dir: str) -> None:
             shutil.copy2(src, dst)
 
 
+def _try_get_skill_from_db(skill_id: str) -> dict | None:
+    """Try to fetch skill materialization data from DB. Returns None if DB unavailable."""
+    from routers.skills import _db_available
+    if not _db_available:
+        return None
+    try:
+        import asyncio
+        from db import async_session
+        from services.skill_service import get_skill_for_materialization
+
+        async def _fetch():
+            async with async_session() as session:
+                return await get_skill_for_materialization(session, skill_id)
+
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            # We're in an async context — use to_thread with a new loop
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                return pool.submit(lambda: asyncio.run(_fetch())).result(timeout=5)
+        return asyncio.run(_fetch())
+    except Exception:
+        return None
+
+
 def _validate_skills_for_runtime(skill_ids: list[str]) -> None:
     """Ensure each skill can be materialized under workspace/skills/."""
     for sid in skill_ids:
+        # Check DB first, then in-memory
+        db_skill = _try_get_skill_from_db(sid)
+        if db_skill:
+            continue
         if sid not in _SKILLS:
             raise HTTPException(status_code=400, detail=f"Unknown skill_id: {sid}")
         skill = _SKILLS[sid]
@@ -682,6 +711,23 @@ def _validate_skills_for_runtime(skill_ids: list[str]) -> None:
 
 def _materialize_skill_package(skills_root: str, skill_id: str) -> None:
     """Write one skill package (SKILL.md + auxiliary files) under skills_root/skill_id/."""
+    # Try DB first for marketplace skills
+    db_data = _try_get_skill_from_db(skill_id)
+    if db_data:
+        pkg = os.path.join(skills_root, skill_id)
+        os.makedirs(pkg, exist_ok=True)
+        with open(os.path.join(pkg, "SKILL.md"), "w", encoding="utf-8") as f:
+            f.write(db_data.get("definition", ""))
+        for rel_path, content in db_data.get("files", {}).items():
+            if rel_path == "SKILL.md" or rel_path.endswith("/SKILL.md"):
+                continue
+            dest = os.path.join(pkg, rel_path)
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            with open(dest, "w", encoding="utf-8") as f:
+                f.write(content or "")
+        return
+
+    # Fallback to in-memory
     skill = _SKILLS[skill_id]
     pkg = os.path.join(skills_root, skill_id)
     os.makedirs(pkg, exist_ok=True)

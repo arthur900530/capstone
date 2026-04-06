@@ -265,8 +265,14 @@ async def train_skills(files: list[UploadFile] = File(...)):
             trainer = MMSkillTrainer()
             await asyncio.to_thread(trainer.train, saved_paths)
 
+            # Sync new filesystem skills into DB
             from db.seed import seed_from_filesystem
             await seed_from_filesystem()
+
+            # Also refresh in-memory stores so agent runtime sees new skills
+            import server
+            server._SKILLS = server._load_skills_from_disk()
+            server._FILE_CONTENTS = server._load_file_contents_from_disk()
 
             async for session in _gs():
                 all_skills = await skill_service.list_skills(session)
