@@ -33,8 +33,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
-from skills_ingestor.mm_train import MMSkillTrainer
-
 dotenv.load_dotenv()
 
 logger = logging.getLogger(__name__)
@@ -66,7 +64,32 @@ elif _agent_import_error:
 else:
     logger.info("Real agent mode DISABLED — MODEL/API_KEY env vars not set")
 
-app = FastAPI(title="Mock Reflexion Finance Agent API")
+from contextlib import asynccontextmanager
+
+from db.engine import engine
+from db.seed import seed_from_filesystem
+from routers.skills import router as skills_router
+
+
+@asynccontextmanager
+async def lifespan(application):
+    """Start DB engine and seed skills on first boot."""
+    try:
+        # Run Alembic migrations programmatically
+        from alembic.config import Config
+        from alembic import command
+        alembic_cfg = Config(os.path.join(os.path.dirname(__file__), "alembic.ini"))
+        await asyncio.to_thread(command.upgrade, alembic_cfg, "head")
+        # Seed filesystem skills into DB if needed
+        await seed_from_filesystem()
+        logger.info("Database initialized and seeded.")
+    except Exception as exc:
+        logger.warning("DB init skipped (PostgreSQL may not be running): %s", exc)
+    yield
+    await engine.dispose()
+
+
+app = FastAPI(title="Skill Marketplace Agent API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -75,6 +98,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(skills_router)
 
 
 # ---------------------------------------------------------------------------
@@ -1012,154 +1037,9 @@ async def evaluations():
     ]
 
 
-class SkillFileMetadata(BaseModel):
-    name: str
-    size: int | None = None
-    type: str | None = None
-
-
-class SkillCreate(BaseModel):
-    name: str
-    description: str = ""
-    definition: str = ""
-    files: list[SkillFileMetadata] | None = None
-
-
-class SkillUpdate(BaseModel):
-    name: str | None = None
-    description: str | None = None
-    definition: str | None = None
-
-
-@app.get("/api/skills")
-async def list_skills():
-    skills = sorted(_SKILLS.values(), key=lambda s: str(s.get("created_at", "")))
-    return skills
-
-
-@app.get("/api/skills/{skill_id}")
-async def get_skill(skill_id: str):
-    if skill_id not in _SKILLS:
-        raise HTTPException(status_code=404, detail="Skill not found")
-    return _SKILLS[skill_id]
-
-
-@app.post("/api/skills", status_code=201)
-async def create_skill(body: SkillCreate):
-    skill_id = f"user_{body.name.lower().replace(' ', '_')}_{uuid.uuid4().hex[:6]}"
-    now = _now_iso()
-    file_dicts = [f.model_dump(exclude_none=True) for f in body.files] if body.files else []
-    skill = {
-        "id": skill_id,
-        "name": body.name,
-        "description": body.description,
-        "type": "user",
-        "files": file_dicts,
-        "definition": body.definition,
-        "created_at": now,
-        "updated_at": now,
-    }
-    _SKILLS[skill_id] = skill
-    return skill
-
-
-@app.patch("/api/skills/{skill_id}")
-async def update_skill(skill_id: str, body: SkillUpdate):
-    if skill_id not in _SKILLS:
-        raise HTTPException(status_code=404, detail="Skill not found")
-    skill = _SKILLS[skill_id]
-    if body.name is not None:
-        skill["name"] = body.name
-    if body.description is not None:
-        skill["description"] = body.description
-    if body.definition is not None:
-        skill["definition"] = body.definition
-    skill["updated_at"] = _now_iso()
-    return skill
-
-
-@app.post("/api/skills/{skill_id}/files")
-async def add_skill_files(skill_id: str, files: list[SkillFileMetadata]):
-    if skill_id not in _SKILLS:
-        raise HTTPException(status_code=404, detail="Skill not found")
-    skill = _SKILLS[skill_id]
-    existing_names = {f["name"] for f in skill["files"]}
-    for f in files:
-        if f.name not in existing_names:
-            skill["files"].append(f.model_dump(exclude_none=True))
-            existing_names.add(f.name)
-    skill["updated_at"] = _now_iso()
-    return skill
-
-
-@app.delete("/api/skills/{skill_id}/files/{filename}")
-async def remove_skill_file(skill_id: str, filename: str):
-    if skill_id not in _SKILLS:
-        raise HTTPException(status_code=404, detail="Skill not found")
-    skill = _SKILLS[skill_id]
-    skill["files"] = [f for f in skill["files"] if f["name"] != filename]
-    skill["updated_at"] = _now_iso()
-    return skill
-
-
-@app.delete("/api/skills/{skill_id}")
-async def delete_skill(skill_id: str):
-    if skill_id not in _SKILLS:
-        raise HTTPException(status_code=404, detail="Skill not found")
-    if _SKILLS[skill_id]["type"] == "builtin":
-        raise HTTPException(status_code=403, detail="Cannot delete builtin skills")
-    del _SKILLS[skill_id]
-    return {"ok": True}
-
-
-@app.get("/api/skills/{skill_id}/files/{filename:path}")
-async def get_skill_file_content(skill_id: str, filename: str):
-    if skill_id not in _SKILLS:
-        raise HTTPException(status_code=404, detail="Skill not found")
-    skill_files = _FILE_CONTENTS.get(skill_id, {})
-    if filename in skill_files:
-        return {"filename": filename, "content": skill_files[filename]}
-    file_exists = any(f["name"] == filename for f in _SKILLS[skill_id].get("files", []))
-    if file_exists:
-        return {"filename": filename, "content": f"# {filename}\n\n(File content placeholder)"}
-    raise HTTPException(status_code=404, detail="File not found")
-
-
-@app.post("/api/skills/train")
-async def train_skills(files: list[UploadFile] = File(...)):
-    """Accept media uploads, run MMSkillTrainer, return newly created skills."""
-    if not files:
-        raise HTTPException(status_code=400, detail="No files provided")
-
-    tmp_dir = tempfile.mkdtemp(prefix="mm_train_")
-    try:
-        saved_paths: list[str] = []
-        for upload in files:
-            dest = os.path.join(tmp_dir, upload.filename)
-            with open(dest, "wb") as f:
-                content = await upload.read()
-                f.write(content)
-            saved_paths.append(dest)
-
-        existing_ids = set(_SKILLS.keys())
-
-        trainer = MMSkillTrainer()
-        await asyncio.to_thread(trainer.train, saved_paths)
-
-        refreshed = _load_skills_from_disk()
-        new_skills = []
-        for sid, skill in refreshed.items():
-            if sid not in existing_ids:
-                _SKILLS[sid] = skill
-                new_skills.append(skill)
-            else:
-                _SKILLS[sid] = skill
-
-        return new_skills
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
+# Skill CRUD endpoints are now in routers/skills.py (DB-backed).
+# The _SKILLS / _FILE_CONTENTS globals above are kept for the agent runtime
+# materialization (Phase 3 will migrate the agent to read from DB too).
 
 
 _SKILLSBENCH_ROOT = Path(__file__).resolve().parent / "skillsbench"
