@@ -75,7 +75,8 @@ from routers.submissions import router as submissions_router
 
 @asynccontextmanager
 async def lifespan(application):
-    """Start DB engine and seed skills on first boot."""
+    """Start DB engine and seed skills on first boot. Falls back to in-memory if no DB."""
+    from routers.skills import set_db_available
     try:
         # Run Alembic migrations programmatically
         from alembic.config import Config
@@ -84,11 +85,16 @@ async def lifespan(application):
         await asyncio.to_thread(command.upgrade, alembic_cfg, "head")
         # Seed filesystem skills into DB if needed
         await seed_from_filesystem()
+        set_db_available(True)
         logger.info("Database initialized and seeded.")
     except Exception as exc:
-        logger.warning("DB init skipped (PostgreSQL may not be running): %s", exc)
+        set_db_available(False)
+        logger.warning("DB init skipped — falling back to in-memory skills: %s", exc)
     yield
-    await engine.dispose()
+    try:
+        await engine.dispose()
+    except Exception:
+        pass
 
 
 app = FastAPI(title="Skill Marketplace Agent API", lifespan=lifespan)
