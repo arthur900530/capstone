@@ -198,7 +198,7 @@ export default function SkillsView({ onSkillsChanged }) {
           </div>
 
           {/* Sub-tabs */}
-          <div className="mt-3 flex items-center gap-1">
+          <div className="mt-3 flex flex-wrap items-center gap-1">
             {TABS.map(({ id, label, icon: TabIcon }) => {
               const count = id === "installed" ? installedCount
                 : id === "review" ? reviewCount
@@ -246,13 +246,13 @@ export default function SkillsView({ onSkillsChanged }) {
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 placeholder="Search skills…"
-                className="w-56 rounded-lg border border-border/40 bg-charcoal py-1.5 pl-8 pr-3 text-xs text-text-primary placeholder:text-text-muted outline-none transition-colors focus:border-accent-teal"
+                className="w-40 rounded-lg border border-border/40 bg-charcoal py-1.5 pl-8 pr-3 text-xs text-text-primary placeholder:text-text-muted outline-none transition-colors focus:border-accent-teal focus:w-56"
               />
             </div>
 
             {/* View toggle */}
             {(subTab === "browse" || subTab === "installed") && (
-              <div className="flex items-center rounded-lg border border-border/40 bg-charcoal">
+              <div className="flex shrink-0 items-center rounded-lg border border-border/40 bg-charcoal">
                 <button
                   onClick={() => setViewMode("grid")}
                   className={`rounded-l-lg p-1.5 transition-colors ${
