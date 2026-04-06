@@ -9,6 +9,8 @@ import SkillEditor from "./SkillEditor";
 import SkillDetailPanel from "./SkillDetailPanel";
 import CreateSkillModal from "./CreateSkillModal";
 import TrainSkillModal from "./TrainSkillModal";
+import SubmitSkillModal from "./SubmitSkillModal";
+import ReviewQueue from "./ReviewQueue";
 
 const TABS = [
   { id: "browse", label: "Browse", icon: Store },
@@ -26,6 +28,7 @@ export default function SkillsView({ onSkillsChanged }) {
   const [search, setSearch] = useState("");
   const [showCreate, setShowCreate] = useState(false);
   const [showTrain, setShowTrain] = useState(false);
+  const [showSubmit, setShowSubmit] = useState(false);
   const [subTab, setSubTab] = useState("browse");
   const [viewMode, setViewMode] = useState("grid");
 
@@ -282,6 +285,7 @@ export default function SkillsView({ onSkillsChanged }) {
                       onDeleted={handleDeleted}
                       viewingFile={viewingFile}
                       onViewFile={setViewingFile}
+                      onSubmit={() => setShowSubmit(true)}
                     />
                   ) : (
                     <SkillDetailPanel
@@ -319,14 +323,7 @@ export default function SkillsView({ onSkillsChanged }) {
               </div>
             </div>
           ) : subTab === "review" ? (
-            <div className="flex flex-1 flex-col items-center justify-center gap-3 p-8">
-              <ClipboardCheck size={32} className="text-text-muted" />
-              <p className="text-sm text-text-muted">
-                {reviewCount > 0
-                  ? `${reviewCount} skill${reviewCount !== 1 ? "s" : ""} pending review`
-                  : "No skills pending review"}
-              </p>
-            </div>
+            <ReviewQueue />
           ) : null}
         </div>
       </div>
@@ -340,6 +337,12 @@ export default function SkillsView({ onSkillsChanged }) {
         open={showTrain}
         onClose={() => setShowTrain(false)}
         onTrained={handleTrained}
+      />
+      <SubmitSkillModal
+        open={showSubmit}
+        onClose={() => setShowSubmit(false)}
+        skill={selectedSkill}
+        onSubmitted={() => {}}
       />
     </>
   );

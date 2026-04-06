@@ -1,10 +1,10 @@
 import { useState, useEffect, useRef } from "react";
-import { Loader2, AlertCircle, Save, X, Code, Pencil, Paperclip, Trash2, Upload } from "lucide-react";
+import { Loader2, AlertCircle, Save, X, Code, Pencil, Paperclip, Trash2, Upload, Send } from "lucide-react";
 import { updateSkill, deleteSkill, addSkillFiles, removeSkillFile } from "../../services/api";
 import { fileIcon } from "./utils";
 import FileViewer from "./FileViewer";
 
-export default function SkillEditor({ skill, onSaved, onDeleted, viewingFile, onViewFile }) {
+export default function SkillEditor({ skill, onSaved, onDeleted, viewingFile, onViewFile, onSubmit }) {
   const [name, setName] = useState(skill.name);
   const [description, setDescription] = useState(skill.description);
   const [definition, setDefinition] = useState(skill.definition);
@@ -109,6 +109,15 @@ export default function SkillEditor({ skill, onSaved, onDeleted, viewingFile, on
             >
               {saving ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />}
               Save
+            </button>
+          )}
+          {onSubmit && skill.type !== "builtin" && (
+            <button
+              onClick={() => onSubmit(skill)}
+              className="flex items-center gap-1 rounded-lg bg-purple-500/10 px-2.5 py-1.5 text-xs font-medium text-purple-400 transition-colors hover:bg-purple-500/20"
+            >
+              <Send size={12} />
+              Submit
             </button>
           )}
           <button
