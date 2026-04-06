@@ -31,6 +31,7 @@ export default function SkillsView({ onSkillsChanged }) {
   const [showSubmit, setShowSubmit] = useState(false);
   const [subTab, setSubTab] = useState("browse");
   const [viewMode, setViewMode] = useState("grid");
+  const [typeFilter, setTypeFilter] = useState("all");
 
   useEffect(() => {
     let cancelled = false;
@@ -51,11 +52,16 @@ export default function SkillsView({ onSkillsChanged }) {
   }, []);
 
   // Filter by search
-  const searched = skills.filter(
-    (s) =>
+  // Search + type filter
+  const searched = skills.filter((s) => {
+    const matchesSearch = !search ||
       s.name.toLowerCase().includes(search.toLowerCase()) ||
-      s.id.toLowerCase().includes(search.toLowerCase()),
-  );
+      s.id.toLowerCase().includes(search.toLowerCase());
+    const matchesType = typeFilter === "all" ||
+      (typeFilter === "builtin" && (s.is_builtin || s.type === "builtin")) ||
+      (typeFilter === "user" && (!s.is_builtin && s.type !== "builtin"));
+    return matchesSearch && matchesType;
+  });
 
   // Further filter by tab
   const filtered = subTab === "installed"
@@ -219,6 +225,19 @@ export default function SkillsView({ onSkillsChanged }) {
             })}
 
             <div className="flex-1" />
+
+            {/* Type filter */}
+            {(subTab === "browse" || subTab === "installed") && (
+              <select
+                value={typeFilter}
+                onChange={(e) => setTypeFilter(e.target.value)}
+                className="rounded-lg border border-border/40 bg-charcoal px-2.5 py-1.5 text-xs text-text-primary outline-none transition-colors focus:border-accent-teal"
+              >
+                <option value="all">All Types</option>
+                <option value="builtin">Builtin</option>
+                <option value="user">User</option>
+              </select>
+            )}
 
             {/* Search */}
             <div className="relative">
