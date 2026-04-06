@@ -276,7 +276,7 @@ export default function SkillsView({ onSkillsChanged }) {
 
               {/* Detail panel — browse uses read-only detail, installed uses editor */}
               {selectedSkill && (
-                <div className="w-[400px] shrink-0 border-l border-border/40 bg-workspace xl:w-[480px]">
+                <div className="w-[480px] shrink-0 border-l border-border/40 bg-workspace xl:w-[560px]">
                   {subTab === "installed" ? (
                     <SkillEditor
                       key={selectedSkill.id}
