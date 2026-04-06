@@ -1,10 +1,21 @@
 import { useState, useEffect } from "react";
-import { Wrench, Plus, Loader2, AlertCircle, Search, Sparkles } from "lucide-react";
+import {
+  Wrench, Plus, Loader2, AlertCircle, Search, Sparkles,
+  LayoutGrid, List, Store, Download, Upload as UploadIcon, ClipboardCheck,
+} from "lucide-react";
 import { fetchSkills } from "../../services/api";
+import SkillCard from "./SkillCard";
 import SkillListItem from "./SkillListItem";
 import SkillEditor from "./SkillEditor";
 import CreateSkillModal from "./CreateSkillModal";
 import TrainSkillModal from "./TrainSkillModal";
+
+const TABS = [
+  { id: "browse", label: "Browse", icon: Store },
+  { id: "installed", label: "Installed", icon: Download },
+  { id: "create", label: "Create", icon: UploadIcon },
+  { id: "review", label: "Review", icon: ClipboardCheck },
+];
 
 export default function SkillsView({ onSkillsChanged }) {
   const [skills, setSkills] = useState([]);
@@ -15,6 +26,8 @@ export default function SkillsView({ onSkillsChanged }) {
   const [search, setSearch] = useState("");
   const [showCreate, setShowCreate] = useState(false);
   const [showTrain, setShowTrain] = useState(false);
+  const [subTab, setSubTab] = useState("browse");
+  const [viewMode, setViewMode] = useState("grid");
 
   useEffect(() => {
     let cancelled = false;
@@ -34,13 +47,24 @@ export default function SkillsView({ onSkillsChanged }) {
     return () => { cancelled = true; };
   }, []);
 
-  const filtered = skills.filter(
+  // Filter by search
+  const searched = skills.filter(
     (s) =>
       s.name.toLowerCase().includes(search.toLowerCase()) ||
       s.id.toLowerCase().includes(search.toLowerCase()),
   );
 
+  // Further filter by tab
+  const filtered = subTab === "installed"
+    ? searched.filter((s) => !s.is_cloud_only)
+    : subTab === "review"
+      ? searched.filter((s) => s.status === "pending_review")
+      : searched;
+
   const selectedSkill = skills.find((s) => s.id === selectedId);
+
+  const installedCount = skills.filter((s) => !s.is_cloud_only).length;
+  const reviewCount = skills.filter((s) => s.status === "pending_review").length;
 
   const handleSelectSkill = (id) => {
     setViewingFile(null);
@@ -56,6 +80,7 @@ export default function SkillsView({ onSkillsChanged }) {
     setSkills((prev) => [...prev, skill]);
     setSelectedId(skill.id);
     setViewingFile(null);
+    setSubTab("browse");
     onSkillsChanged?.();
   };
 
@@ -104,105 +129,197 @@ export default function SkillsView({ onSkillsChanged }) {
 
   return (
     <>
-      <div className="flex flex-1 overflow-hidden pt-12 lg:pt-0">
-        {/* Skill list panel */}
-        <div className="flex w-[280px] shrink-0 flex-col border-r border-border/40 bg-charcoal/30">
-          <div className="border-b border-border/40 p-3">
-            <div className="mb-2.5 flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Wrench size={15} className="text-accent-teal" />
-                <h2 className="text-sm font-semibold text-text-primary">Skills</h2>
-                <span className="rounded-full bg-surface px-1.5 py-0.5 text-[10px] text-text-muted">
-                  {skills.length}
-                </span>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <button
-                  onClick={() => setShowTrain(true)}
-                  className="flex items-center gap-1 rounded-lg bg-purple-500/10 px-2 py-1 text-xs font-medium text-purple-400 transition-colors hover:bg-purple-500/20"
-                >
-                  <Sparkles size={13} />
-                  Train
-                </button>
-                <button
-                  onClick={() => setShowCreate(true)}
-                  className="flex items-center gap-1 rounded-lg bg-accent-teal/10 px-2 py-1 text-xs font-medium text-accent-teal transition-colors hover:bg-accent-teal/20"
-                >
-                  <Plus size={13} />
-                  New
-                </button>
-              </div>
+      <div className="flex flex-1 flex-col overflow-hidden pt-12 lg:pt-0">
+        {/* Top toolbar */}
+        <div className="border-b border-border/40 bg-charcoal/30 px-4 py-3">
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex items-center gap-2">
+              <Store size={16} className="text-accent-teal" />
+              <h2 className="text-sm font-semibold text-text-primary">Skill Marketplace</h2>
+              <span className="rounded-full bg-surface px-1.5 py-0.5 text-[10px] text-text-muted">
+                {skills.length}
+              </span>
             </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setShowTrain(true)}
+                className="flex items-center gap-1 rounded-lg bg-purple-500/10 px-2.5 py-1.5 text-xs font-medium text-purple-400 transition-colors hover:bg-purple-500/20"
+              >
+                <Sparkles size={13} />
+                Train
+              </button>
+              <button
+                onClick={() => setShowCreate(true)}
+                className="flex items-center gap-1 rounded-lg bg-accent-teal/10 px-2.5 py-1.5 text-xs font-medium text-accent-teal transition-colors hover:bg-accent-teal/20"
+              >
+                <Plus size={13} />
+                New Skill
+              </button>
+            </div>
+          </div>
+
+          {/* Sub-tabs */}
+          <div className="mt-3 flex items-center gap-1">
+            {TABS.map(({ id, label, icon: TabIcon }) => {
+              const count = id === "installed" ? installedCount
+                : id === "review" ? reviewCount
+                : null;
+              return (
+                <button
+                  key={id}
+                  onClick={() => setSubTab(id)}
+                  className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
+                    subTab === id
+                      ? "bg-surface text-text-primary"
+                      : "text-text-muted hover:bg-surface/50 hover:text-text-secondary"
+                  }`}
+                >
+                  <TabIcon size={13} />
+                  {label}
+                  {count != null && count > 0 && (
+                    <span className="rounded-full bg-accent-teal/10 px-1.5 py-0.5 text-[10px] text-accent-teal">
+                      {count}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+
+            <div className="flex-1" />
+
+            {/* Search */}
             <div className="relative">
-              <Search
-                size={14}
-                className="absolute left-2.5 top-1/2 -translate-y-1/2 text-text-muted"
-              />
+              <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-text-muted" />
               <input
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 placeholder="Search skills…"
-                className="w-full rounded-lg border border-border/40 bg-charcoal py-1.5 pl-8 pr-3 text-xs text-text-primary placeholder:text-text-muted outline-none transition-colors focus:border-accent-teal"
+                className="w-56 rounded-lg border border-border/40 bg-charcoal py-1.5 pl-8 pr-3 text-xs text-text-primary placeholder:text-text-muted outline-none transition-colors focus:border-accent-teal"
               />
             </div>
-          </div>
 
-          <div className="flex-1 overflow-y-auto p-2">
-            {filtered.length === 0 ? (
-              <p className="px-3 py-6 text-center text-xs text-text-muted">
-                {search ? "No matching skills" : "No skills yet"}
-              </p>
-            ) : (
-              <ul className="space-y-0.5">
-                {filtered.map((skill) => (
-                  <SkillListItem
-                    key={skill.id}
-                    skill={skill}
-                    isSelected={skill.id === selectedId}
-                    onSelect={handleSelectSkill}
-                    onFileClick={handleFileClick}
-                  />
-                ))}
-              </ul>
+            {/* View toggle */}
+            {(subTab === "browse" || subTab === "installed") && (
+              <div className="flex items-center rounded-lg border border-border/40 bg-charcoal">
+                <button
+                  onClick={() => setViewMode("grid")}
+                  className={`rounded-l-lg p-1.5 transition-colors ${
+                    viewMode === "grid" ? "bg-surface text-text-primary" : "text-text-muted hover:text-text-secondary"
+                  }`}
+                >
+                  <LayoutGrid size={14} />
+                </button>
+                <button
+                  onClick={() => setViewMode("list")}
+                  className={`rounded-r-lg p-1.5 transition-colors ${
+                    viewMode === "list" ? "bg-surface text-text-primary" : "text-text-muted hover:text-text-secondary"
+                  }`}
+                >
+                  <List size={14} />
+                </button>
+              </div>
             )}
           </div>
         </div>
 
-        {/* Skill detail / editor */}
-        <div className="flex flex-1 flex-col bg-workspace">
-          {selectedSkill ? (
-            <SkillEditor
-              key={selectedSkill.id}
-              skill={selectedSkill}
-              onSaved={handleSaved}
-              onDeleted={handleDeleted}
-              viewingFile={viewingFile}
-              onViewFile={setViewingFile}
-            />
-          ) : (
-            <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center">
-              <Wrench size={40} className="text-text-muted" />
-              <div>
-                <p className="text-sm font-medium text-text-primary">
-                  {skills.length === 0 ? "No skills yet" : "Select a skill"}
-                </p>
-                <p className="mt-1 text-xs text-text-muted">
-                  {skills.length === 0
-                    ? "Create your first custom skill to get started."
-                    : "Choose a skill from the list to view or edit it."}
+        {/* Content area */}
+        <div className="flex flex-1 overflow-hidden">
+          {subTab === "browse" || subTab === "installed" ? (
+            <>
+              {/* Card grid / list */}
+              <div className="flex-1 overflow-y-auto p-4">
+                {filtered.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center gap-3 py-16 text-center">
+                    <Wrench size={32} className="text-text-muted" />
+                    <p className="text-sm text-text-muted">
+                      {search ? "No matching skills" : subTab === "installed" ? "No installed skills" : "No skills yet"}
+                    </p>
+                    {!search && skills.length === 0 && (
+                      <button
+                        onClick={() => setShowCreate(true)}
+                        className="mt-1 flex items-center gap-1.5 rounded-lg bg-accent-teal px-4 py-2 text-sm font-medium text-charcoal transition-colors hover:bg-accent-light"
+                      >
+                        <Plus size={15} />
+                        Create Skill
+                      </button>
+                    )}
+                  </div>
+                ) : viewMode === "grid" ? (
+                  <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+                    {filtered.map((skill) => (
+                      <SkillCard
+                        key={skill.id}
+                        skill={skill}
+                        isSelected={skill.id === selectedId}
+                        onClick={() => handleSelectSkill(skill.id)}
+                        viewMode="grid"
+                      />
+                    ))}
+                  </div>
+                ) : (
+                  <div className="space-y-1">
+                    {filtered.map((skill) => (
+                      <SkillCard
+                        key={skill.id}
+                        skill={skill}
+                        isSelected={skill.id === selectedId}
+                        onClick={() => handleSelectSkill(skill.id)}
+                        viewMode="list"
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Detail / editor panel */}
+              {selectedSkill && (
+                <div className="w-[400px] shrink-0 border-l border-border/40 bg-workspace xl:w-[480px]">
+                  <SkillEditor
+                    key={selectedSkill.id}
+                    skill={selectedSkill}
+                    onSaved={handleSaved}
+                    onDeleted={handleDeleted}
+                    viewingFile={viewingFile}
+                    onViewFile={setViewingFile}
+                  />
+                </div>
+              )}
+            </>
+          ) : subTab === "create" ? (
+            <div className="flex flex-1 flex-col items-center justify-center gap-4 p-8">
+              <div className="text-center">
+                <h3 className="text-lg font-medium text-text-primary">Create or Train Skills</h3>
+                <p className="mt-1 text-sm text-text-muted">
+                  Author a new skill manually or train from media files.
                 </p>
               </div>
-              {skills.length === 0 && (
+              <div className="flex gap-3">
                 <button
                   onClick={() => setShowCreate(true)}
-                  className="mt-2 flex items-center gap-1.5 rounded-lg bg-accent-teal px-4 py-2 text-sm font-medium text-charcoal transition-colors hover:bg-accent-light"
+                  className="flex items-center gap-2 rounded-xl border border-border/40 bg-surface px-6 py-4 text-sm font-medium text-text-primary transition-colors hover:border-accent-teal/30 hover:bg-surface-hover"
                 >
-                  <Plus size={15} />
-                  Create Skill
+                  <Plus size={18} className="text-accent-teal" />
+                  Create Manually
                 </button>
-              )}
+                <button
+                  onClick={() => setShowTrain(true)}
+                  className="flex items-center gap-2 rounded-xl border border-border/40 bg-surface px-6 py-4 text-sm font-medium text-text-primary transition-colors hover:border-purple-400/30 hover:bg-surface-hover"
+                >
+                  <Sparkles size={18} className="text-purple-400" />
+                  Train from Media
+                </button>
+              </div>
             </div>
-          )}
+          ) : subTab === "review" ? (
+            <div className="flex flex-1 flex-col items-center justify-center gap-3 p-8">
+              <ClipboardCheck size={32} className="text-text-muted" />
+              <p className="text-sm text-text-muted">
+                {reviewCount > 0
+                  ? `${reviewCount} skill${reviewCount !== 1 ? "s" : ""} pending review`
+                  : "No skills pending review"}
+              </p>
+            </div>
+          ) : null}
         </div>
       </div>
 
