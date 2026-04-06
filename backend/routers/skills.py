@@ -13,9 +13,8 @@ import tempfile
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, HTTPException, UploadFile, File
 from pydantic import BaseModel
-from sqlalchemy.ext.asyncio import AsyncSession
 
 router = APIRouter(prefix="/api/skills", tags=["skills"])
 
@@ -63,15 +62,19 @@ def _get_in_memory_stores():
     return server._SKILLS, server._FILE_CONTENTS
 
 
+def _get_session_factory():
+    from db.engine import async_session as factory
+    return factory
+
+
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 
 @router.get("")
 async def list_skills():
     if _db_available:
-        from db import get_session as _gs
         from services import skill_service
-        async for session in _gs():
+        async with _get_session_factory()() as session:
             return await skill_service.list_skills(session)
 
     skills, _ = _get_in_memory_stores()
@@ -81,9 +84,8 @@ async def list_skills():
 @router.get("/{skill_id}")
 async def get_skill(skill_id: str):
     if _db_available:
-        from db import get_session as _gs
         from services import skill_service
-        async for session in _gs():
+        async with _get_session_factory()() as session:
             result = await skill_service.get_skill(session, skill_id)
             if not result:
                 raise HTTPException(status_code=404, detail="Skill not found")
@@ -98,14 +100,15 @@ async def get_skill(skill_id: str):
 @router.post("", status_code=201)
 async def create_skill(body: SkillCreate):
     if _db_available:
-        from db import get_session as _gs
         from services import skill_service
         file_dicts = [f.model_dump(exclude_none=True) for f in body.files] if body.files else None
-        async for session in _gs():
-            return await skill_service.create_skill(
+        async with _get_session_factory()() as session:
+            result = await skill_service.create_skill(
                 session, name=body.name, description=body.description,
                 definition=body.definition, files=file_dicts,
             )
+            await session.commit()
+            return result
 
     skills, _ = _get_in_memory_stores()
     skill_id = f"user_{body.name.lower().replace(' ', '_')}_{uuid.uuid4().hex[:6]}"
@@ -123,15 +126,15 @@ async def create_skill(body: SkillCreate):
 @router.patch("/{skill_id}")
 async def update_skill(skill_id: str, body: SkillUpdate):
     if _db_available:
-        from db import get_session as _gs
         from services import skill_service
-        async for session in _gs():
+        async with _get_session_factory()() as session:
             result = await skill_service.update_skill(
                 session, skill_id, name=body.name,
                 description=body.description, definition=body.definition,
             )
             if not result:
                 raise HTTPException(status_code=404, detail="Skill not found")
+            await session.commit()
             return result
 
     skills, _ = _get_in_memory_stores()
@@ -151,14 +154,14 @@ async def update_skill(skill_id: str, body: SkillUpdate):
 @router.post("/{skill_id}/files")
 async def add_skill_files(skill_id: str, files: list[SkillFileMetadata]):
     if _db_available:
-        from db import get_session as _gs
         from services import skill_service
-        async for session in _gs():
+        async with _get_session_factory()() as session:
             result = await skill_service.add_files(
                 session, skill_id, [f.model_dump(exclude_none=True) for f in files]
             )
             if not result:
                 raise HTTPException(status_code=404, detail="Skill not found")
+            await session.commit()
             return result
 
     skills, _ = _get_in_memory_stores()
@@ -177,12 +180,12 @@ async def add_skill_files(skill_id: str, files: list[SkillFileMetadata]):
 @router.delete("/{skill_id}/files/{filename}")
 async def remove_skill_file(skill_id: str, filename: str):
     if _db_available:
-        from db import get_session as _gs
         from services import skill_service
-        async for session in _gs():
+        async with _get_session_factory()() as session:
             result = await skill_service.remove_file(session, skill_id, filename)
             if not result:
                 raise HTTPException(status_code=404, detail="Skill not found")
+            await session.commit()
             return result
 
     skills, _ = _get_in_memory_stores()
@@ -197,12 +200,12 @@ async def remove_skill_file(skill_id: str, filename: str):
 @router.delete("/{skill_id}")
 async def delete_skill(skill_id: str):
     if _db_available:
-        from db import get_session as _gs
         from services import skill_service
-        async for session in _gs():
+        async with _get_session_factory()() as session:
             deleted = await skill_service.delete_skill(session, skill_id)
             if not deleted:
                 raise HTTPException(status_code=404, detail="Skill not found or is builtin")
+            await session.commit()
             return {"ok": True}
 
     skills, _ = _get_in_memory_stores()
@@ -217,9 +220,8 @@ async def delete_skill(skill_id: str):
 @router.get("/{skill_id}/files/{filename:path}")
 async def get_skill_file_content(skill_id: str, filename: str):
     if _db_available:
-        from db import get_session as _gs
         from services import skill_service
-        async for session in _gs():
+        async with _get_session_factory()() as session:
             result = await skill_service.get_file_content(session, skill_id, filename)
             if not result:
                 raise HTTPException(status_code=404, detail="File not found")
@@ -261,25 +263,22 @@ async def train_skills(files: list[UploadFile] = File(...)):
             saved_paths.append(dest)
 
         if _db_available:
-            from db import get_session as _gs
             from services import skill_service
-            async for session in _gs():
+            async with _get_session_factory()() as session:
                 existing = await skill_service.list_skills(session)
                 existing_ids = {s["id"] for s in existing}
 
             trainer = MMSkillTrainer()
             await asyncio.to_thread(trainer.train, saved_paths)
 
-            # Sync new filesystem skills into DB
             from db.seed import seed_from_filesystem
             await seed_from_filesystem()
 
-            # Also refresh in-memory stores so agent runtime sees new skills
             import server
             server._SKILLS = server._load_skills_from_disk()
             server._FILE_CONTENTS = server._load_file_contents_from_disk()
 
-            async for session in _gs():
+            async with _get_session_factory()() as session:
                 all_skills = await skill_service.list_skills(session)
                 return [s for s in all_skills if s["id"] not in existing_ids]
         else:

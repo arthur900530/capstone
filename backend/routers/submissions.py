@@ -38,13 +38,14 @@ def _db_available() -> bool:
 @router.post("")
 async def create_submission(body: SubmissionCreate, background_tasks: BackgroundTasks):
     if _db_available():
-        from db import get_session as _gs, async_session
+        from db.engine import async_session
         from services import submission_service, similarity_service
-        async for session in _gs():
+        async with async_session() as session:
             result = await submission_service.create_submission(
                 session, name=body.name, description=body.description,
                 skill_md=body.skill_md, submission_type=body.submission_type,
             )
+            await session.commit()
 
             async def _run_bg(sid):
                 async with async_session() as s:
@@ -79,9 +80,9 @@ async def create_submission(body: SubmissionCreate, background_tasks: Background
 @router.get("")
 async def list_submissions(status: str | None = Query(None)):
     if _db_available():
-        from db import get_session as _gs
+        from db.engine import async_session
         from services import submission_service
-        async for session in _gs():
+        async with async_session() as session:
             return await submission_service.list_submissions(session, status=status)
 
     subs = list(_submissions.values())
@@ -93,9 +94,9 @@ async def list_submissions(status: str | None = Query(None)):
 @router.get("/{submission_id}")
 async def get_submission(submission_id: str):
     if _db_available():
-        from db import get_session as _gs
+        from db.engine import async_session
         from services import submission_service
-        async for session in _gs():
+        async with async_session() as session:
             result = await submission_service.get_submission(session, submission_id)
             if not result:
                 raise HTTPException(status_code=404, detail="Submission not found")
@@ -110,14 +111,15 @@ async def get_submission(submission_id: str):
 @router.post("/{submission_id}/decision")
 async def make_decision(submission_id: str, body: DecisionRequest):
     if _db_available():
-        from db import get_session as _gs
+        from db.engine import async_session
         from services import submission_service
-        async for session in _gs():
+        async with async_session() as session:
             result = await submission_service.make_decision(
                 session, submission_id, decision=body.decision, reason=body.reason,
             )
             if not result:
                 raise HTTPException(status_code=404, detail="Submission not found or invalid decision")
+            await session.commit()
             return result
 
     sub = _submissions.get(submission_id)

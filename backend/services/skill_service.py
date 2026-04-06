@@ -162,6 +162,14 @@ async def create_skill(
             ))
 
     await session.flush()
+
+    # Re-fetch version with files eagerly loaded
+    vr = await session.execute(
+        select(SkillVersion)
+        .options(selectinload(SkillVersion.files))
+        .where(SkillVersion.id == version.id)
+    )
+    version = vr.scalar_one_or_none()
     return _skill_to_dict(skill, version)
 
 
