@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
-import { Menu, BarChart3, Bot, Database } from "lucide-react";
+import { Menu, BarChart3, Bot, Database, PanelRight } from "lucide-react";
 import Sidebar from "./components/Sidebar";
 import WelcomeHeader from "./components/WelcomeHeader";
 import InputBox from "./components/InputBox";
@@ -7,6 +7,8 @@ import ChatMessage from "./components/ChatMessage";
 import UploadedDataPanel from "./components/DataContext";
 import EvaluationView from "./components/EvaluationView";
 import SkillsView from "./components/SkillsView";
+import EditorCanvas from "./components/EditorCanvas";
+import WorkspacePanel from "./components/WorkspacePanel";
 import {
   streamChat,
   uploadFiles,
@@ -16,6 +18,7 @@ import {
   fetchSkills,
   deleteChat as apiDeleteChat,
   renameChat as apiRenameChat,
+  fetchWorkspaceFile,
 } from "./services/api";
 
 function AgentBanner({ agent, onViewEval, files = [], onRemoveFile }) {
@@ -90,6 +93,17 @@ function restoreMessage(m) {
       return { ...base, trial: m.trial, maxTrials: m.max_trials };
     case "tool_call":
       return { ...base, turn: m.turn, tool: m.tool, detail: m.detail };
+    case "file_edit":
+      return {
+        ...base,
+        turn: m.turn,
+        command: m.command,
+        path: m.path,
+        fileText: m.file_text,
+        oldStr: m.old_str,
+        newStr: m.new_str,
+        insertLine: m.insert_line,
+      };
     case "tool_result":
     case "reasoning":
     case "reflection":
@@ -133,6 +147,19 @@ export default function App() {
     confidenceThreshold: 0.7,
     useReflexion: false,
   });
+
+  // --- Workspace / Canvas state ---
+  const [openFiles, setOpenFiles] = useState([]);
+  const [activeFile, setActiveFile] = useState(null);
+  const [fileContents, setFileContents] = useState({});
+  const [modifiedFiles, setModifiedFiles] = useState(new Set());
+  const [editEvents, setEditEvents] = useState([]);
+  const [workspacePanelOpen, setWorkspacePanelOpen] = useState(true);
+  const [treeRefreshTrigger, setTreeRefreshTrigger] = useState(0);
+  const [canvasCollapsed, setCanvasCollapsed] = useState(false);
+
+  const workspaceActive = Boolean(mountDir);
+  const canvasVisible = openFiles.length > 0 && !canvasCollapsed;
 
   const messagesEndRef = useRef(null);
   const scrollContainerRef = useRef(null);
@@ -330,6 +357,50 @@ export default function App() {
                 content: data.message,
               };
               break;
+            case "file_edit":
+              msg = {
+                role: "assistant",
+                type: "file_edit",
+                turn: data.turn,
+                command: data.command,
+                path: data.path,
+                fileText: data.file_text,
+                oldStr: data.old_str,
+                newStr: data.new_str,
+                insertLine: data.insert_line,
+              };
+              // --- Push edit to canvas (always, even without mountDir) ---
+              {
+                const editEvt = {
+                  command: data.command,
+                  path: data.path,
+                  fileText: data.file_text,
+                  oldStr: data.old_str,
+                  newStr: data.new_str,
+                  insertLine: data.insert_line,
+                };
+                setEditEvents((prev) => [...prev, editEvt]);
+                setModifiedFiles((prev) => new Set(prev).add(data.path));
+                if (workspaceActive) setTreeRefreshTrigger((n) => n + 1);
+
+                // Auto-open the file in canvas
+                const filePath = data.path;
+                setOpenFiles((prev) =>
+                  prev.includes(filePath) ? prev : [...prev, filePath],
+                );
+                setActiveFile(filePath);
+
+                // For "create" commands, store the content directly
+                if (data.command === "create" && data.file_text) {
+                  setFileContents((prev) => ({ ...prev, [filePath]: data.file_text }));
+                } else if (mountDir) {
+                  // Refresh file content from backend
+                  fetchWorkspaceFile(mountDir, filePath)
+                    .then((res) => setFileContents((prev) => ({ ...prev, [filePath]: res.content })))
+                    .catch(() => {});
+                }
+              }
+              break;
             default:
               break;
           }
@@ -369,6 +440,13 @@ export default function App() {
     setMountDir("");
     visibleAgentRef.current = null;
     sentinelRefs.current.clear();
+    // Reset workspace state
+    setOpenFiles([]);
+    setActiveFile(null);
+    setFileContents({});
+    setModifiedFiles(new Set());
+    setEditEvents([]);
+    setTreeRefreshTrigger(0);
   };
 
   const handleSelectChat = async (chatId) => {
@@ -441,6 +519,38 @@ export default function App() {
     }
   };
 
+  // --- Canvas file selection ---
+  const handleCanvasSelectFile = useCallback(
+    async (filePath) => {
+      setOpenFiles((prev) =>
+        prev.includes(filePath) ? prev : [...prev, filePath],
+      );
+      setActiveFile(filePath);
+      if (!fileContents[filePath] && mountDir) {
+        try {
+          const res = await fetchWorkspaceFile(mountDir, filePath);
+          setFileContents((prev) => ({ ...prev, [filePath]: res.content }));
+        } catch {
+          /* ignore */
+        }
+      }
+    },
+    [fileContents, mountDir],
+  );
+
+  const handleCanvasCloseFile = useCallback(
+    (filePath) => {
+      setOpenFiles((prev) => {
+        const next = prev.filter((f) => f !== filePath);
+        if (activeFile === filePath) {
+          setActiveFile(next.length > 0 ? next[next.length - 1] : null);
+        }
+        return next;
+      });
+    },
+    [activeFile],
+  );
+
   const renderChatView = () => {
     if (hasMessages) {
       return (
@@ -466,7 +576,14 @@ export default function App() {
                       sentinelRef={(el) => registerSentinel(i, el, msg.agent)}
                     />
                   ) : (
-                    <ChatMessage key={`${sessionId}-${i}`} message={msg} animate={msg.animate !== false} />
+                    <ChatMessage
+                      key={`${sessionId}-${i}`}
+                      message={msg}
+                      animate={msg.animate !== false}
+                      onFileEditClick={(m) => {
+                        if (m.path) handleCanvasSelectFile(m.path);
+                      }}
+                    />
                   ),
                 )}
                 <div ref={messagesEndRef} />
@@ -539,7 +656,7 @@ export default function App() {
         onRenameChat={handleRenameChat}
       />
 
-      <main className="relative flex flex-1 flex-col">
+      <main className="relative flex flex-1 flex-col overflow-hidden">
         <div className="absolute top-4 left-4 z-30 lg:hidden">
           <button
             onClick={() => setSidebarOpen(true)}
@@ -558,9 +675,52 @@ export default function App() {
         ) : activeTab === "skills" ? (
           <SkillsView onSkillsChanged={refreshSkills} />
         ) : (
-          renderChatView()
+          <div className="flex flex-1 overflow-hidden">
+            {/* Chat column */}
+            <div className={`flex flex-col transition-all duration-300 ${canvasVisible ? "w-1/2 min-w-[360px] border-r border-border/20" : "flex-1"}`}>
+              {renderChatView()}
+            </div>
+
+            {/* Canvas panel — only visible when files are open and not collapsed */}
+            {openFiles.length > 0 && (
+              <EditorCanvas
+                openFiles={openFiles}
+                activeFile={activeFile}
+                fileContents={fileContents}
+                modifiedFiles={modifiedFiles}
+                editEvents={editEvents}
+                onSelectFile={handleCanvasSelectFile}
+                onCloseFile={handleCanvasCloseFile}
+                collapsed={canvasCollapsed}
+                onToggleCollapse={() => setCanvasCollapsed((v) => !v)}
+              />
+            )}
+          </div>
         )}
       </main>
+
+      {/* Right sidebar: workspace file tree */}
+      {workspaceActive && activeTab === "chat" && workspacePanelOpen && (
+        <WorkspacePanel
+          mountDir={mountDir}
+          activeFile={activeFile}
+          modifiedFiles={modifiedFiles}
+          onSelectFile={handleCanvasSelectFile}
+          onClose={() => setWorkspacePanelOpen(false)}
+          refreshTrigger={treeRefreshTrigger}
+        />
+      )}
+
+      {/* Toggle button when workspace panel is closed */}
+      {workspaceActive && activeTab === "chat" && !workspacePanelOpen && (
+        <button
+          onClick={() => setWorkspacePanelOpen(true)}
+          className="fixed right-3 top-3 z-30 flex h-8 w-8 items-center justify-center rounded-lg bg-surface text-text-muted transition-colors hover:bg-surface-hover hover:text-text-primary"
+          title="Show workspace files"
+        >
+          <PanelRight size={16} />
+        </button>
+      )}
     </div>
   );
 }
