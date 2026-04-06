@@ -93,6 +93,7 @@ async def install_skill(slug: str):
             result = await marketplace_service.install_skill(session, slug)
             if not result:
                 raise HTTPException(status_code=404, detail="Skill not found")
+            await session.commit()
             return result
 
     return {"ok": True, "slug": slug}
@@ -107,6 +108,7 @@ async def uninstall_skill(slug: str):
             result = await marketplace_service.uninstall_skill(session, slug)
             if not result:
                 raise HTTPException(status_code=404, detail="Skill not found")
+            await session.commit()
             return result
 
     return {"ok": True, "slug": slug}

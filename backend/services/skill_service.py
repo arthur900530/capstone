@@ -131,7 +131,7 @@ async def create_skill(
         display_name=name,
         short_description=description,
         source_type="user",
-        status="draft",
+        status="published",
         is_builtin=False,
         is_cloud_only=False,
     )
