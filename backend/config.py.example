@@ -8,3 +8,7 @@ BASE_URL = "https://openrouter.ai/api/v1"
 API_KEY = "PASTE-YOUR-KEY-HERE"
 AGENT_MODEL = "openrouter/minimax/minimax-m2.7"
 SKILL_MODEL = "google/gemini-2.5-flash"
+
+# PostgreSQL — used by the skill marketplace.
+# Local dev default: postgresql+asyncpg://postgres:postgres@localhost:5432/skillmarket
+DATABASE_URL = "postgresql+asyncpg://postgres:postgres@localhost:5432/skillmarket"
