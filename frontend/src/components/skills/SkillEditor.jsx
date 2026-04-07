@@ -51,7 +51,7 @@ export default function SkillEditor({ skill, onSaved, onDeleted, viewingFile, on
   };
 
   const handleDelete = async () => {
-    if (!confirm(`Delete "${skill.name}"?`)) return;
+    if (!confirm(`Permanently delete "${skill.name}" from the database? This cannot be undone.`)) return;
     try {
       await deleteSkill(skill.id);
       onDeleted(skill.id);
@@ -59,6 +59,8 @@ export default function SkillEditor({ skill, onSaved, onDeleted, viewingFile, on
       setError(err.message);
     }
   };
+
+  const isBuiltin = skill.type === "builtin" || skill.is_builtin;
 
   const handleAddFiles = async (e) => {
     const selected = Array.from(e.target.files);
@@ -120,12 +122,15 @@ export default function SkillEditor({ skill, onSaved, onDeleted, viewingFile, on
               Submit
             </button>
           )}
-          <button
-            onClick={handleDelete}
-            className="rounded-lg p-1.5 text-text-muted transition-colors hover:bg-red-500/10 hover:text-red-400"
-          >
-            <Trash2 size={14} />
-          </button>
+          {!isBuiltin && (
+            <button
+              onClick={handleDelete}
+              className="rounded-lg p-1.5 text-text-muted transition-colors hover:bg-red-500/10 hover:text-red-400"
+              title="Delete from database"
+            >
+              <Trash2 size={14} />
+            </button>
+          )}
         </div>
       </div>
 
