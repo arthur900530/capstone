@@ -83,7 +83,7 @@ function DefinitionModal({ definition, skillName, onClose }) {
 
 /* ── Main panel ─────────────────────────────────────────────────────────── */
 
-export default function SkillDetailPanel({ skill, onClose, onInstall, onUninstall }) {
+export default function SkillDetailPanel({ skill, onClose, onInstall, onUninstall, onDelete }) {
   const [viewingFile, setViewingFile] = useState(null);
   const [filesExpanded, setFilesExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -183,26 +183,37 @@ export default function SkillDetailPanel({ skill, onClose, onInstall, onUninstal
             <p className="text-sm leading-relaxed text-text-secondary">{skill.description}</p>
           )}
 
-          {/* Install / Uninstall action */}
-          {isCloudOnly ? (
-            <button
-              onClick={handleInstall}
-              disabled={installing}
-              className="flex items-center gap-2 rounded-lg bg-accent-teal px-4 py-2 text-sm font-medium text-charcoal transition-colors hover:bg-accent-light disabled:opacity-50"
-            >
-              {installing ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />}
-              {installing ? "Installing..." : "Install Skill"}
-            </button>
-          ) : !isBuiltin && (
-            <button
-              onClick={handleUninstall}
-              disabled={installing}
-              className="flex items-center gap-2 rounded-lg border border-border/40 px-4 py-2 text-sm text-text-secondary transition-colors hover:bg-surface disabled:opacity-50"
-            >
-              {installing ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
-              {installing ? "Removing..." : "Uninstall"}
-            </button>
-          )}
+          {/* Actions */}
+          <div className="flex items-center gap-2">
+            {isCloudOnly ? (
+              <button
+                onClick={handleInstall}
+                disabled={installing}
+                className="flex items-center gap-2 rounded-lg bg-accent-teal px-4 py-2 text-sm font-medium text-charcoal transition-colors hover:bg-accent-light disabled:opacity-50"
+              >
+                {installing ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />}
+                {installing ? "Installing..." : "Install Skill"}
+              </button>
+            ) : !isBuiltin && (
+              <button
+                onClick={handleUninstall}
+                disabled={installing}
+                className="flex items-center gap-2 rounded-lg border border-border/40 px-4 py-2 text-sm text-text-secondary transition-colors hover:bg-surface disabled:opacity-50"
+              >
+                {installing ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
+                {installing ? "Removing..." : "Uninstall"}
+              </button>
+            )}
+            {!isBuiltin && onDelete && (
+              <button
+                onClick={() => { if (confirm(`Delete "${skill.name}" permanently?`)) onDelete(skill.id); }}
+                className="flex items-center gap-2 rounded-lg border border-red-500/20 px-4 py-2 text-sm text-red-400 transition-colors hover:bg-red-500/10"
+              >
+                <Trash2 size={14} />
+                Delete
+              </button>
+            )}
+          </div>
 
           {/* Files */}
           {files.length > 0 && (
