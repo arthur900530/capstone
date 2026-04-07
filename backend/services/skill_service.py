@@ -28,7 +28,7 @@ def _hash(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()[:16]
 
 
-def _skill_to_dict(skill: Skill, version: SkillVersion | None = None) -> dict:
+def _skill_to_dict(skill: Skill, version: SkillVersion | None = None, installed: bool | None = None) -> dict:
     """Convert ORM objects to the dict shape the frontend expects."""
     files = []
     definition = ""
@@ -55,7 +55,8 @@ def _skill_to_dict(skill: Skill, version: SkillVersion | None = None) -> dict:
         # New marketplace fields (frontend ignores these until it's ready)
         "status": skill.status,
         "is_builtin": skill.is_builtin,
-        "is_cloud_only": skill.is_cloud_only,
+        "is_cloud_only": not installed if installed is not None else skill.is_cloud_only,
+        "is_installed": installed if installed is not None else not skill.is_cloud_only,
         "slug": skill.slug,
         "version": version.version_label if version else "1.0",
     }
@@ -89,6 +90,7 @@ async def _get_skill_with_version(
 
 async def list_skills(session: AsyncSession) -> list[dict]:
     """Return all skills sorted by creation time (matches GET /api/skills)."""
+    from db.models import SkillInstallation
     result = await session.execute(
         select(Skill).order_by(Skill.created_at)
     )
@@ -104,7 +106,16 @@ async def list_skills(session: AsyncSession) -> list[dict]:
                 .where(SkillVersion.id == skill.canonical_version_id)
             )
             version = vr.scalar_one_or_none()
-        out.append(_skill_to_dict(skill, version))
+        # Derive install status: check installations table, fall back to is_cloud_only flag
+        inst = await session.execute(
+            select(SkillInstallation).where(SkillInstallation.skill_id == skill.id).limit(1)
+        )
+        inst_record = inst.scalar_one_or_none()
+        if inst_record is not None:
+            installed = inst_record.install_status == "installed"
+        else:
+            installed = not skill.is_cloud_only
+        out.append(_skill_to_dict(skill, version, installed=installed))
     return out
 
 
@@ -231,33 +242,27 @@ async def delete_skill(session: AsyncSession, skill_id: str) -> bool:
     if skill.is_builtin:
         return False
 
+    from sqlalchemy import delete as sa_delete
+    from db.models import (
+        SkillInstallation, SkillTagMap,
+        SkillSimilarityResult, SkillSubmission, SkillPolicyDecision,
+    )
+
     # Null out the FK before deleting versions
     skill.canonical_version_id = None
     await session.flush()
 
-    # Delete related records
-    from db.models import SkillInstallation, SkillTagMap
-    await session.execute(
-        select(SkillInstallation).where(SkillInstallation.skill_id == skill.id)
-    )
-    for inst in (await session.execute(
-        select(SkillInstallation).where(SkillInstallation.skill_id == skill.id)
-    )).scalars().all():
-        await session.delete(inst)
+    # Delete all related records in dependency order
+    await session.execute(sa_delete(SkillSimilarityResult).where(SkillSimilarityResult.existing_skill_id == skill.id))
+    await session.execute(sa_delete(SkillInstallation).where(SkillInstallation.skill_id == skill.id))
+    await session.execute(sa_delete(SkillTagMap).where(SkillTagMap.skill_id == skill.id))
 
-    for tm in (await session.execute(
-        select(SkillTagMap).where(SkillTagMap.skill_id == skill.id)
-    )).scalars().all():
-        await session.delete(tm)
-
-    versions = await session.execute(
+    # Delete versions and their files
+    versions = (await session.execute(
         select(SkillVersion).where(SkillVersion.skill_id == skill.id)
-    )
-    for v in versions.scalars().all():
-        for f in (await session.execute(
-            select(SkillFile).where(SkillFile.skill_version_id == v.id)
-        )).scalars().all():
-            await session.delete(f)
+    )).scalars().all()
+    for v in versions:
+        await session.execute(sa_delete(SkillFile).where(SkillFile.skill_version_id == v.id))
         await session.delete(v)
 
     await session.delete(skill)
