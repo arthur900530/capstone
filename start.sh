@@ -120,7 +120,9 @@ if command -v pg_isready >/dev/null 2>&1; then
   if pg_isready -h localhost -p 5432 -q 2>/dev/null; then
     echo "    PostgreSQL is running. Skill marketplace will use DB."
     echo "    Running Alembic migrations..."
-    (cd "$BACKEND_DIR" && .venv/bin/python -m alembic upgrade head 2>&1) || echo "    Migration skipped (DB may need setup)"
+    (cd "$BACKEND_DIR" && PYTHONPATH=. .venv/bin/python -m alembic upgrade head 2>&1) || echo "    Migration skipped (DB may need setup)"
+    echo "    Seeding skills..."
+    (cd "$BACKEND_DIR" && PYTHONPATH=. .venv/bin/python -m db.seed 2>&1) || echo "    Seed skipped"
   else
     echo "    PostgreSQL is not running. Skill marketplace will fall back to in-memory mode."
   fi
@@ -135,7 +137,7 @@ echo "    API:      http://localhost:8000"
 echo "    Frontend: http://localhost:5173"
 echo ""
 
-(cd "$BACKEND_DIR" && .venv/bin/uvicorn server:app --reload --host 127.0.0.1 --port 8000) &
+(cd "$BACKEND_DIR" && PYTHONPATH=. .venv/bin/uvicorn server:app --reload --host 127.0.0.1 --port 8000) &
 PIDS+=($!)
 
 (cd "$FRONTEND_DIR" && npm run dev) &
