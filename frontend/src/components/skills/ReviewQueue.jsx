@@ -1,16 +1,17 @@
 import { useState, useEffect } from "react";
 import {
   Loader2, AlertCircle, ClipboardCheck, CheckCircle, XCircle,
-  ChevronDown, ChevronRight, MessageSquare,
+  ChevronDown, ChevronRight, MessageSquare, Trash2, X,
 } from "lucide-react";
-import { fetchSubmissions, reviewSubmission } from "../../services/api";
+import { fetchSubmissions, reviewSubmission, deleteSubmission } from "../../services/api";
 
-function ReviewItem({ sub, onDecision }) {
+function ReviewItem({ sub, onDecision, onDelete }) {
   const [expanded, setExpanded] = useState(false);
   const [reason, setReason] = useState("");
   const [acting, setActing] = useState(false);
 
   const isActionable = sub.status === "uploaded" || sub.status === "duplicate_check_complete";
+  const isResolved = sub.status === "accepted" || sub.status === "discarded";
   const hasSimilarity = sub.similarity_results && sub.similarity_results.length > 0;
 
   const handleDecision = async (decision) => {
@@ -22,8 +23,17 @@ function ReviewItem({ sub, onDecision }) {
     }
   };
 
+  const handleDelete = async () => {
+    setActing(true);
+    try {
+      await onDelete(sub.id);
+    } finally {
+      setActing(false);
+    }
+  };
+
   return (
-    <div className="rounded-xl border border-border/40 bg-surface p-4">
+    <div className={`rounded-xl border border-border/40 bg-surface p-4 ${isResolved ? "opacity-60" : ""}`}>
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
           <h4 className="text-sm font-medium text-text-primary">{sub.proposed_name}</h4>
@@ -42,34 +52,40 @@ function ReviewItem({ sub, onDecision }) {
             <span className="text-[10px] text-text-muted">
               {new Date(sub.created_at).toLocaleString()}
             </span>
-            {sub.submission_type && (
-              <span className="text-[10px] text-text-muted">
-                via {sub.submission_type}
-              </span>
-            )}
           </div>
         </div>
 
-        {isActionable && (
-          <div className="flex shrink-0 items-center gap-1.5">
-            <button
-              onClick={() => handleDecision("accept")}
-              disabled={acting}
-              className="flex items-center gap-1 rounded-lg bg-green-500/10 px-2.5 py-1.5 text-xs font-medium text-green-400 transition-colors hover:bg-green-500/20 disabled:opacity-50"
-            >
-              {acting ? <Loader2 size={13} className="animate-spin" /> : <CheckCircle size={13} />}
-              Accept
-            </button>
-            <button
-              onClick={() => handleDecision("discard")}
-              disabled={acting}
-              className="flex items-center gap-1 rounded-lg bg-red-500/10 px-2.5 py-1.5 text-xs font-medium text-red-400 transition-colors hover:bg-red-500/20 disabled:opacity-50"
-            >
-              <XCircle size={13} />
-              Discard
-            </button>
-          </div>
-        )}
+        <div className="flex shrink-0 items-center gap-1.5">
+          {isActionable && (
+            <>
+              <button
+                onClick={() => handleDecision("accept")}
+                disabled={acting}
+                className="flex items-center gap-1 rounded-lg bg-green-500/10 px-2.5 py-1.5 text-xs font-medium text-green-400 transition-colors hover:bg-green-500/20 disabled:opacity-50"
+              >
+                {acting ? <Loader2 size={13} className="animate-spin" /> : <CheckCircle size={13} />}
+                Accept
+              </button>
+              <button
+                onClick={() => handleDecision("discard")}
+                disabled={acting}
+                className="flex items-center gap-1 rounded-lg bg-red-500/10 px-2.5 py-1.5 text-xs font-medium text-red-400 transition-colors hover:bg-red-500/20 disabled:opacity-50"
+              >
+                <XCircle size={13} />
+                Reject
+              </button>
+            </>
+          )}
+          {/* Dismiss / delete button — always visible */}
+          <button
+            onClick={handleDelete}
+            disabled={acting}
+            className="rounded-lg p-1.5 text-text-muted transition-colors hover:bg-red-500/10 hover:text-red-400 disabled:opacity-50"
+            title="Remove from queue"
+          >
+            <X size={14} />
+          </button>
+        </div>
       </div>
 
       {/* Reason input for actionable submissions */}
@@ -118,15 +134,6 @@ function ReviewItem({ sub, onDecision }) {
                       <span className="rounded-full bg-surface px-1.5 py-0.5 text-[10px] font-medium text-text-secondary">
                         {(sr.overall_overlap_score * 100).toFixed(0)}% overlap
                       </span>
-                      <span className={`rounded-full px-1.5 py-0.5 text-[10px] ${
-                        sr.decision_recommendation === "accept"
-                          ? "bg-green-500/10 text-green-400"
-                          : sr.decision_recommendation === "discard"
-                            ? "bg-red-500/10 text-red-400"
-                            : "bg-yellow-500/10 text-yellow-400"
-                      }`}>
-                        {sr.decision_recommendation}
-                      </span>
                     </div>
                   </div>
                 ))}
@@ -137,20 +144,23 @@ function ReviewItem({ sub, onDecision }) {
       )}
 
       {/* Preview definition snippet */}
-      {sub.proposed_skill_md && (
-        <div className="mt-3">
-          <button
-            onClick={() => setExpanded((v) => !v)}
-            className="text-[11px] text-accent-teal hover:underline"
-          >
-            {expanded ? "Hide definition" : "Preview definition"}
+      {sub.proposed_skill_md && !expanded && (
+        <button
+          onClick={() => setExpanded(true)}
+          className="mt-2 text-[11px] text-accent-teal hover:underline"
+        >
+          Preview definition
+        </button>
+      )}
+      {sub.proposed_skill_md && expanded && (
+        <div className="mt-2">
+          <button onClick={() => setExpanded(false)} className="mb-1 text-[11px] text-accent-teal hover:underline">
+            Hide definition
           </button>
-          {expanded && (
-            <pre className="mt-2 max-h-40 overflow-auto rounded-lg border border-border/20 bg-charcoal/50 p-3 text-xs leading-relaxed text-text-secondary">
-              {sub.proposed_skill_md.slice(0, 1000)}
-              {sub.proposed_skill_md.length > 1000 && "..."}
-            </pre>
-          )}
+          <pre className="max-h-40 overflow-auto rounded-lg border border-border/20 bg-charcoal/50 p-3 text-xs leading-relaxed text-text-secondary">
+            {sub.proposed_skill_md.slice(0, 1000)}
+            {sub.proposed_skill_md.length > 1000 && "..."}
+          </pre>
         </div>
       )}
     </div>
@@ -176,12 +186,21 @@ export default function ReviewQueue() {
   useEffect(() => { load(); }, []);
 
   const handleDecision = async (id, decision, reason) => {
-    try {
-      await reviewSubmission(id, { decision, reason });
-      await load();
-    } catch (err) {
-      setError(err.message);
+    await reviewSubmission(id, { decision, reason });
+    await load();
+  };
+
+  const handleDelete = async (id) => {
+    await deleteSubmission(id);
+    await load();
+  };
+
+  const handleClearResolved = async () => {
+    const resolved = submissions.filter(s => s.status === "accepted" || s.status === "discarded");
+    for (const sub of resolved) {
+      await deleteSubmission(sub.id);
     }
+    await load();
   };
 
   if (loading) {
@@ -213,14 +232,27 @@ export default function ReviewQueue() {
     );
   }
 
+  const resolvedCount = submissions.filter(s => s.status === "accepted" || s.status === "discarded").length;
+
   return (
     <div className="flex-1 overflow-y-auto p-4">
       <div className="mx-auto max-w-3xl space-y-3">
         <div className="mb-2 flex items-center justify-between">
-          <span className="text-xs text-text-muted">{submissions.length} submission{submissions.length !== 1 ? "s" : ""}</span>
+          <span className="text-xs text-text-muted">
+            {submissions.length} submission{submissions.length !== 1 ? "s" : ""}
+          </span>
+          {resolvedCount > 0 && (
+            <button
+              onClick={handleClearResolved}
+              className="flex items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] text-text-muted transition-colors hover:bg-surface hover:text-text-secondary"
+            >
+              <Trash2 size={11} />
+              Clear {resolvedCount} resolved
+            </button>
+          )}
         </div>
         {submissions.map((sub) => (
-          <ReviewItem key={sub.id} sub={sub} onDecision={handleDecision} />
+          <ReviewItem key={sub.id} sub={sub} onDecision={handleDecision} onDelete={handleDelete} />
         ))}
       </div>
     </div>
