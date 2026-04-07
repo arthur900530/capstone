@@ -256,7 +256,13 @@ async def train_skills(files: list[UploadFile] = File(...)):
     try:
         saved_paths: list[str] = []
         for upload in files:
-            dest = os.path.join(tmp_dir, upload.filename)
+            safe_name = os.path.basename(upload.filename)
+            if not safe_name:
+                continue
+            dest = os.path.join(tmp_dir, safe_name)
+            # Verify resolved path stays under tmp_dir
+            if not os.path.realpath(dest).startswith(os.path.realpath(tmp_dir)):
+                continue
             with open(dest, "wb") as f:
                 content = await upload.read()
                 f.write(content)
