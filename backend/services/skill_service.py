@@ -231,15 +231,32 @@ async def delete_skill(session: AsyncSession, skill_id: str) -> bool:
     if skill.is_builtin:
         return False
 
-    # Delete versions and files (cascade would be cleaner but let's be explicit)
+    # Null out the FK before deleting versions
+    skill.canonical_version_id = None
+    await session.flush()
+
+    # Delete related records
+    from db.models import SkillInstallation, SkillTagMap
+    await session.execute(
+        select(SkillInstallation).where(SkillInstallation.skill_id == skill.id)
+    )
+    for inst in (await session.execute(
+        select(SkillInstallation).where(SkillInstallation.skill_id == skill.id)
+    )).scalars().all():
+        await session.delete(inst)
+
+    for tm in (await session.execute(
+        select(SkillTagMap).where(SkillTagMap.skill_id == skill.id)
+    )).scalars().all():
+        await session.delete(tm)
+
     versions = await session.execute(
         select(SkillVersion).where(SkillVersion.skill_id == skill.id)
     )
     for v in versions.scalars().all():
-        files = await session.execute(
+        for f in (await session.execute(
             select(SkillFile).where(SkillFile.skill_version_id == v.id)
-        )
-        for f in files.scalars().all():
+        )).scalars().all():
             await session.delete(f)
         await session.delete(v)
 
