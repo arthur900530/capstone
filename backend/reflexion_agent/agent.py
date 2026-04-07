@@ -18,7 +18,7 @@ from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.tools.file_editor import FileEditorTool
 from openhands.tools.task_tracker import TaskTrackerTool
 from openhands.tools.terminal import TerminalTool
-from openhands.workspace import DockerWorkspace
+from openhands.sdk.workspace import LocalWorkspace
 
 from reflexion_agent import evaluate_trajectory, generate_reflection, ReflexionMemory
 from config import BASE_URL, API_KEY, AGENT_MODEL
@@ -153,12 +153,8 @@ def runtime(
         mount_dir,
         use_rx,
     )
-    with DockerWorkspace(
-        server_image="ghcr.io/openhands/agent-server:latest-python",
-        host_port=_find_port(),
-        platform=_detect_platform(),
-        volumes=volumes,
-    ) as workspace:
+    working_dir = abs_mount if mount_dir else repo_dir or "."
+    with LocalWorkspace(working_dir=working_dir) as workspace:
         if use_rx:
             _run_with_reflexion(llm, agent_context, instruction, workspace, callbacks=callbacks)
         else:
