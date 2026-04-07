@@ -34,6 +34,22 @@ line() {
   echo -e "${DIM}$(printf '%.0s─' {1..60})${RESET}"
 }
 
+# Filter pip/uv output to show compact package status
+pip_filter() {
+  while IFS= read -r l; do
+    case "$l" in
+      Collecting*)           echo -e "       ${DIM}${l#Collecting }${RESET}" ;;
+      Successfully*)         echo -e "       ${GREEN}${l}${RESET}" ;;
+      Resolved*)             echo -e "       ${DIM}${l}${RESET}" ;;
+      Installed*|" + "*)     echo -e "       ${GREEN}${l}${RESET}" ;;
+      Audited*|Uninstalled*) echo -e "       ${DIM}${l}${RESET}" ;;
+      *packages\ in*)        echo -e "       ${DIM}${l}${RESET}" ;;
+      Requirement\ already*) ;;
+      *) ;;
+    esac
+  done
+}
+
 header() {
   echo ""
   line
@@ -135,7 +151,7 @@ header "Frontend"
 
 if [[ ! -d "$FRONTEND_DIR/node_modules" ]]; then
   info "First run — installing npm dependencies..."
-  (cd "$FRONTEND_DIR" && npm install --silent)
+  (cd "$FRONTEND_DIR" && npm install --silent 2>&1 | grep -E "added|up to date" | head -1 | sed "s/^/       /")
   step "Dependencies installed"
 else
   step "Dependencies ready"
@@ -150,8 +166,11 @@ if [[ ! -d "$BACKEND_DIR/.venv" ]]; then
   "$PYTHON_API" -m venv "$BACKEND_DIR/.venv"
 fi
 info "Installing dependencies..."
-"$BACKEND_DIR/.venv/bin/python" -m pip install -q --upgrade pip
-"$BACKEND_DIR/.venv/bin/pip" install -q -r "$BACKEND_DIR/requirements.txt"
+if command -v uv >/dev/null 2>&1; then
+  uv pip install -r "$BACKEND_DIR/requirements.txt" --python "$BACKEND_DIR/.venv/bin/python" 2>&1 | pip_filter
+else
+  "$BACKEND_DIR/.venv/bin/pip" install -r "$BACKEND_DIR/requirements.txt" 2>&1 | pip_filter
+fi
 step "API dependencies ready"
 
 # ── Skillsbench ───────────────────────────────────────────────────────────────
@@ -165,8 +184,11 @@ else
     "$PYTHON_BENCH" -m venv "$SKILLSBENCH_DIR/.venv"
   fi
   info "Installing evaluation framework..."
-  "$SKILLSBENCH_DIR/.venv/bin/python" -m pip install -q --upgrade pip
-  "$SKILLSBENCH_DIR/.venv/bin/pip" install -q -e "$SKILLSBENCH_DIR"
+  if command -v uv >/dev/null 2>&1; then
+    uv pip install -e "$SKILLSBENCH_DIR" --python "$SKILLSBENCH_DIR/.venv/bin/python" 2>&1 | pip_filter
+  else
+    "$SKILLSBENCH_DIR/.venv/bin/pip" install -q -e "$SKILLSBENCH_DIR" 2>&1 | pip_filter
+  fi
   step "Skillsbench ready"
 fi
 
@@ -195,14 +217,13 @@ if command -v pg_isready >/dev/null 2>&1; then
     fi
 
     info "Running migrations..."
-    (cd "$BACKEND_DIR" && PYTHONPATH=. .venv/bin/python -m alembic upgrade head 2>&1) \
+    (cd "$BACKEND_DIR" && PYTHONPATH=. .venv/bin/python -m alembic upgrade head >/dev/null 2>&1) \
       || warn "Migration skipped"
     step "Schema up to date"
 
     info "Seeding skills..."
-    (cd "$BACKEND_DIR" && PYTHONPATH=. .venv/bin/python -m db.seed 2>&1) \
+    (cd "$BACKEND_DIR" && PYTHONPATH=. .venv/bin/python -m db.seed 2>&1 | tail -1) \
       || warn "Seed skipped"
-    step "Skills loaded"
   else
     warn "Could not start PostgreSQL"
     info "Falling back to in-memory mode"
@@ -217,13 +238,28 @@ fi
 
 header "Starting services"
 
-(cd "$BACKEND_DIR" && PYTHONPATH=. .venv/bin/uvicorn server:app --reload --host 127.0.0.1 --port 8000) &
+# Start backend first, wait for it to be ready
+(cd "$BACKEND_DIR" && PYTHONPATH=. .venv/bin/uvicorn server:app --reload --host 127.0.0.1 --port 8000 >/dev/null 2>&1) &
 PIDS+=($!)
 
-(cd "$FRONTEND_DIR" && npm run dev -- --host 0.0.0.0) &
+info "Waiting for API..."
+for i in $(seq 1 15); do
+  if curl -s -o /dev/null http://localhost:8000/api/skills 2>/dev/null; then
+    break
+  fi
+  sleep 1
+done
+step "API server running"
+
+# Start frontend after backend is ready
+(cd "$FRONTEND_DIR" && npx vite --host 0.0.0.0 >/dev/null 2>&1) &
 PIDS+=($!)
 
 sleep 2
+step "Frontend server running"
+
+echo ""
+line
 echo ""
 echo -e "  ${GREEN}${BOLD}Ready!${RESET}"
 echo ""
