@@ -337,6 +337,9 @@ export default function SkillsView({ onSkillsChanged }) {
                       key={selectedSkill.id}
                       skill={selectedSkill}
                       onClose={() => setSelectedId(null)}
+                      onSaved={(updated) => {
+                        setSkills((prev) => prev.map((s) => (s.id === updated.id ? updated : s)));
+                      }}
                       onInstall={async (id) => {
                         await installSkill(id);
                         const refreshed = await fetchSkills();
