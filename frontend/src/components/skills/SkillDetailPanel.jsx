@@ -337,7 +337,7 @@ export default function SkillDetailPanel({ skill, onClose, onInstall, onUninstal
                 )}
                 {!isBuiltin && onDelete && (
                   <button
-                    onClick={() => { if (confirm(`Delete "${skill.name}" permanently?`)) onDelete(skill.id); }}
+                    onClick={() => { if (confirm(`Permanently delete "${skill.name}" from the database? This cannot be undone.`)) onDelete(skill.id); }}
                     className="flex items-center gap-2 rounded-lg border border-red-500/20 px-4 py-2 text-sm text-red-400 transition-colors hover:bg-red-500/10"
                   >
                     <Trash2 size={14} />
