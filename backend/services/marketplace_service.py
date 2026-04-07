@@ -136,7 +136,8 @@ async def install_skill(session: AsyncSession, slug: str, scope_id: str = "defau
     if not skill or not skill.canonical_version_id:
         return None
 
-    # Check if already installed for this scope
+    skill.is_cloud_only = False
+
     existing = await session.execute(
         select(SkillInstallation)
         .where(SkillInstallation.skill_id == skill.id, SkillInstallation.scope_id == scope_id)
@@ -154,11 +155,13 @@ async def install_skill(session: AsyncSession, slug: str, scope_id: str = "defau
 
 
 async def uninstall_skill(session: AsyncSession, slug: str, scope_id: str = "default") -> dict | None:
-    """Remove installation record for the given scope (does not mutate global skill record)."""
+    """Remove installation record and mark skill as cloud-only."""
     result = await session.execute(select(Skill).where(Skill.slug == slug))
     skill = result.scalar_one_or_none()
     if not skill:
         return None
+
+    skill.is_cloud_only = True
 
     installs = await session.execute(
         select(SkillInstallation)
