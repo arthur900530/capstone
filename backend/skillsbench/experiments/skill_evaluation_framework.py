@@ -16,6 +16,7 @@ import csv
 import json
 import math
 import os
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -24,6 +25,7 @@ from pathlib import Path
 from statistics import mean
 from typing import Any
 
+from openai import OpenAI
 import yaml
 
 
@@ -33,6 +35,7 @@ class SkillInfo:
     source_dir: Path
     skill_md: Path
     content: str
+    description: str
 
 
 @dataclass
@@ -52,15 +55,48 @@ def write_json(path: Path, data: dict[str, Any]) -> None:
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
-def extract_skill_name(skill_md: Path, content: str) -> str:
+def parse_frontmatter(content: str) -> dict[str, str]:
     lines = content.splitlines()
-    if lines and lines[0].strip() == "---":
-        for line in lines[1:]:
-            if line.strip() == "---":
-                break
-            if line.lower().startswith("name:"):
-                return line.split(":", 1)[1].strip().strip("\"'")
-    return skill_md.parent.name
+    if not lines or lines[0].strip() != "---":
+        return {}
+
+    frontmatter: dict[str, str] = {}
+    for line in lines[1:]:
+        stripped = line.strip()
+        if stripped == "---":
+            break
+        if ":" not in stripped:
+            continue
+        key, value = stripped.split(":", 1)
+        frontmatter[key.strip().lower()] = value.strip().strip("\"'")
+    return frontmatter
+
+
+def extract_body_summary(content: str) -> str:
+    body = content
+    if content.startswith("---\n"):
+        end_idx = content.find("\n---", 4)
+        if end_idx != -1:
+            body = content[end_idx + 4 :]
+
+    paragraphs = [p.strip() for p in body.split("\n\n") if p.strip()]
+    for paragraph in paragraphs:
+        if paragraph.startswith("#"):
+            continue
+        return paragraph
+    return body.strip()
+
+
+def extract_skill_name(skill_md: Path, content: str) -> str:
+    return parse_frontmatter(content).get("name", skill_md.parent.name).strip()
+
+
+def extract_skill_description(content: str) -> str:
+    frontmatter = parse_frontmatter(content)
+    description = frontmatter.get("description", "").strip()
+    if description:
+        return description
+    return extract_body_summary(content)
 
 
 def discover_skills(skills_pool: Path) -> list[SkillInfo]:
@@ -73,6 +109,7 @@ def discover_skills(skills_pool: Path) -> list[SkillInfo]:
                 source_dir=skill_md.parent,
                 skill_md=skill_md,
                 content=content,
+                description=extract_skill_description(content),
             )
         )
     return skills
@@ -100,6 +137,7 @@ def select_skill(skills: list[SkillInfo], skill_selector: str | None) -> SkillIn
                 source_dir=candidate.parent,
                 skill_md=candidate,
                 content=content,
+                description=extract_skill_description(content),
             )
 
         if selector_path.name == "SKILL.md":
@@ -109,6 +147,7 @@ def select_skill(skills: list[SkillInfo], skill_selector: str | None) -> SkillIn
                 source_dir=selector_path.parent,
                 skill_md=selector_path,
                 content=content,
+                description=extract_skill_description(content),
             )
         raise ValueError("--skill path must be a folder containing SKILL.md or the SKILL.md file itself.")
 
@@ -190,6 +229,54 @@ def cosine_similarity(a: list[float], b: list[float]) -> float:
     if na == 0.0 or nb == 0.0:
         return 0.0
     return dot / (math.sqrt(na) * math.sqrt(nb))
+
+
+def llm_similarity_score(
+    client: OpenAI,
+    model: str,
+    skill_description: str,
+    task_description: str,
+) -> float:
+    if not skill_description.strip() or not task_description.strip():
+        return 0.0
+
+    response = client.chat.completions.create(
+        model=model,
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "You score how well a skill description matches a task description. "
+                    "Return only a single floating point number between 0 and 1, where 1 means "
+                    "the skill is highly relevant and 0 means it is not relevant."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    "Score the similarity between the following skill and task.\n\n"
+                    "Scoring rubric:\n"
+                    "- 0.0 to 0.2: almost no overlap in capability\n"
+                    "- 0.2 to 0.5: limited or indirect relevance\n"
+                    "- 0.5 to 0.8: clearly relevant\n"
+                    "- 0.8 to 1.0: highly aligned and directly applicable\n\n"
+                    f"Skill description:\n{skill_description.strip()}\n\n"
+                    f"Task description:\n{task_description.strip()}\n\n"
+                    "Output only the numeric score."
+                ),
+            },
+        ],
+        temperature=0,
+        max_tokens=16,
+    )
+
+    content = response.choices[0].message.content or ""
+    match = re.search(r"-?\d+(?:\.\d+)?", content)
+    if not match:
+        raise ValueError(f"Could not parse similarity score from model output: {content!r}")
+
+    score = float(match.group(0))
+    return max(0.0, min(1.0, score))
 
 
 def _copy_file_hardlink_or_fallback(src: str, dst: str) -> None:
@@ -437,6 +524,13 @@ def main() -> None:
     parser.add_argument("--tasks-dir", type=Path, default=Path("tasks"), help="Tasks root directory.")
     parser.add_argument("--threshold", type=float, default=0.55, help="Similarity threshold to select tasks.")
     parser.add_argument(
+        "--similarity-method",
+        type=str,
+        choices=["embedding", "llm"],
+        default="embedding",
+        help="Similarity scoring method.",
+    )
+    parser.add_argument(
         "--embedding-model",
         type=str,
         default="openai/text-embedding-3-small",
@@ -444,6 +538,14 @@ def main() -> None:
     )
     parser.add_argument("--embedding-api-base", type=str, default=None, help="Optional embedding API base.")
     parser.add_argument("--embedding-api-key", type=str, default=None, help="Optional embedding API key.")
+    parser.add_argument(
+        "--llm-model",
+        type=str,
+        default="gpt-4.1-mini",
+        help="OpenAI chat model used when --similarity-method=llm.",
+    )
+    parser.add_argument("--llm-api-base", type=str, default=None, help="Optional LLM API base.")
+    parser.add_argument("--llm-api-key", type=str, default=None, help="Optional LLM API key.")
     parser.add_argument("--base-config", type=Path, default=None, help="Optional Harbor YAML config to inherit.")
     parser.add_argument("--jobs-dir", type=Path, default=Path("jobs"), help="Where Harbor writes job outputs.")
     parser.add_argument(
@@ -467,30 +569,43 @@ def main() -> None:
         help="When --run, also run the same tasks with no skills (empty skills dir) for comparison.",
     )
     args = parser.parse_args()
-
     skills = discover_skills(args.skills_dir)
     selected_skill = select_skill(skills, args.skill)
     tasks = discover_tasks(args.tasks_dir)
     if not tasks:
         raise ValueError(f"No tasks found under: {args.tasks_dir}")
 
-    task_texts = [t.introduction for t in tasks]
-    task_vectors = embed_texts(
-        model=args.embedding_model,
-        texts=task_texts,
-        api_base=args.embedding_api_base,
-        api_key=args.embedding_api_key,
-    )
-    skill_vector = embed_texts(
-        model=args.embedding_model,
-        texts=[selected_skill.content],
-        api_base=args.embedding_api_base,
-        api_key=args.embedding_api_key,
-    )[0]
-
     similarities: list[dict[str, Any]] = []
-    for task, vec in zip(tasks, task_vectors, strict=True):
-        sim = cosine_similarity(skill_vector, vec)
+    if args.similarity_method == "embedding":
+        task_texts = [t.introduction for t in tasks]
+        task_vectors = embed_texts(
+            model=args.embedding_model,
+            texts=task_texts,
+            api_base=args.embedding_api_base,
+            api_key=args.embedding_api_key,
+        )
+        skill_vector = embed_texts(
+            model=args.embedding_model,
+            texts=[selected_skill.content],
+            api_base=args.embedding_api_base,
+            api_key=args.embedding_api_key,
+        )[0]
+        task_similarities = [
+            cosine_similarity(skill_vector, task_vector) for task_vector in task_vectors
+        ]
+    else:
+        client = OpenAI(api_key=args.llm_api_key, base_url=args.llm_api_base)
+        task_similarities = [
+            llm_similarity_score(
+                client=client,
+                model=args.llm_model,
+                skill_description=selected_skill.description,
+                task_description=task.introduction,
+            )
+            for task in tasks
+        ]
+
+    for task, sim in zip(tasks, task_similarities, strict=True):
         similarities.append(
             {
                 "task_name": task.task_name,
@@ -556,7 +671,9 @@ def main() -> None:
             "selected_skill_md": str(selected_skill.skill_md.resolve()),
             "tasks_dir": str(args.tasks_dir),
             "similarity_threshold": args.threshold,
+            "similarity_method": args.similarity_method,
             "embedding_model": args.embedding_model,
+            "llm_model": args.llm_model,
             "base_config": str(args.base_config) if args.base_config else None,
             "agent_name": args.agent_name,
             "model_name": args.model_name,
