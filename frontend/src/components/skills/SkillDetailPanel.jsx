@@ -1,9 +1,11 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import {
   X, Download, Trash2, Cloud, CheckCircle, Paperclip,
-  ChevronDown, ChevronRight, ExternalLink, Copy, Check, Maximize2, Loader2,
+  ChevronDown, ChevronRight, ExternalLink, Copy, Check, Maximize2,
+  Loader2, Pencil, Save, Undo2, Send,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
+import { updateSkill, createSubmission } from "../../services/api";
 import { fileIcon } from "./utils";
 import FileViewer from "./FileViewer";
 
@@ -53,7 +55,6 @@ function DefinitionModal({ definition, skillName, onClose }) {
     <div className="fixed inset-0 z-50 flex items-center justify-center p-8">
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
       <div className="relative z-10 flex max-h-[85vh] w-full max-w-3xl animate-scale-in flex-col rounded-2xl border border-border/30 bg-workspace shadow-2xl shadow-black/40">
-        {/* Modal header */}
         <div className="flex items-center justify-between border-b border-border/30 px-5 py-3">
           <span className="text-sm font-medium text-text-primary">{skillName}</span>
           <div className="flex items-center gap-1">
@@ -72,7 +73,6 @@ function DefinitionModal({ definition, skillName, onClose }) {
             </button>
           </div>
         </div>
-        {/* Modal body */}
         <div className="flex-1 overflow-y-auto px-8 py-6">
           <ReactMarkdown components={mdComponents}>{definition}</ReactMarkdown>
         </div>
@@ -83,17 +83,37 @@ function DefinitionModal({ definition, skillName, onClose }) {
 
 /* ── Main panel ─────────────────────────────────────────────────────────── */
 
-export default function SkillDetailPanel({ skill, onClose, onInstall, onUninstall, onDelete }) {
+export default function SkillDetailPanel({ skill, onClose, onInstall, onUninstall, onDelete, onSaved }) {
   const [viewingFile, setViewingFile] = useState(null);
   const [filesExpanded, setFilesExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
   const [showModal, setShowModal] = useState(false);
   const [installing, setInstalling] = useState(false);
 
+  // Edit mode state
+  const [editing, setEditing] = useState(false);
+  const [editName, setEditName] = useState(skill.name);
+  const [editDesc, setEditDesc] = useState(skill.description);
+  const [editDef, setEditDef] = useState(skill.definition);
+  const [saving, setSaving] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [submitDone, setSubmitDone] = useState(false);
+
   const files = skill.files ?? [];
   const isCloudOnly = skill.is_cloud_only;
   const isBuiltin = skill.is_builtin || skill.type === "builtin";
   const tags = skill.tags ?? [];
+
+  // Reset edit state when skill changes
+  useEffect(() => {
+    setEditing(false);
+    setEditName(skill.name);
+    setEditDesc(skill.description);
+    setEditDef(skill.definition);
+    setSubmitDone(false);
+  }, [skill.id]);
+
+  const dirty = editing && (editName !== skill.name || editDesc !== skill.description || editDef !== skill.definition);
 
   const handleCopy = async () => {
     await navigator.clipboard.writeText(skill.definition);
@@ -103,19 +123,49 @@ export default function SkillDetailPanel({ skill, onClose, onInstall, onUninstal
 
   const handleInstall = async () => {
     setInstalling(true);
-    try {
-      await onInstall?.(skill.id);
-    } finally {
-      setInstalling(false);
-    }
+    try { await onInstall?.(skill.id); } finally { setInstalling(false); }
   };
 
   const handleUninstall = async () => {
     setInstalling(true);
+    try { await onUninstall?.(skill.id); } finally { setInstalling(false); }
+  };
+
+  const handleSave = async () => {
+    setSaving(true);
     try {
-      await onUninstall?.(skill.id);
+      const updated = await updateSkill(skill.id, {
+        name: editName.trim(),
+        description: editDesc.trim(),
+        definition: editDef.trim(),
+      });
+      setEditing(false);
+      onSaved?.(updated);
     } finally {
-      setInstalling(false);
+      setSaving(false);
+    }
+  };
+
+  const handleDiscard = () => {
+    setEditName(skill.name);
+    setEditDesc(skill.description);
+    setEditDef(skill.definition);
+    setEditing(false);
+  };
+
+  const handleSubmit = async () => {
+    setSubmitting(true);
+    try {
+      await createSubmission({
+        name: editing ? editName : skill.name,
+        description: editing ? editDesc : skill.description,
+        skill_md: editing ? editDef : skill.definition,
+        submission_type: "authored",
+      });
+      setSubmitDone(true);
+      setTimeout(() => setSubmitDone(false), 3000);
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -134,13 +184,62 @@ export default function SkillDetailPanel({ skill, onClose, onInstall, onUninstal
     <div className="flex h-full flex-col">
       {/* Header */}
       <div className="flex items-center justify-between border-b border-border/40 px-5 py-3">
-        <h3 className="text-sm font-semibold text-text-primary">{skill.name}</h3>
-        <button
-          onClick={onClose}
-          className="rounded-md p-1 text-text-muted transition-colors hover:bg-surface hover:text-text-secondary"
-        >
-          <X size={16} />
-        </button>
+        <h3 className="text-sm font-semibold text-text-primary">
+          {editing ? "Editing" : ""} {skill.name}
+        </h3>
+        <div className="flex items-center gap-1.5">
+          {/* Edit toggle */}
+          {!isBuiltin && !editing && (
+            <button
+              onClick={() => setEditing(true)}
+              className="flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-medium text-text-muted transition-colors hover:bg-surface hover:text-text-secondary"
+            >
+              <Pencil size={12} />
+              Edit
+            </button>
+          )}
+          {/* Save / Discard (edit mode) */}
+          {editing && (
+            <>
+              <button
+                onClick={handleDiscard}
+                className="flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs text-text-muted transition-colors hover:bg-surface hover:text-text-secondary"
+              >
+                <Undo2 size={12} />
+                Discard
+              </button>
+              <button
+                onClick={handleSave}
+                disabled={saving || !dirty}
+                className="flex items-center gap-1 rounded-lg bg-accent-teal px-2.5 py-1.5 text-xs font-medium text-charcoal transition-colors hover:bg-accent-light disabled:opacity-50"
+              >
+                {saving ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}
+                Save
+              </button>
+            </>
+          )}
+          {/* Submit */}
+          {!isBuiltin && (
+            <button
+              onClick={handleSubmit}
+              disabled={submitting}
+              className={`flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-medium transition-colors ${
+                submitDone
+                  ? "bg-green-500/10 text-green-400"
+                  : "bg-purple-500/10 text-purple-400 hover:bg-purple-500/20"
+              } disabled:opacity-50`}
+            >
+              {submitDone ? <Check size={12} /> : submitting ? <Loader2 size={12} className="animate-spin" /> : <Send size={12} />}
+              {submitDone ? "Submitted" : "Submit"}
+            </button>
+          )}
+          <button
+            onClick={onClose}
+            className="rounded-md p-1 text-text-muted transition-colors hover:bg-surface hover:text-text-secondary"
+          >
+            <X size={16} />
+          </button>
+        </div>
       </div>
 
       {/* Content */}
@@ -155,11 +254,6 @@ export default function SkillDetailPanel({ skill, onClose, onInstall, onUninstal
             }`}>
               {isBuiltin ? "builtin" : "user"}
             </span>
-            {skill.status && skill.status !== "published" && (
-              <span className="rounded-full bg-yellow-500/10 px-2.5 py-0.5 text-[11px] text-yellow-400">
-                {skill.status}
-              </span>
-            )}
             {isCloudOnly ? (
               <span className="flex items-center gap-1 rounded-full bg-surface px-2.5 py-0.5 text-[11px] text-text-muted">
                 <Cloud size={11} />
@@ -171,6 +265,11 @@ export default function SkillDetailPanel({ skill, onClose, onInstall, onUninstal
                 Installed
               </span>
             )}
+            {editing && (
+              <span className="rounded-full bg-yellow-500/10 px-2.5 py-0.5 text-[11px] text-yellow-400">
+                editing
+              </span>
+            )}
             {tags.map((tag) => (
               <span key={tag} className="rounded-full bg-accent-teal/10 px-2 py-0.5 text-[10px] text-accent-teal">
                 {tag}
@@ -178,107 +277,139 @@ export default function SkillDetailPanel({ skill, onClose, onInstall, onUninstal
             ))}
           </div>
 
-          {/* Description */}
-          {skill.description && (
-            <p className="text-sm leading-relaxed text-text-secondary">{skill.description}</p>
-          )}
-
-          {/* Actions */}
-          <div className="flex items-center gap-2">
-            {isCloudOnly ? (
-              <button
-                onClick={handleInstall}
-                disabled={installing}
-                className="flex items-center gap-2 rounded-lg bg-accent-teal px-4 py-2 text-sm font-medium text-charcoal transition-colors hover:bg-accent-light disabled:opacity-50"
-              >
-                {installing ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />}
-                {installing ? "Installing..." : "Install Skill"}
-              </button>
-            ) : !isBuiltin && (
-              <button
-                onClick={handleUninstall}
-                disabled={installing}
-                className="flex items-center gap-2 rounded-lg border border-border/40 px-4 py-2 text-sm text-text-secondary transition-colors hover:bg-surface disabled:opacity-50"
-              >
-                {installing ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
-                {installing ? "Removing..." : "Uninstall"}
-              </button>
-            )}
-            {!isBuiltin && onDelete && (
-              <button
-                onClick={() => { if (confirm(`Delete "${skill.name}" permanently?`)) onDelete(skill.id); }}
-                className="flex items-center gap-2 rounded-lg border border-red-500/20 px-4 py-2 text-sm text-red-400 transition-colors hover:bg-red-500/10"
-              >
-                <Trash2 size={14} />
-                Delete
-              </button>
-            )}
-          </div>
-
-          {/* Files */}
-          {files.length > 0 && (
-            <div>
-              <button
-                onClick={() => setFilesExpanded(!filesExpanded)}
-                className="flex items-center gap-1.5 text-xs font-medium text-text-secondary"
-              >
-                {filesExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-                <Paperclip size={12} />
-                {files.length} file{files.length !== 1 ? "s" : ""}
-              </button>
-              {filesExpanded && (
-                <div className="mt-2 rounded-lg border border-border/40 bg-charcoal/50">
-                  {files.map((file, i) => {
-                    const { Icon, color } = fileIcon(file.name);
-                    return (
-                      <button
-                        key={file.name}
-                        onClick={() => setViewingFile(file.name)}
-                        className={`flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-surface/60 ${
-                          i > 0 ? "border-t border-border/20" : ""
-                        }`}
-                      >
-                        <Icon size={13} className={`shrink-0 ${color}`} />
-                        <span className="min-w-0 flex-1 truncate text-xs text-text-secondary">
-                          {file.name}
-                        </span>
-                        <ExternalLink size={11} className="shrink-0 text-text-muted" />
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Rendered SKILL.md */}
-          {skill.definition && (
-            <div className="group relative rounded-xl border border-border/20 bg-gradient-to-b from-surface/40 to-transparent p-[1px]">
-              <div className="rounded-[11px] bg-workspace px-5 py-4">
-                {/* Toolbar */}
-                <div className="mb-3 flex items-center justify-between">
-                  <span className="text-[11px] font-medium tracking-wide text-text-muted uppercase">Definition</span>
-                  <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
-                    <button
-                      onClick={handleCopy}
-                      className="rounded-md p-1.5 text-text-muted transition-colors hover:bg-surface hover:text-text-secondary"
-                      title="Copy to clipboard"
-                    >
-                      {copied ? <Check size={14} className="text-green-400" /> : <Copy size={14} />}
-                    </button>
-                    <button
-                      onClick={() => setShowModal(true)}
-                      className="rounded-md p-1.5 text-text-muted transition-colors hover:bg-surface hover:text-text-secondary"
-                      title="Expand"
-                    >
-                      <Maximize2 size={14} />
-                    </button>
-                  </div>
-                </div>
-                {/* Markdown */}
-                <ReactMarkdown components={mdComponents}>{skill.definition}</ReactMarkdown>
+          {/* Editable or read-only fields */}
+          {editing ? (
+            <div className="space-y-4">
+              <div>
+                <label className="mb-1.5 block text-xs font-medium text-text-secondary">Name</label>
+                <input
+                  value={editName}
+                  onChange={(e) => setEditName(e.target.value)}
+                  className="w-full rounded-lg border border-border/50 bg-charcoal px-3 py-2 text-sm text-text-primary outline-none transition-colors focus:border-accent-teal focus:ring-1 focus:ring-accent-teal/30"
+                />
+              </div>
+              <div>
+                <label className="mb-1.5 block text-xs font-medium text-text-secondary">Description</label>
+                <textarea
+                  value={editDesc}
+                  onChange={(e) => setEditDesc(e.target.value)}
+                  rows={2}
+                  className="w-full resize-none rounded-lg border border-border/50 bg-charcoal px-3 py-2 text-sm text-text-primary outline-none transition-colors focus:border-accent-teal focus:ring-1 focus:ring-accent-teal/30"
+                />
+              </div>
+              <div>
+                <label className="mb-1.5 block text-xs font-medium text-text-secondary">Definition</label>
+                <textarea
+                  value={editDef}
+                  onChange={(e) => setEditDef(e.target.value)}
+                  rows={16}
+                  className="w-full resize-none rounded-lg border border-border/50 bg-charcoal px-4 py-3 font-mono text-xs leading-relaxed text-text-primary outline-none transition-colors focus:border-accent-teal focus:ring-1 focus:ring-accent-teal/30"
+                />
               </div>
             </div>
+          ) : (
+            <>
+              {/* Description */}
+              {skill.description && (
+                <p className="text-sm leading-relaxed text-text-secondary">{skill.description}</p>
+              )}
+
+              {/* Actions */}
+              <div className="flex items-center gap-2">
+                {isCloudOnly ? (
+                  <button
+                    onClick={handleInstall}
+                    disabled={installing}
+                    className="flex items-center gap-2 rounded-lg bg-accent-teal px-4 py-2 text-sm font-medium text-charcoal transition-colors hover:bg-accent-light disabled:opacity-50"
+                  >
+                    {installing ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />}
+                    {installing ? "Installing..." : "Install Skill"}
+                  </button>
+                ) : !isBuiltin && (
+                  <button
+                    onClick={handleUninstall}
+                    disabled={installing}
+                    className="flex items-center gap-2 rounded-lg border border-border/40 px-4 py-2 text-sm text-text-secondary transition-colors hover:bg-surface disabled:opacity-50"
+                  >
+                    {installing ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
+                    {installing ? "Removing..." : "Uninstall"}
+                  </button>
+                )}
+                {!isBuiltin && onDelete && (
+                  <button
+                    onClick={() => { if (confirm(`Delete "${skill.name}" permanently?`)) onDelete(skill.id); }}
+                    className="flex items-center gap-2 rounded-lg border border-red-500/20 px-4 py-2 text-sm text-red-400 transition-colors hover:bg-red-500/10"
+                  >
+                    <Trash2 size={14} />
+                    Delete
+                  </button>
+                )}
+              </div>
+
+              {/* Files */}
+              {files.length > 0 && (
+                <div>
+                  <button
+                    onClick={() => setFilesExpanded(!filesExpanded)}
+                    className="flex items-center gap-1.5 text-xs font-medium text-text-secondary"
+                  >
+                    {filesExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                    <Paperclip size={12} />
+                    {files.length} file{files.length !== 1 ? "s" : ""}
+                  </button>
+                  {filesExpanded && (
+                    <div className="mt-2 rounded-lg border border-border/40 bg-charcoal/50">
+                      {files.map((file, i) => {
+                        const { Icon, color } = fileIcon(file.name);
+                        return (
+                          <button
+                            key={file.name}
+                            onClick={() => setViewingFile(file.name)}
+                            className={`flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-surface/60 ${
+                              i > 0 ? "border-t border-border/20" : ""
+                            }`}
+                          >
+                            <Icon size={13} className={`shrink-0 ${color}`} />
+                            <span className="min-w-0 flex-1 truncate text-xs text-text-secondary">
+                              {file.name}
+                            </span>
+                            <ExternalLink size={11} className="shrink-0 text-text-muted" />
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Rendered SKILL.md */}
+              {skill.definition && (
+                <div className="group relative rounded-xl border border-border/20 bg-gradient-to-b from-surface/40 to-transparent p-[1px]">
+                  <div className="rounded-[11px] bg-workspace px-5 py-4">
+                    <div className="mb-3 flex items-center justify-between">
+                      <span className="text-[11px] font-medium tracking-wide text-text-muted uppercase">Definition</span>
+                      <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+                        <button
+                          onClick={handleCopy}
+                          className="rounded-md p-1.5 text-text-muted transition-colors hover:bg-surface hover:text-text-secondary"
+                          title="Copy to clipboard"
+                        >
+                          {copied ? <Check size={14} className="text-green-400" /> : <Copy size={14} />}
+                        </button>
+                        <button
+                          onClick={() => setShowModal(true)}
+                          className="rounded-md p-1.5 text-text-muted transition-colors hover:bg-surface hover:text-text-secondary"
+                          title="Expand"
+                        >
+                          <Maximize2 size={14} />
+                        </button>
+                      </div>
+                    </div>
+                    <ReactMarkdown components={mdComponents}>{skill.definition}</ReactMarkdown>
+                  </div>
+                </div>
+              )}
+            </>
           )}
 
           {/* Metadata footer */}
