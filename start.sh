@@ -114,20 +114,36 @@ else
   echo ""
 fi
 
-# -- PostgreSQL check (optional) --
+# -- PostgreSQL --
 echo "==> PostgreSQL"
 if command -v pg_isready >/dev/null 2>&1; then
+  if ! pg_isready -h localhost -p 5432 -q 2>/dev/null; then
+    echo "    PostgreSQL installed but not running. Starting it..."
+    sudo service postgresql start 2>/dev/null \
+      || pg_ctlcluster 16 main start 2>/dev/null \
+      || echo "    Could not auto-start PostgreSQL (try: sudo service postgresql start)"
+    sleep 2
+  fi
+
   if pg_isready -h localhost -p 5432 -q 2>/dev/null; then
-    echo "    PostgreSQL is running. Skill marketplace will use DB."
-    echo "    Running Alembic migrations..."
+    echo "    PostgreSQL is running."
+
+    # Create database if it doesn't exist
+    if ! sudo -u postgres psql -lqt 2>/dev/null | grep -qw skillmarket; then
+      echo "    Creating 'skillmarket' database..."
+      sudo -u postgres createdb skillmarket 2>/dev/null || echo "    Database may already exist"
+    fi
+
+    echo "    Running migrations..."
     (cd "$BACKEND_DIR" && PYTHONPATH=. .venv/bin/python -m alembic upgrade head 2>&1) || echo "    Migration skipped (DB may need setup)"
     echo "    Seeding skills..."
     (cd "$BACKEND_DIR" && PYTHONPATH=. .venv/bin/python -m db.seed 2>&1) || echo "    Seed skipped"
   else
-    echo "    PostgreSQL is not running. Skill marketplace will fall back to in-memory mode."
+    echo "    PostgreSQL could not be started. Falling back to in-memory mode."
   fi
 else
-  echo "    pg_isready not found. Skipping DB check (in-memory fallback active)."
+  echo "    PostgreSQL not installed. Falling back to in-memory mode."
+  echo "    To enable persistence: sudo apt install postgresql"
 fi
 echo ""
 
