@@ -8,6 +8,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+import uuid as _uuid_mod
+
 from db.models import (
     Skill,
     SkillVersion,
@@ -15,6 +17,16 @@ from db.models import (
     SkillSimilarityResult,
     SkillPolicyDecision,
 )
+
+
+async def _unique_slug(session: AsyncSession, base_name: str) -> str:
+    """Generate a unique slug from a name, appending a suffix on collision."""
+    slug = base_name.lower().replace(" ", "-")
+    slug = "".join(c for c in slug if c.isalnum() or c == "-")[:60].rstrip("-")
+    existing = await session.execute(select(Skill.slug).where(Skill.slug == slug))
+    if not existing.scalar_one_or_none():
+        return slug
+    return f"{slug}-{_uuid_mod.uuid4().hex[:6]}"
 
 
 def _submission_to_dict(sub: SkillSubmission) -> dict:
@@ -166,9 +178,7 @@ async def make_decision(
     now = datetime.now(timezone.utc)
 
     if decision == "accept":
-        # Create a published skill from the submission
-        slug = sub.proposed_name.lower().replace(" ", "-")
-        slug = "".join(c for c in slug if c.isalnum() or c == "-")[:60]
+        slug = await _unique_slug(session, sub.proposed_name)
 
         skill = Skill(
             slug=slug,
@@ -196,36 +206,6 @@ async def make_decision(
         sub.status = "accepted"
     elif decision == "discard":
         sub.status = "discarded"
-    elif decision == "keep_both":
-        sub.status = "kept_both"
-        # Same as accept — create a new skill
-        slug = sub.proposed_name.lower().replace(" ", "-")
-        slug = "".join(c for c in slug if c.isalnum() or c == "-")[:60]
-
-        skill = Skill(
-            slug=slug,
-            display_name=sub.proposed_name,
-            short_description=sub.proposed_description or "",
-            source_type="user",
-            status="published",
-            is_builtin=False,
-            is_cloud_only=False,
-            published_at=now,
-        )
-        session.add(skill)
-        await session.flush()
-
-        if sub.proposed_skill_md:
-            version = SkillVersion(
-                skill_id=skill.id,
-                skill_md=sub.proposed_skill_md,
-                is_current=True,
-            )
-            session.add(version)
-            await session.flush()
-            skill.canonical_version_id = version.id
-
-        sub.status = "kept_both"
 
     sub.reviewed_at = now
     sub.updated_at = now
