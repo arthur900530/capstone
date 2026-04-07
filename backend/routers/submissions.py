@@ -129,3 +129,32 @@ async def make_decision(submission_id: str, body: DecisionRequest):
     sub["reviewed_at"] = _now_iso()
     sub["updated_at"] = _now_iso()
     return {"ok": True, "decision": body.decision, "submission_id": submission_id}
+
+
+@router.delete("/{submission_id}")
+async def delete_submission(submission_id: str):
+    if _db_available():
+        from db.engine import async_session
+        from sqlalchemy import select, delete as sa_delete
+        from db.models import SkillSubmission, SkillSimilarityResult, SkillPolicyDecision
+        import uuid as _uuid
+        try:
+            sid = _uuid.UUID(submission_id)
+        except ValueError:
+            raise HTTPException(status_code=404, detail="Invalid submission ID")
+        async with async_session() as session:
+            # Delete related records first
+            await session.execute(sa_delete(SkillSimilarityResult).where(SkillSimilarityResult.submission_id == sid))
+            await session.execute(sa_delete(SkillPolicyDecision).where(SkillPolicyDecision.submission_id == sid))
+            result = await session.execute(select(SkillSubmission).where(SkillSubmission.id == sid))
+            sub = result.scalar_one_or_none()
+            if not sub:
+                raise HTTPException(status_code=404, detail="Submission not found")
+            await session.delete(sub)
+            await session.commit()
+            return {"ok": True}
+
+    if submission_id in _submissions:
+        del _submissions[submission_id]
+        return {"ok": True}
+    raise HTTPException(status_code=404, detail="Submission not found")

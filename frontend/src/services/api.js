@@ -268,3 +268,9 @@ export async function reviewSubmission(submissionId, { decision, reason }) {
   if (!res.ok) throw new Error(`Failed to submit decision: ${res.status}`);
   return res.json();
 }
+
+export async function deleteSubmission(submissionId) {
+  const res = await fetch(`${API_BASE}/marketplace/submissions/${submissionId}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(`Failed to delete submission: ${res.status}`);
+  return res.json();
+}
