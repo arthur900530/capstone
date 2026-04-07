@@ -1,6 +1,11 @@
 # Copy to config.py. Optional Reflexion defaults via .env (see reflexion_agent/agent.py):
 #   ENABLE_REFLEXION=true|false — used when running the agent CLI without an explicit flag.
 #   MAX_REFLEXION_ATTEMPTS=3
+#   REFLEXION_SCORE_THRESHOLD=0.75 — numeric score at or above which the loop exits early,
+#       even if the judge's binary success flag is False. Range: 0.0–1.0. Default: 0.75.
+#       Set to 1.0 to disable the score escape hatch (only success=True can stop the loop).
+#   REFLEXION_MEMORY_PATH= — override the default cross-session memory file location.
+#       When blank or unset, uses the package default: reflexion_agent/data/reflexion_memory.json.
 # The web UI sends use_reflexion on each POST /api/chat request (default false); that
 # overrides the env default for that run.
 

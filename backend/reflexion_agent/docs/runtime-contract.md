@@ -114,6 +114,7 @@ The Reflexion pipeline reads the following from `.env` (via `python-dotenv`):
 |---|---|---|---|
 | `ENABLE_REFLEXION` | `false` | No | Set to `true` to activate the retry loop |
 | `MAX_REFLEXION_ATTEMPTS` | `3` | No | How many attempts before giving up |
+| `REFLEXION_SCORE_THRESHOLD` | `0.75` | No | Score escape hatch: loop exits when `evaluation.score >= threshold`, even if `success=False`. Valid range `0.0–1.0`; set to `1.0` to disable. Invalid values fall back to `0.75`. |
 | `REFLEXION_MEMORY_PATH` | (blank) | No | Override the default memory file location |
 
 When `REFLEXION_MEMORY_PATH` is blank or absent, `ReflexionMemory` uses
