@@ -70,20 +70,38 @@ This must be a serialized representation of the agent's execution history.
 In the current implementation, `agent.py` produces it with:
 
 ```python
-trajectory = str(list(conversation.state.events))
+trajectory = _serialize_trajectory(conversation.state.events)
+```
+
+`_serialize_trajectory()` uses duck-typing attribute checks to classify each
+SDK event object and emit a labeled line:
+
+```
+[USER] Create a file called hello.py ...
+[Turn 1] [ACTION] file_editor
+  Arguments: command='create', path='/workspace/hello.py', ...
+[OBSERVATION] file_editor: [File edited with 1 changes.]
+[Turn 2] [ACTION] terminal
+  Arguments: command='python3 hello.py'
+[OBSERVATION] terminal: Hello, World!  ✅ Exit code: 0
 ```
 
 Key requirements:
 
 - Must include the agent's actions, tool calls, and observations.
-- Must be serializable to a string (the Reflexion modules treat it as
-  opaque text that gets forwarded to the LLM).
-- Should not be truncated — the LLM judge needs the full log to assess
-  success or failure.
+- Must be a plain string — the Reflexion modules treat it as opaque text
+  forwarded to the LLM.
+- Observations over 800 characters are automatically truncated with a
+  `[N chars truncated]` note to keep the trajectory readable.
 
-**Common mistake:** Using `conversation.events` instead of
-`conversation.state.events`. The `events` property does not exist on
-`LocalConversation` directly; it lives on the `state` object.
+**Common mistakes:**
+
+- Using `conversation.events` instead of `conversation.state.events`. The
+  `events` property does not exist on `LocalConversation` directly; it lives
+  on the `state` object.
+- Passing `str(list(conversation.state.events))` — this produces Python repr
+  notation that the LLM judge can parse but is fragile to SDK class renames.
+  Always use `_serialize_trajectory()` instead.
 
 ## 4. The `task` String
 
