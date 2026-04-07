@@ -347,6 +347,14 @@ export default function SkillsView({ onSkillsChanged }) {
                         const refreshed = await fetchSkills();
                         setSkills(refreshed);
                       }}
+                      onDelete={async (id) => {
+                        const { deleteSkill } = await import("../../services/api");
+                        await deleteSkill(id);
+                        setSelectedId(null);
+                        const refreshed = await fetchSkills();
+                        setSkills(refreshed);
+                        onSkillsChanged?.();
+                      }}
                     />
                   )}
                 </div>
