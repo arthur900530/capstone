@@ -3,7 +3,7 @@ import {
   Wrench, Plus, Loader2, AlertCircle, Search, Sparkles,
   LayoutGrid, List, Store, Download, Upload as UploadIcon, ClipboardCheck,
 } from "lucide-react";
-import { fetchSkills, installSkill, uninstallSkill } from "../../services/api";
+import { fetchSkills, installSkill, uninstallSkill, deleteSkill } from "../../services/api";
 import SkillCard from "./SkillCard";
 import SkillEditor from "./SkillEditor";
 import SkillDetailPanel from "./SkillDetailPanel";
@@ -348,9 +348,9 @@ export default function SkillsView({ onSkillsChanged }) {
                         setSkills(refreshed);
                       }}
                       onDelete={async (id) => {
-                        const { deleteSkill } = await import("../../services/api");
-                        await deleteSkill(id);
                         setSelectedId(null);
+                        setSkills((prev) => prev.filter((s) => s.id !== id));
+                        await deleteSkill(id);
                         const refreshed = await fetchSkills();
                         setSkills(refreshed);
                         onSkillsChanged?.();
