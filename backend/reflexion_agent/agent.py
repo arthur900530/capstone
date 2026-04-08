@@ -33,6 +33,7 @@ def _env_bool(name: str, default: str = "false") -> bool:
 # Reflexion defaults from .env; per-request override via runtime(use_reflexion=...)
 ENABLE_REFLEXION = _env_bool("ENABLE_REFLEXION", "false")
 MAX_REFLEXION_ATTEMPTS = int(os.getenv("MAX_REFLEXION_ATTEMPTS", "3") or "3")
+MAX_ITERATIONS_PER_TRIAL = int(os.getenv("REFLEXION_MAX_ITERATIONS_PER_TRIAL", "50") or "50")
 
 # Score threshold: if the judge returns a numeric score at or above this value,
 # the loop exits early even when evaluation.success is False.  This prevents
@@ -423,9 +424,45 @@ def _run_with_reflexion(llm, agent_context, instruction, workspace, callbacks=No
         else:
             full_instruction = instruction
 
-        conversation = Conversation(agent=agent, workspace=workspace, callbacks=callbacks or [])
+        # Per-step callback: logs every SDK event with a running step counter.
+        step_counter = {"n": 0}
+        def _step_logger(event, _attempt=attempt, _task_id=task_id):
+            step_counter["n"] += 1
+            event_type = type(event).__name__
+            summary = ""
+            if hasattr(event, "tool_call") and event.tool_call is not None:
+                tool = getattr(event, "tool_name", None) or "unknown"
+                summary = f" tool={tool}"
+            elif hasattr(event, "observation"):
+                summary = f" observation_len={len(str(getattr(event, 'observation', '')))}"
+            elif hasattr(event, "error"):
+                summary = f" error={getattr(event, 'error', '')[:120]}"
+            elif hasattr(event, "code") and hasattr(event, "detail"):
+                summary = f" code={event.code} detail={str(event.detail)[:120]}"
+            logger.info(
+                "[step %d/%d] trial=%d event=%s%s (task=%s)",
+                step_counter["n"], MAX_ITERATIONS_PER_TRIAL,
+                _attempt, event_type, summary, _task_id,
+            )
+
+        all_callbacks = list(callbacks or []) + [_step_logger]
+
+        conversation = Conversation(
+            agent=agent,
+            workspace=workspace,
+            callbacks=all_callbacks,
+            max_iteration_per_run=MAX_ITERATIONS_PER_TRIAL,
+        )
+        logger.info(
+            "[reflexion] Trial %d: max_iteration_per_run=%d (task=%s)",
+            attempt, MAX_ITERATIONS_PER_TRIAL, task_id,
+        )
         conversation.send_message(full_instruction)
         conversation.run()
+        logger.info(
+            "[reflexion] Trial %d finished: %d steps used of %d max (task=%s)",
+            attempt, step_counter["n"], MAX_ITERATIONS_PER_TRIAL, task_id,
+        )
 
         # Capture the trajectory as a clean, labeled text transcript.
         trajectory = _serialize_trajectory(conversation.state.events)
