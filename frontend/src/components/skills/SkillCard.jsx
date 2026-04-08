@@ -53,14 +53,14 @@ export default function SkillCard({ skill, isSelected, onClick, viewMode = "grid
   return (
     <button
       onClick={onClick}
-      className={`flex flex-col rounded-xl border p-4 text-left transition-all ${
+      className={`flex min-w-0 flex-col overflow-hidden rounded-xl border p-4 text-left transition-all ${
         isSelected
           ? "border-accent-teal/40 bg-surface"
           : "border-border/40 bg-surface hover:border-accent-teal/30 hover:bg-surface-hover"
       } ${isCloudOnly ? "opacity-60" : ""}`}
     >
-      <div className="flex items-start justify-between gap-2">
-        <div className="flex items-center gap-2.5">
+      <div className="flex min-w-0 items-start justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-2.5">
           <div className="shrink-0 rounded-lg bg-accent-teal/10 p-2 text-accent-teal">
             <Wrench size={16} />
           </div>
@@ -83,7 +83,7 @@ export default function SkillCard({ skill, isSelected, onClick, viewMode = "grid
         {skill.description || "No description"}
       </p>
 
-      <div className="mt-3 flex items-center gap-2">
+      <div className="mt-3 flex flex-wrap items-center gap-1.5">
         <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
           typeBadge === "builtin"
             ? "bg-blue-500/10 text-blue-400"
