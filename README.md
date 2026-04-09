@@ -14,14 +14,14 @@ A React-based chat interface for a multi-trial self-evolving AI system that answ
 
 ## Tech Stack
 
-| Layer | Technology |
-|-------|------------|
-| Framework | React 19 |
-| Build Tool | Vite 6 |
-| Styling | Tailwind CSS 4 |
-| Icons | Lucide React |
-| Markdown | react-markdown |
-| Linting | ESLint 9 |
+| Layer      | Technology     |
+| ---------- | -------------- |
+| Framework  | React 19       |
+| Build Tool | Vite 6         |
+| Styling    | Tailwind CSS 4 |
+| Icons      | Lucide React   |
+| Markdown   | react-markdown |
+| Linting    | ESLint 9       |
 
 ## Project Structure
 
@@ -81,19 +81,22 @@ capstone_frontend/
 
 ### 1. Configuration
 
-The real agent requires an LLM API key. 
+The real agent requires an LLM API key.
 
 Copy the example environment variables:
+
 ```bash
 cd backend
 cp .env.example .env
 ```
+
 Then edit `backend/.env` and add your **OpenRouter / OpenAI** API Keys:
+
 ```env
 OPENROUTER_API_KEY=sk-or-v1-...
 ```
 
-*(If `.env` is missing or invalid, the backend will gracefully fall back to a "Mock Mode" that simulates an agent).*
+_(If `.env` is missing or invalid, the backend will gracefully fall back to a "Mock Mode" that simulates an agent)._
 
 ### 2. Quick Start (recommended)
 
@@ -104,6 +107,7 @@ The included `start.sh` script installs all dependencies and launches everything
 ```
 
 This will automatically:
+
 1. Install frontend npm dependencies
 2. Create `backend/.venv` and install all Python requirements (including OpenHands)
 3. Setup the `skillsbench` evaluation framework
@@ -112,11 +116,23 @@ This will automatically:
 
 Press `Ctrl+C` in the terminal to cleanly stop all services.
 
+### Skillsbench Setup (for skill evaluation)
+
+If the "Run Evaluation" button fails or skill evaluation doesn't work, initialize the skillsbench environment manually:
+
+```bash
+cd backend/skillsbench
+uv sync
+```
+
+This installs Harbor and other evaluation dependencies into `backend/skillsbench/.venv`.
+
 ### Manual Setup
 
 If you prefer to run the services separately:
 
 **Backend:**
+
 ```bash
 cd backend
 python3 -m venv .venv
@@ -125,6 +141,7 @@ python3 -m venv .venv
 ```
 
 **Frontend:**
+
 ```bash
 cd frontend
 npm install
@@ -133,35 +150,34 @@ npm run dev
 
 The frontend dev server starts at **http://localhost:5173** and proxies `/api` requests to the backend.
 
-
 ## Available Scripts
 
 Run these from the `frontend/` directory:
 
-| Command | Description |
-|---------|-------------|
-| `npm run dev` | Start the Vite development server |
-| `npm run build` | Build for production |
+| Command           | Description                          |
+| ----------------- | ------------------------------------ |
+| `npm run dev`     | Start the Vite development server    |
+| `npm run build`   | Build for production                 |
 | `npm run preview` | Preview the production build locally |
-| `npm run lint` | Run ESLint |
+| `npm run lint`    | Run ESLint                           |
 
 ## API Overview
 
 The frontend communicates with the backend through these endpoints:
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/api/chat` | Send a question; returns an SSE stream of agent events |
-| `GET` | `/api/chats` | List all chat sessions |
-| `GET` | `/api/chats/:id` | Retrieve a full chat with messages |
-| `PATCH` | `/api/chats/:id` | Rename a chat |
-| `DELETE` | `/api/chats/:id` | Delete a chat |
-| `GET` | `/api/agents` | List available agents |
-| `GET` | `/api/evaluations` | Get agent benchmark results |
-| `GET` | `/api/skills` | List all skills |
-| `POST` | `/api/skills` | Create a new skill |
-| `PATCH` | `/api/skills/:id` | Update a skill |
-| `DELETE` | `/api/skills/:id` | Delete a user-created skill |
+| Method   | Endpoint           | Description                                            |
+| -------- | ------------------ | ------------------------------------------------------ |
+| `POST`   | `/api/chat`        | Send a question; returns an SSE stream of agent events |
+| `GET`    | `/api/chats`       | List all chat sessions                                 |
+| `GET`    | `/api/chats/:id`   | Retrieve a full chat with messages                     |
+| `PATCH`  | `/api/chats/:id`   | Rename a chat                                          |
+| `DELETE` | `/api/chats/:id`   | Delete a chat                                          |
+| `GET`    | `/api/agents`      | List available agents                                  |
+| `GET`    | `/api/evaluations` | Get agent benchmark results                            |
+| `GET`    | `/api/skills`      | List all skills                                        |
+| `POST`   | `/api/skills`      | Create a new skill                                     |
+| `PATCH`  | `/api/skills/:id`  | Update a skill                                         |
+| `DELETE` | `/api/skills/:id`  | Delete a user-created skill                            |
 
 ## Connecting to the Real Backend
 

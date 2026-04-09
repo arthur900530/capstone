@@ -1,8 +1,23 @@
 const API_BASE = "/api";
 
+export async function fetchAgentSkills() {
+  const res = await fetch(`${API_BASE}/agent-skills`);
+  if (!res.ok) throw new Error(`Failed to load agent skills: ${res.status}`);
+  return res.json();
+}
+
 export async function fetchSkillEvals() {
   const res = await fetch(`${API_BASE}/skill-evals`);
   if (!res.ok) throw new Error(`Failed to load skill evals: ${res.status}`);
+  return res.json();
+}
+
+export async function runSkillEval(agentId) {
+  const res = await fetch(
+    `${API_BASE}/skill-evals/run?agent_id=${encodeURIComponent(agentId)}`,
+    { method: "POST" },
+  );
+  if (!res.ok) throw new Error(`Failed to run skill eval: ${res.status}`);
   return res.json();
 }
 
@@ -89,21 +104,28 @@ export async function addSkillFiles(skillId, files) {
 }
 
 export async function removeSkillFile(skillId, filename) {
-  const res = await fetch(`${API_BASE}/skills/${skillId}/files/${encodeURIComponent(filename)}`, {
-    method: "DELETE",
-  });
+  const res = await fetch(
+    `${API_BASE}/skills/${skillId}/files/${encodeURIComponent(filename)}`,
+    {
+      method: "DELETE",
+    },
+  );
   if (!res.ok) throw new Error(`Failed to remove file: ${res.status}`);
   return res.json();
 }
 
 export async function fetchSkillFileContent(skillId, filename) {
-  const res = await fetch(`${API_BASE}/skills/${skillId}/files/${encodeURIComponent(filename)}`);
+  const res = await fetch(
+    `${API_BASE}/skills/${skillId}/files/${encodeURIComponent(filename)}`,
+  );
   if (!res.ok) throw new Error(`Failed to load file: ${res.status}`);
   return res.json();
 }
 
 export async function deleteSkill(skillId) {
-  const res = await fetch(`${API_BASE}/skills/${skillId}`, { method: "DELETE" });
+  const res = await fetch(`${API_BASE}/skills/${skillId}`, {
+    method: "DELETE",
+  });
   if (!res.ok) throw new Error(`Failed to delete skill: ${res.status}`);
   return res.json();
 }
