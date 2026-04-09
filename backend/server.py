@@ -33,6 +33,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
+from skills_ingestor.mm_train import MMSkillTrainer
+
 dotenv.load_dotenv()
 
 logger = logging.getLogger(__name__)
@@ -113,7 +115,7 @@ app.include_router(submissions_router)
 
 
 # ---------------------------------------------------------------------------
-# In-memory stores
+# In-memory stores (Have to change)
 # ---------------------------------------------------------------------------
 
 _AGENTS: dict[str, dict] = {
@@ -294,22 +296,6 @@ def _sse(event_type: str, data: dict[str, Any]) -> dict:
     return {"event": event_type, "data": json.dumps(data)}
 
 
-# _TASK_KEYWORDS = [
-#     "revenue", "earnings", "stock", "market cap", "profit", "SEC",
-#     "filing", "10-K", "10-Q", "annual report", "quarterly",
-#     "dividend", "balance sheet", "cash flow", "EPS", "P/E",
-#     "share price", "financial", "fiscal", "EBITDA", "debt",
-#     "net income", "gross margin", "operating", "valuation",
-#     "IPO", "acquisition", "merger", "GDP", "inflation",
-# ]
-
-
-# def _is_task(question: str) -> bool:
-#     """Determine whether the query requires the agent to work (use tools) vs just chat."""
-#     q = question.lower()
-#     return any(kw in q for kw in _TASK_KEYWORDS)
-
-
 # ---------------------------------------------------------------------------
 # Mock data pools — randomly sampled to keep responses varied
 # ---------------------------------------------------------------------------
@@ -422,6 +408,63 @@ async def _stream_task(question: str, session_id: str, max_trials: int, confiden
             yield _sse("tool_result", evt)
             _append_event(session_id, "tool_result", evt)
             await asyncio.sleep(random.uniform(0.1, 0.3))
+
+        # --- Mock file_edit events ---
+        mock_turn = len(tool_seq) + 1
+        fe_create = {
+            "turn": mock_turn,
+            "command": "create",
+            "path": "/workspace/testing_workdir/analysis.py",
+            "file_text": (
+                "import pandas as pd\n"
+                "import numpy as np\n"
+                "\n"
+                "\n"
+                "def load_data(filepath: str) -> pd.DataFrame:\n"
+                '    """Load and validate financial data from CSV."""\n'
+                "    df = pd.read_csv(filepath)\n"
+                '    required = ["date", "open", "high", "low", "close", "volume"]\n'
+                "    missing = [c for c in required if c not in df.columns]\n"
+                "    if missing:\n"
+                '        raise ValueError(f"Missing columns: {missing}")\n'
+                "    return df\n"
+                "\n"
+                "\n"
+                "def compute_returns(df: pd.DataFrame) -> pd.Series:\n"
+                '    """Calculate daily log returns."""\n'
+                '    return np.log(df["close"] / df["close"].shift(1)).dropna()\n'
+            ),
+        }
+        yield _sse("file_edit", fe_create)
+        _append_event(session_id, "file_edit", fe_create)
+        await asyncio.sleep(0.6)
+
+        fe_edit = {
+            "turn": mock_turn + 1,
+            "command": "str_replace",
+            "path": "/workspace/testing_workdir/analysis.py",
+            "old_str": (
+                "def compute_returns(df: pd.DataFrame) -> pd.Series:\n"
+                '    """Calculate daily log returns."""\n'
+                '    return np.log(df["close"] / df["close"].shift(1)).dropna()'
+            ),
+            "new_str": (
+                "def compute_returns(df: pd.DataFrame, method: str = \"log\") -> pd.Series:\n"
+                '    """Calculate daily returns.\n'
+                "\n"
+                "    Args:\n"
+                "        df: DataFrame with 'close' column.\n"
+                '        method: "log" for log returns, "simple" for arithmetic returns.\n'
+                '    """\n'
+                '    close = df["close"]\n'
+                '    if method == "log":\n'
+                "        return np.log(close / close.shift(1)).dropna()\n"
+                "    return (close / close.shift(1) - 1).dropna()"
+            ),
+        }
+        yield _sse("file_edit", fe_edit)
+        _append_event(session_id, "file_edit", fe_edit)
+        await asyncio.sleep(0.5)
 
         evt = {"text": random.choice(_REASONING_TEXTS)}
         yield _sse("reasoning", evt)
@@ -554,12 +597,28 @@ def _map_event_to_sse(event: Any, session_id: str) -> dict | None:
                         return _sse("answer", {"text": finish_text})
                     return None
 
+                _turn_counter.setdefault(session_id, 0)
+                _turn_counter[session_id] += 1
+
+                # Emit a richer event for file_editor tool calls
+                if tool_name.lower() in ("file_editor", "fileeditortool"):
+                    raw_path = args_dict.get("path", "")
+                    # Strip Docker workspace prefix → relative path
+                    if raw_path.startswith("/workspace/"):
+                        raw_path = raw_path[len("/workspace/"):]
+                    return _sse("file_edit", {
+                        "turn": _turn_counter[session_id],
+                        "command": args_dict.get("command", ""),
+                        "path": raw_path,
+                        "file_text": args_dict.get("file_text"),
+                        "old_str": args_dict.get("old_str"),
+                        "new_str": args_dict.get("new_str"),
+                        "insert_line": args_dict.get("insert_line"),
+                    })
+
                 detail = str(
                     args_dict.get("command", args_dict.get("query", args_dict.get("path", "")))
                 )[:120]
-
-                _turn_counter.setdefault(session_id, 0)
-                _turn_counter[session_id] += 1
 
                 return _sse("tool_call", {
                     "turn": _turn_counter[session_id],
@@ -962,7 +1021,13 @@ async def chat(req: ChatRequest):
             skill_ids=skill_ids,
         )
     else:
-        gen = _stream_conversation(req.question, session_id, agent)
+        gen = _stream_task(
+            req.question,
+            session_id,
+            req.max_trials,
+            req.confidence_threshold,
+            agent,
+        )
 
     return EventSourceResponse(gen)
 
@@ -1148,6 +1213,110 @@ async def list_skill_evals():
             }
         )
     return results
+
+
+# ---------------------------------------------------------------------------
+# Workspace browsing endpoints
+# ---------------------------------------------------------------------------
+
+_TEXT_EXTENSIONS = {
+    ".py", ".js", ".jsx", ".ts", ".tsx", ".json", ".md", ".txt",
+    ".yml", ".yaml", ".toml", ".cfg", ".ini", ".env", ".sh", ".bash",
+    ".css", ".html", ".htm", ".xml", ".sql", ".rs", ".go", ".java",
+    ".c", ".cpp", ".h", ".hpp", ".rb", ".lua", ".r", ".csv", ".log",
+    ".gitignore", ".dockerfile", ".makefile",
+}
+
+
+def _is_text_file(path: str) -> bool:
+    """Heuristic: consider file as text if extension is known or file is small."""
+    ext = os.path.splitext(path)[1].lower()
+    name = os.path.basename(path).lower()
+    if ext in _TEXT_EXTENSIONS or name in {"makefile", "dockerfile", ".gitignore", ".env"}:
+        return True
+    # For unknown extensions, try reading a small chunk
+    if ext == "" or ext not in {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico",
+                                  ".pdf", ".zip", ".tar", ".gz", ".exe", ".bin",
+                                  ".so", ".dll", ".whl", ".pyc", ".class"}:
+        try:
+            with open(path, "rb") as f:
+                chunk = f.read(512)
+            chunk.decode("utf-8")
+            return True
+        except (UnicodeDecodeError, OSError):
+            return False
+    return False
+
+
+def _build_tree(root: str, rel: str = "") -> list[dict]:
+    """Recursively build a JSON-friendly directory tree."""
+    full = os.path.join(root, rel) if rel else root
+    entries: list[dict] = []
+    try:
+        items = sorted(os.listdir(full))
+    except PermissionError:
+        return entries
+
+    for name in items:
+        if name.startswith("."):
+            continue  # skip hidden files/dirs
+        child_full = os.path.join(full, name)
+        child_rel = os.path.join(rel, name) if rel else name
+        if os.path.isdir(child_full):
+            entries.append({
+                "name": name,
+                "path": child_rel,
+                "type": "directory",
+                "children": _build_tree(root, child_rel),
+            })
+        else:
+            try:
+                size = os.path.getsize(child_full)
+            except OSError:
+                size = 0
+            entries.append({
+                "name": name,
+                "path": child_rel,
+                "type": "file",
+                "size": size,
+            })
+    return entries
+
+
+def _safe_resolve(base: str, requested: str) -> str:
+    """Resolve requested path and ensure it stays inside base. Raise 403 on traversal."""
+    base_resolved = os.path.realpath(base)
+    target = os.path.realpath(os.path.join(base_resolved, requested))
+    if not target.startswith(base_resolved):
+        raise HTTPException(status_code=403, detail="Path traversal blocked")
+    return target
+
+
+@app.get("/api/workspace/tree")
+async def workspace_tree(path: str):
+    """Return recursive file/directory tree for a given root path."""
+    if not path or not os.path.isdir(path):
+        raise HTTPException(status_code=400, detail="Invalid directory path")
+    tree = _build_tree(path)
+    return {"root": path, "tree": tree}
+
+
+@app.get("/api/workspace/file")
+async def workspace_file(root: str, path: str):
+    """Return text content of a file inside a workspace root."""
+    if not root or not os.path.isdir(root):
+        raise HTTPException(status_code=400, detail="Invalid root directory")
+    full_path = _safe_resolve(root, path)
+    if not os.path.isfile(full_path):
+        raise HTTPException(status_code=404, detail="File not found")
+    if not _is_text_file(full_path):
+        raise HTTPException(status_code=415, detail="Binary file — cannot display")
+    try:
+        with open(full_path, "r", encoding="utf-8", errors="replace") as f:
+            content = f.read(500_000)  # cap at 500KB
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    return {"path": path, "content": content}
 
 
 @app.get("/api/health")

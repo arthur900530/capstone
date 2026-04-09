@@ -87,6 +87,91 @@ body {
   opacity: 1;
 }
 
+/* ── File Edit Block ─────────────────────────────────────────── */
+
+.fe-diff-remove {
+  background: rgba(239, 68, 68, 0.08);
+  color: #fca5a5;
+}
+
+.fe-diff-add {
+  background: rgba(34, 197, 94, 0.08);
+  color: #86efac;
+}
+
+.fe-diff-gutter {
+  user-select: none;
+}
+
+.fe-code-block {
+  scrollbar-width: thin;
+  scrollbar-color: #3a3a3a transparent;
+}
+
+.fe-block {
+  transition: border-color 0.2s ease;
+}
+
+.fe-block:hover {
+  border-color: rgba(45, 155, 173, 0.35);
+}
+
+@keyframes fe-slide-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fe-in {
+  animation: fe-slide-in 0.3s ease-out;
+}
+
+@keyframes fe-line-flash {
+  from {
+    background: rgba(45, 155, 173, 0.08);
+  }
+  to {
+    background: transparent;
+  }
+}
+
+.animate-fe-line {
+  animation: fe-line-flash 0.35s ease-out;
+}
+
+/* ── Canvas / Workspace Panel ───────────────────────────────── */
+
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+
+/* Smooth workspace panel slide */
+@keyframes ws-slide-in {
+  from {
+    opacity: 0;
+    transform: translateX(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.ws-panel-enter {
+  animation: ws-slide-in 0.25s ease-out;
+}
+
+
 /* ── Marketplace animations ──────────────────────────────── */
 
 @keyframes fadeIn {

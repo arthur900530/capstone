@@ -274,3 +274,24 @@ export async function deleteSubmission(submissionId) {
   if (!res.ok) throw new Error(`Failed to delete submission: ${res.status}`);
   return res.json();
 }
+
+// ---------------------------------------------------------------------------
+// Workspace browsing
+// ---------------------------------------------------------------------------
+
+export async function fetchWorkspaceTree(dirPath) {
+  const res = await fetch(
+    `${API_BASE}/workspace/tree?path=${encodeURIComponent(dirPath)}`,
+  );
+  if (!res.ok) throw new Error(`Failed to load workspace tree: ${res.status}`);
+  return res.json();
+}
+
+export async function fetchWorkspaceFile(rootDir, filePath) {
+  const res = await fetch(
+    `${API_BASE}/workspace/file?root=${encodeURIComponent(rootDir)}&path=${encodeURIComponent(filePath)}`,
+  );
+  if (!res.ok) throw new Error(`Failed to load file: ${res.status}`);
+  return res.json();
+}
+

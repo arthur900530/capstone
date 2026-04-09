@@ -10,6 +10,7 @@ import {
   ChevronRight,
   Loader2,
   CheckCircle2,
+  FileCode2,
 } from "lucide-react";
 
 
@@ -136,7 +137,7 @@ function TypedBubble({ text, animate }) {
 }
 
 
-export default function ChatMessage({ message, animate = true }) {
+export default function ChatMessage({ message, animate = true, onFileEditClick }) {
   const { role, type, content } = message;
 
   if (role === "user") {
@@ -253,6 +254,34 @@ export default function ChatMessage({ message, animate = true }) {
     );
   }
 
+  if (type === "file_edit") {
+    const fileName = message.path?.split("/").pop() || "file";
+    const actionLabel =
+      message.command === "create" ? "Created" :
+      message.command === "str_replace" ? "Edited" :
+      message.command === "insert" ? "Inserted" :
+      message.command === "view" ? "Viewed" :
+      message.command === "undo_edit" ? "Reverted" : "Modified";
+    const actionColor =
+      message.command === "create" ? "text-emerald-400 bg-emerald-400/10" :
+      message.command === "view" ? "text-sky-400 bg-sky-400/10" :
+      message.command === "undo_edit" ? "text-rose-400 bg-rose-400/10" :
+      "text-amber-400 bg-amber-400/10";
+
+    return (
+      <button
+        onClick={() => onFileEditClick?.(message)}
+        className="flex items-center gap-2 rounded-lg border border-border/30 bg-charcoal/40 px-3 py-1.5 text-xs transition-colors hover:border-accent-teal/30 hover:bg-charcoal/60 group"
+      >
+        <FileCode2 size={13} className="text-text-muted group-hover:text-accent-teal transition-colors" />
+        <span className="font-medium text-text-primary">{fileName}</span>
+        <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-medium ${actionColor}`}>
+          {actionLabel}
+        </span>
+      </button>
+    );
+  }
+
   if (type === "answer") {
     return <AnswerBlock message={message} animate={animate} />;
   }
@@ -267,3 +296,4 @@ export default function ChatMessage({ message, animate = true }) {
     </div>
   );
 }
+
