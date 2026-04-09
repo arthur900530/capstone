@@ -6,21 +6,24 @@ The reflection is a concise, actionable insight the agent can use
 on subsequent attempts — this is the core mechanism of the
 Reflexion paper (Shinn et al., 2023).
 
+Fix 6: The reflector now receives only the **critique string** from
+the evaluator rather than the full EvaluationResult object.  This
+keeps parsing concerns inside the evaluator and gives the reflector
+exactly the information it needs: what went wrong, in plain language.
+
 Current strategy: REFLEXION (synthesized insight only).
 LAST_ATTEMPT and LAST_ATTEMPT_AND_REFLEXION can be added later
 via the `include_raw_trajectory` flag.
 """
 
 import logging
-from typing import Optional
-
-from .evaluator import EvaluationResult
 
 logger = logging.getLogger(__name__)
 
 # ── Prompt template for self-reflection ───────────────────────────────
-# Adapted from the pattern in the original Reflexion repo
-# (programming_runs/generators/generator_utils.py → generic_generate_self_reflection)
+# The reflector sees: the task, the trajectory, and the evaluator's
+# critique sentence.  It does NOT see the raw score or success flag —
+# those are gating decisions, not reflection inputs.
 
 REFLECTOR_SYSTEM_PROMPT = """\
 You are an expert at analyzing failed attempts by an AI coding agent. \
@@ -30,12 +33,13 @@ help the agent avoid the same mistakes on its next attempt.
 You will receive:
 1. The TASK the agent was asked to perform.
 2. The TRAJECTORY — the agent's actions and outputs.
-3. The EVALUATION — a summary of what went wrong.
+3. The CRITIQUE — the evaluator's summary of what went wrong.
 
-Write a reflection in 3–5 sentences that:
-- States what the agent did wrong or missed.
-- Explains *why* it likely went wrong.
-- Suggests a concrete strategy for doing better next time.
+Write a reflection in 3–5 sentences that covers:
+- What the agent did wrong or missed.
+- Why it likely went wrong (root cause, not just symptom).
+- A concrete, alternative strategy for the next attempt.
+- Any tool-usage or process improvements to try.
 
 Respond with ONLY the reflection text — no JSON, no headers, no markdown.
 """
@@ -47,18 +51,15 @@ TASK:
 TRAJECTORY:
 {trajectory}
 
-EVALUATION:
-success: {success}
-score: {score}
-failing_step: {failing_step}
-summary: {eval_summary}
+CRITIQUE:
+{critique}
 """
 
 
 def generate_reflection(
     task: str,
     trajectory: str,
-    evaluation: EvaluationResult,
+    critique: str,
     llm_call: callable,
     include_raw_trajectory: bool = False,
 ) -> str:
@@ -70,8 +71,10 @@ def generate_reflection(
         The original task instruction.
     trajectory : str
         The full execution log from the agent's attempt.
-    evaluation : EvaluationResult
-        The structured evaluation of the attempt (from evaluator.py).
+    critique : str
+        The evaluator's one-sentence summary of what went wrong.
+        This is the *only* evaluator output the reflector sees —
+        it does not receive the numeric score or binary success flag.
     llm_call : callable
         Function accepting (system_prompt, user_prompt) -> str.
     include_raw_trajectory : bool, optional
@@ -88,16 +91,19 @@ def generate_reflection(
     user_prompt = REFLECTOR_USER_TEMPLATE.format(
         task=task,
         trajectory=trajectory,
-        success=evaluation.success,
-        score=evaluation.score,
-        failing_step=evaluation.failing_step or "N/A",
-        eval_summary=evaluation.summary,
+        critique=critique,
     )
 
-    logger.info("Generating reflection for task: %.80s...", task)
+    logger.info(
+        "[reflector] Generating reflection for task: %.80s... | critique: %.120s",
+        task, critique,
+    )
     reflection = llm_call(REFLECTOR_SYSTEM_PROMPT, user_prompt)
     reflection = reflection.strip()
-    logger.info("Reflection generated (%d chars)", len(reflection))
+    logger.info(
+        "[reflector] Reflection generated (%d chars) for task: %.80s...",
+        len(reflection), task,
+    )
 
     if include_raw_trajectory:
         header = "=== PREVIOUS ATTEMPT (raw transcript) ===\n"
