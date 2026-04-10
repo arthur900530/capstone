@@ -33,7 +33,7 @@ def _env_bool(name: str, default: str = "false") -> bool:
 # Reflexion defaults from .env; per-request override via runtime(use_reflexion=...)
 ENABLE_REFLEXION = _env_bool("ENABLE_REFLEXION", "false")
 MAX_REFLEXION_ATTEMPTS = int(os.getenv("MAX_REFLEXION_ATTEMPTS", "3") or "3")
-MAX_ITERATIONS_PER_TRIAL = int(os.getenv("REFLEXION_MAX_ITERATIONS_PER_TRIAL", "50") or "50")
+MAX_ITERATIONS_PER_TRIAL = int(os.getenv("REFLEXION_MAX_ITERATIONS_PER_TRIAL", "30") or "30")
 
 # Score threshold: if the judge returns a numeric score at or above this value,
 # the loop exits early even when evaluation.success is False.  This prevents
