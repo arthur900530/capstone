@@ -43,8 +43,8 @@ export default function CreationWizard() {
   const [files, setFiles] = useState([]);
   const [name, setName] = useState(template?.suggestedName || "");
 
-  const handleCreate = () => {
-    const emp = createEmployee({
+  const handleCreate = async () => {
+    const emp = await createEmployee({
       name: name.trim(),
       task,
       pluginIds: selectedPluginIds,
@@ -55,7 +55,7 @@ export default function CreationWizard() {
       confidenceThreshold: config.confidenceThreshold,
       files: files.map((f) => ({ name: f.name, size: f.size, type: f.type })),
     });
-    refreshEmployees();
+    await refreshEmployees();
     navigate(`/employee/${emp.id}`);
   };
 

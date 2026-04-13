@@ -221,7 +221,7 @@ export default function App() {
   const [mountDir, setMountDir] = useState("");
   const [selectedSkillIds, setSelectedSkillIds] = useState([]);
   const [skipSkillConfirm, setSkipSkillConfirm] = useState(false);
-  const [employees, setEmployees] = useState(getEmployees());
+  const [employees, setEmployees] = useState([]);
   const [config, setConfig] = useState({
     model: "",
     maxTrials: 3,
@@ -304,13 +304,22 @@ export default function App() {
     }
   }, []);
 
-  const refreshEmployees = useCallback(() => {
-    setEmployees(getEmployees());
+  const refreshEmployees = useCallback(async () => {
+    try {
+      const list = await getEmployees();
+      setEmployees(list);
+    } catch {
+      /* keep stale */
+    }
   }, []);
 
   useEffect(() => {
     refreshChats();
   }, [refreshChats]);
+
+  useEffect(() => {
+    refreshEmployees();
+  }, [refreshEmployees]);
 
   const handleSubmit = async (question, submittedFiles = []) => {
     if (!question.trim() || isStreaming) return;

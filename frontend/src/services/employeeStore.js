@@ -1,46 +1,31 @@
 /**
- * localStorage CRUD for employee entities.
- * No backend persistence — this is a frontend-only store.
+ * Employee CRUD — backed by /api/employees.
+ * All functions are async since they hit the backend.
  */
 
-const STORAGE_KEY = "digital_employees";
+const API = "/api/employees";
 
-function readAll() {
+export async function getEmployees() {
   try {
-    return JSON.parse(localStorage.getItem(STORAGE_KEY)) || [];
+    const res = await fetch(API);
+    if (!res.ok) throw new Error();
+    return await res.json();
   } catch {
     return [];
   }
 }
 
-function writeAll(employees) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(employees));
-}
-
-const ACTIVE_THRESHOLD_MS = 10 * 60 * 1000; // 10 minutes
-
-function deriveStatus(emp) {
-  if (emp.lastActiveAt) {
-    const elapsed = Date.now() - new Date(emp.lastActiveAt).getTime();
-    return elapsed < ACTIVE_THRESHOLD_MS ? "active" : "idle";
+export async function getEmployeeById(id) {
+  try {
+    const res = await fetch(`${API}/${id}`);
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
   }
-  return "idle";
 }
 
-export function getEmployees() {
-  return readAll().map((e) => ({ ...e, status: deriveStatus(e) }));
-}
-
-export function getEmployeeById(id) {
-  const emp = readAll().find((e) => e.id === id);
-  return emp ? { ...emp, status: deriveStatus(emp) } : null;
-}
-
-export function markActive(id) {
-  updateEmployee(id, { lastActiveAt: new Date().toISOString() });
-}
-
-export function createEmployee({
+export async function createEmployee({
   name,
   task,
   pluginIds = [],
@@ -51,47 +36,54 @@ export function createEmployee({
   confidenceThreshold = 0.7,
   files = [],
 }) {
-  const employee = {
-    id: crypto.randomUUID(),
-    name,
-    task,
-    pluginIds,
-    skillIds,
-    model,
-    useReflexion,
-    maxTrials,
-    confidenceThreshold,
-    status: "idle",
-    chatSessionIds: [],
-    files,
-    createdAt: new Date().toISOString(),
-  };
-  const all = readAll();
-  all.push(employee);
-  writeAll(all);
-  return employee;
+  const res = await fetch(API, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      name,
+      task,
+      pluginIds,
+      skillIds,
+      model,
+      useReflexion,
+      maxTrials,
+      confidenceThreshold,
+      files,
+    }),
+  });
+  if (!res.ok) throw new Error("Failed to create employee");
+  return await res.json();
 }
 
-export function updateEmployee(id, updates) {
-  const all = readAll();
-  const idx = all.findIndex((e) => e.id === id);
-  if (idx === -1) return null;
-  all[idx] = { ...all[idx], ...updates };
-  writeAll(all);
-  return all[idx];
+export async function updateEmployee(id, updates) {
+  const res = await fetch(`${API}/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(updates),
+  });
+  if (!res.ok) return null;
+  return await res.json();
 }
 
-export function deleteEmployee(id) {
-  const all = readAll();
-  writeAll(all.filter((e) => e.id !== id));
+export async function deleteEmployee(id) {
+  await fetch(`${API}/${id}`, { method: "DELETE" });
 }
 
-export function addChatSession(employeeId, sessionId) {
-  const all = readAll();
-  const emp = all.find((e) => e.id === employeeId);
-  if (!emp) return;
-  if (!emp.chatSessionIds.includes(sessionId)) {
-    emp.chatSessionIds.push(sessionId);
-    writeAll(all);
+export async function addChatSession(employeeId, sessionId) {
+  try {
+    const emp = await getEmployeeById(employeeId);
+    if (!emp) return;
+    const ids = emp.chatSessionIds || [];
+    if (!ids.includes(sessionId)) {
+      await updateEmployee(employeeId, {
+        chatSessionIds: [...ids, sessionId],
+      });
+    }
+  } catch {
+    /* best-effort */
   }
+}
+
+export async function markActive(id) {
+  await updateEmployee(id, { lastActiveAt: new Date().toISOString() });
 }

@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { ArrowLeft, MessageSquare, Terminal, BarChart3, Trash2 } from "lucide-react";
+import { ArrowLeft, MessageSquare, Terminal, BarChart3, Trash2, Loader2 } from "lucide-react";
 import * as Icons from "lucide-react";
 import EmployeeChat from "../components/employee/EmployeeChat";
 import EmployeeConsole from "../components/employee/EmployeeConsole";
@@ -20,8 +20,25 @@ export default function EmployeePage() {
   const navigate = useNavigate();
   const { refreshEmployees } = useApp();
   const [activeTab, setActiveTab] = useState("chat");
+  const [employee, setEmployee] = useState(null);
+  const [loading, setLoading] = useState(true);
 
-  const employee = getEmployeeById(id);
+  useEffect(() => {
+    setLoading(true);
+    getEmployeeById(id).then((emp) => {
+      setEmployee(emp);
+      setLoading(false);
+    });
+  }, [id]);
+
+  if (loading) {
+    return (
+      <div className="flex flex-1 items-center justify-center">
+        <Loader2 size={20} className="animate-spin text-accent-teal" />
+      </div>
+    );
+  }
+
   if (!employee) {
     return (
       <div className="flex flex-1 items-center justify-center text-sm text-text-muted">
@@ -33,19 +50,17 @@ export default function EmployeePage() {
   const pluginIds = employee.pluginIds || (employee.pluginId ? [employee.pluginId] : []);
   const plugins = PLUGINS.filter((p) => pluginIds.includes(p.id));
   const RoleIcon = Icons[plugins[0]?.icon] || Icons.Bot;
-  const isActive = employee.status === "active";
 
-  const handleDelete = () => {
+  const handleDelete = async () => {
     if (window.confirm(`Delete ${employee.name}? This cannot be undone.`)) {
-      deleteEmployee(employee.id);
-      refreshEmployees();
+      await deleteEmployee(employee.id);
+      await refreshEmployees();
       navigate("/");
     }
   };
 
   return (
     <div className="flex flex-1 flex-col">
-      {/* Header */}
       <div className="border-b border-border/30 px-6 py-4">
         <div className="mx-auto flex max-w-5xl items-center justify-between">
           <div className="flex items-center gap-4">
@@ -63,11 +78,6 @@ export default function EmployeePage() {
                 <h1 className="text-lg font-semibold text-text-primary">
                   {employee.name}
                 </h1>
-                <span
-                  className={`h-2 w-2 rounded-full ${
-                    isActive ? "bg-green-400" : "bg-text-muted/40"
-                  }`}
-                />
               </div>
               <p className="text-xs text-text-muted">
                 {plugins.map((p) => p.name).join(", ") || "Custom Role"}
@@ -84,7 +94,6 @@ export default function EmployeePage() {
         </div>
       </div>
 
-      {/* Tab bar */}
       <div className="border-b border-border/20 px-6">
         <div className="mx-auto flex max-w-5xl gap-1">
           {TABS.map(({ id, label, icon: Icon }) => (
@@ -104,7 +113,6 @@ export default function EmployeePage() {
         </div>
       </div>
 
-      {/* Tab content */}
       {activeTab === "chat" && <EmployeeChat employee={employee} />}
       {activeTab === "console" && <EmployeeConsole employee={employee} />}
       {activeTab === "report" && <EmployeeReportCard employee={employee} />}
