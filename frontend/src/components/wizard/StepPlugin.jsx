@@ -1,0 +1,212 @@
+import { useState } from "react";
+import { ChevronDown } from "lucide-react";
+import PLUGINS from "../../data/plugins";
+import PluginCard from "../PluginCard";
+
+const MODEL_OPTIONS = [
+  { value: "openai/gpt-5.1", label: "GPT-5.1" },
+  { value: "openai/gpt-4o", label: "GPT-4o" },
+  { value: "anthropic/claude-sonnet-4-5-20250929", label: "Claude Sonnet" },
+  { value: "anthropic/claude-haiku-3-5-20241022", label: "Claude Haiku" },
+];
+
+export default function StepPlugin({
+  selectedPluginId,
+  onSelectPlugin,
+  skillIds,
+  onSkillIdsChange,
+  config,
+  onConfigChange,
+  allSkills,
+  onBack,
+  onNext,
+}) {
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [showEnhance, setShowEnhance] = useState(false);
+  const selectedPlugin = PLUGINS.find((p) => p.id === selectedPluginId);
+
+  const handlePluginSelect = (plugin) => {
+    onSelectPlugin(plugin.id);
+    onSkillIdsChange([...plugin.skillIds]);
+    onConfigChange({
+      ...config,
+      model: plugin.defaultModel,
+    });
+    setShowEnhance(false);
+  };
+
+  const toggleSkill = (sid) => {
+    onSkillIdsChange(
+      skillIds.includes(sid)
+        ? skillIds.filter((s) => s !== sid)
+        : [...skillIds, sid],
+    );
+  };
+
+  return (
+    <div className="mx-auto max-w-3xl">
+      <h2 className="mb-2 text-xl font-semibold text-text-primary">
+        Choose a plugin
+      </h2>
+      <p className="mb-6 text-sm text-text-muted">
+        Each plugin bundles a set of skills tailored to a specific role.
+      </p>
+
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        {PLUGINS.map((plugin) => (
+          <PluginCard
+            key={plugin.id}
+            plugin={plugin}
+            selected={selectedPluginId === plugin.id}
+            onClick={() => handlePluginSelect(plugin)}
+          />
+        ))}
+      </div>
+
+      {/* Enhance skills */}
+      {selectedPlugin && (
+        <div className="mt-6">
+          <button
+            onClick={() => setShowEnhance((v) => !v)}
+            className="text-sm font-medium text-accent-teal hover:underline"
+          >
+            {showEnhance ? "Hide" : "Enhance"} skills
+          </button>
+
+          {showEnhance && allSkills.length > 0 && (
+            <div className="mt-3 rounded-xl border border-border/40 bg-surface p-4">
+              <p className="mb-3 text-xs text-text-muted">
+                Add or remove skills from this plugin&apos;s default set:
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {allSkills.map((skill) => {
+                  const id = skill.id || skill.name;
+                  const active = skillIds.includes(id);
+                  return (
+                    <button
+                      key={id}
+                      onClick={() => toggleSkill(id)}
+                      className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
+                        active
+                          ? "bg-accent-teal/20 text-accent-teal"
+                          : "bg-surface-hover text-text-muted hover:text-text-secondary"
+                      }`}
+                    >
+                      {skill.name || id}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Advanced config accordion */}
+      <div className="mt-6 border-t border-border/20 pt-4">
+        <button
+          onClick={() => setShowAdvanced((v) => !v)}
+          className="flex items-center gap-2 text-sm text-text-muted hover:text-text-secondary"
+        >
+          <ChevronDown
+            size={14}
+            className={`transition-transform ${showAdvanced ? "rotate-180" : ""}`}
+          />
+          Advanced Config
+        </button>
+
+        {showAdvanced && (
+          <div className="mt-4 grid gap-4 sm:grid-cols-2">
+            <div>
+              <label className="mb-1.5 block text-xs font-medium text-text-muted">
+                Model
+              </label>
+              <select
+                value={config.model}
+                onChange={(e) =>
+                  onConfigChange({ ...config, model: e.target.value })
+                }
+                className="w-full rounded-lg border border-border/40 bg-surface px-3 py-2 text-sm text-text-primary focus:border-accent-teal/50 focus:outline-none"
+              >
+                {MODEL_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="flex items-end gap-4">
+              <label className="flex items-center gap-2 text-sm text-text-secondary">
+                <input
+                  type="checkbox"
+                  checked={config.useReflexion}
+                  onChange={(e) =>
+                    onConfigChange({ ...config, useReflexion: e.target.checked })
+                  }
+                  className="rounded accent-accent-teal"
+                />
+                Enable Reflexion
+              </label>
+            </div>
+
+            <div>
+              <label className="mb-1.5 block text-xs font-medium text-text-muted">
+                Max Trials
+              </label>
+              <input
+                type="number"
+                min={1}
+                max={10}
+                value={config.maxTrials}
+                onChange={(e) =>
+                  onConfigChange({
+                    ...config,
+                    maxTrials: parseInt(e.target.value) || 3,
+                  })
+                }
+                className="w-full rounded-lg border border-border/40 bg-surface px-3 py-2 text-sm text-text-primary focus:border-accent-teal/50 focus:outline-none"
+              />
+            </div>
+
+            <div>
+              <label className="mb-1.5 block text-xs font-medium text-text-muted">
+                Confidence Threshold
+              </label>
+              <input
+                type="number"
+                min={0}
+                max={1}
+                step={0.1}
+                value={config.confidenceThreshold}
+                onChange={(e) =>
+                  onConfigChange({
+                    ...config,
+                    confidenceThreshold: parseFloat(e.target.value) || 0.7,
+                  })
+                }
+                className="w-full rounded-lg border border-border/40 bg-surface px-3 py-2 text-sm text-text-primary focus:border-accent-teal/50 focus:outline-none"
+              />
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className="mt-8 flex justify-between">
+        <button
+          onClick={onBack}
+          className="rounded-lg border border-border/40 px-6 py-2.5 text-sm font-medium text-text-secondary transition-colors hover:bg-surface"
+        >
+          Back
+        </button>
+        <button
+          onClick={onNext}
+          disabled={!selectedPluginId}
+          className="rounded-lg bg-accent-teal px-6 py-2.5 text-sm font-medium text-workspace transition-colors hover:bg-accent-teal/90 disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          Next
+        </button>
+      </div>
+    </div>
+  );
+}
