@@ -4,6 +4,8 @@ import { updateSkill, deleteSkill, addSkillFiles, removeSkillFile } from "../../
 import { fileIcon } from "./utils";
 import FileViewer from "./FileViewer";
 import ConfirmDialog from "./ConfirmDialog";
+import VersionTabs from "./VersionTabs";
+import useVersionHistory from "../../hooks/useVersionHistory";
 
 export default function SkillEditor({ skill, onSaved, onDeleted, viewingFile, onViewFile, onSubmit }) {
   const [name, setName] = useState(skill.name);
@@ -14,6 +16,13 @@ export default function SkillEditor({ skill, onSaved, onDeleted, viewingFile, on
   const [error, setError] = useState(null);
   const [dirty, setDirty] = useState(false);
   const fileInputRef = useRef(null);
+
+  const {
+    versions, activeVersion, setActiveVersion, addVersion, getVersion, latestVersion,
+  } = useVersionHistory(skill.id, skill);
+
+  const viewingOldVersion = activeVersion !== latestVersion;
+  const versionData = viewingOldVersion ? getVersion(activeVersion) : null;
 
   const files = skill.files ?? [];
 
@@ -43,6 +52,11 @@ export default function SkillEditor({ skill, onSaved, onDeleted, viewingFile, on
     setError(null);
     try {
       const updated = await updateSkill(skill.id, {
+        name: name.trim(),
+        description: description.trim(),
+        definition: definition.trim(),
+      });
+      addVersion({
         name: name.trim(),
         description: description.trim(),
         definition: definition.trim(),
@@ -110,7 +124,7 @@ export default function SkillEditor({ skill, onSaved, onDeleted, viewingFile, on
           <h3 className="text-sm font-medium text-text-primary">{skill.name}</h3>
         </div>
         <div className="flex items-center gap-1.5">
-          {dirty && (
+          {dirty && !viewingOldVersion && (
             <button
               onClick={handleSave}
               disabled={saving}
@@ -141,17 +155,38 @@ export default function SkillEditor({ skill, onSaved, onDeleted, viewingFile, on
         </div>
       </div>
 
+      <VersionTabs
+        versions={versions}
+        activeVersion={activeVersion}
+        onSelect={setActiveVersion}
+      />
+
       <div className="flex-1 overflow-y-auto p-5">
         <div className="mx-auto max-w-2xl space-y-5">
+          {viewingOldVersion && versionData && (
+            <div className="flex items-center justify-between rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2">
+              <span className="text-xs text-amber-400">
+                Viewing v{activeVersion} (read-only) — saved {new Date(versionData.savedAt).toLocaleDateString()}
+              </span>
+              <button
+                onClick={() => setActiveVersion(latestVersion)}
+                className="text-[11px] font-medium text-accent-teal hover:underline"
+              >
+                Go to latest
+              </button>
+            </div>
+          )}
+
           <div>
             <label className="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-text-secondary">
               <Pencil size={12} />
               Name
             </label>
             <input
-              value={name}
+              value={viewingOldVersion ? versionData?.name ?? "" : name}
               onChange={handleFieldChange(setName)}
-              className="w-full rounded-lg border border-border/50 bg-charcoal px-3 py-2 text-sm text-text-primary outline-none transition-colors focus:border-accent-teal focus:ring-1 focus:ring-accent-teal/30"
+              readOnly={viewingOldVersion}
+              className={`w-full rounded-lg border border-border/50 bg-charcoal px-3 py-2 text-sm text-text-primary outline-none transition-colors focus:border-accent-teal focus:ring-1 focus:ring-accent-teal/30 ${viewingOldVersion ? "opacity-60" : ""}`}
             />
           </div>
 
@@ -161,10 +196,11 @@ export default function SkillEditor({ skill, onSaved, onDeleted, viewingFile, on
               Description
             </label>
             <textarea
-              value={description}
+              value={viewingOldVersion ? versionData?.description ?? "" : description}
               onChange={handleFieldChange(setDescription)}
+              readOnly={viewingOldVersion}
               rows={3}
-              className="w-full resize-none rounded-lg border border-border/50 bg-charcoal px-3 py-2 text-sm text-text-primary outline-none transition-colors focus:border-accent-teal focus:ring-1 focus:ring-accent-teal/30"
+              className={`w-full resize-none rounded-lg border border-border/50 bg-charcoal px-3 py-2 text-sm text-text-primary outline-none transition-colors focus:border-accent-teal focus:ring-1 focus:ring-accent-teal/30 ${viewingOldVersion ? "opacity-60" : ""}`}
             />
           </div>
 
@@ -242,10 +278,11 @@ export default function SkillEditor({ skill, onSaved, onDeleted, viewingFile, on
               Definition
             </label>
             <textarea
-              value={definition}
+              value={viewingOldVersion ? versionData?.definition ?? "" : definition}
               onChange={handleFieldChange(setDefinition)}
+              readOnly={viewingOldVersion}
               rows={14}
-              className="w-full resize-none rounded-lg border border-border/50 bg-charcoal px-4 py-3 font-mono text-xs leading-relaxed text-text-primary outline-none transition-colors focus:border-accent-teal focus:ring-1 focus:ring-accent-teal/30"
+              className={`w-full resize-none rounded-lg border border-border/50 bg-charcoal px-4 py-3 font-mono text-xs leading-relaxed text-text-primary outline-none transition-colors focus:border-accent-teal focus:ring-1 focus:ring-accent-teal/30 ${viewingOldVersion ? "opacity-60" : ""}`}
             />
           </div>
 
@@ -265,14 +302,20 @@ export default function SkillEditor({ skill, onSaved, onDeleted, viewingFile, on
             <div className="text-xs text-text-muted">
               Created {new Date(skill.created_at).toLocaleDateString()}
             </div>
+            {latestVersion > 0 && (
+              <>
+                <span className="text-text-muted">&middot;</span>
+                <div className="text-xs text-text-muted">v{activeVersion} of {latestVersion}</div>
+              </>
+            )}
           </div>
         </div>
       </div>
 
       <ConfirmDialog
         open={showSaveConfirm}
-        title="Save changes?"
-        message="This will update the skill with your edits."
+        title={`Save as v${latestVersion + 1}?`}
+        message="This creates a new version of the skill. Previous versions remain viewable."
         confirmLabel="Save"
         onConfirm={handleConfirmSave}
         onCancel={() => setShowSaveConfirm(false)}
