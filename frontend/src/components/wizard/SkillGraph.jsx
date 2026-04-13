@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from "react";
 import { Plus, Check, Loader2 } from "lucide-react";
 import * as Icons from "lucide-react";
-import { browseMarketplaceSkills } from "../../services/api";
+import { fetchSkills, browseMarketplaceSkills } from "../../services/api";
 import PLUGINS from "../../data/plugins";
 
 /**
@@ -23,14 +23,16 @@ export default function SkillGraph({
 
   useEffect(() => {
     setLoading(true);
+    // Try marketplace first, fall back to regular skills API
     browseMarketplaceSkills({ status: "published" })
-      .then((res) => {
-        const skills = res.skills || res || [];
+      .then((res) => res.skills || res || [])
+      .catch(() => fetchSkills().catch(() => []))
+      .then((skills) => {
+        const list = Array.isArray(skills) ? skills : [];
         setCloudSkills(
-          skills.filter((s) => !skillIds.includes(s.id || s.slug)),
+          list.filter((s) => !skillIds.includes(s.id || s.slug)),
         );
       })
-      .catch(() => setCloudSkills([]))
       .finally(() => setLoading(false));
   }, [pluginId]);
 
