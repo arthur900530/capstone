@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ChevronDown } from "lucide-react";
+import { ChevronDown, Plus, X } from "lucide-react";
 import PLUGINS from "../../data/plugins";
 import PluginCard from "../PluginCard";
 
@@ -22,7 +22,8 @@ export default function StepPlugin({
   onNext,
 }) {
   const [showAdvanced, setShowAdvanced] = useState(false);
-  const [showEnhance, setShowEnhance] = useState(false);
+  const [showSkillEditor, setShowSkillEditor] = useState(false);
+  const [newSkillInput, setNewSkillInput] = useState("");
   const selectedPlugin = PLUGINS.find((p) => p.id === selectedPluginId);
 
   const handlePluginSelect = (plugin) => {
@@ -32,7 +33,7 @@ export default function StepPlugin({
       ...config,
       model: plugin.defaultModel,
     });
-    setShowEnhance(false);
+    setShowSkillEditor(false);
   };
 
   const toggleSkill = (sid) => {
@@ -42,6 +43,21 @@ export default function StepPlugin({
         : [...skillIds, sid],
     );
   };
+
+  const removeSkill = (sid) => {
+    onSkillIdsChange(skillIds.filter((s) => s !== sid));
+  };
+
+  const addCustomSkill = () => {
+    const trimmed = newSkillInput.trim();
+    if (trimmed && !skillIds.includes(trimmed)) {
+      onSkillIdsChange([...skillIds, trimmed]);
+      setNewSkillInput("");
+    }
+  };
+
+  // Merge API skills with any custom skills that aren't in the API list
+  const apiSkillIds = new Set((allSkills || []).map((s) => s.id || s.name));
 
   return (
     <div className="mx-auto max-w-3xl">
@@ -63,46 +79,100 @@ export default function StepPlugin({
         ))}
       </div>
 
-      {/* Enhance skills */}
+      {/* Skill editor */}
       {selectedPlugin && (
         <div className="mt-6">
           <button
-            onClick={() => setShowEnhance((v) => !v)}
+            onClick={() => setShowSkillEditor((v) => !v)}
             className="text-sm font-medium text-accent-teal hover:underline"
           >
-            {showEnhance ? "Hide" : "Enhance"} skills
+            {showSkillEditor ? "Hide" : "Edit"} skills
           </button>
 
-          {showEnhance && allSkills.length > 0 && (
+          {showSkillEditor && (
             <div className="mt-3 rounded-xl border border-border/40 bg-surface p-4">
               <p className="mb-3 text-xs text-text-muted">
-                Add or remove skills from this plugin&apos;s default set:
+                Add, remove, or create skills for this employee:
               </p>
+
+              {/* Currently active skills */}
               <div className="flex flex-wrap gap-2">
-                {allSkills.map((skill) => {
-                  const id = skill.id || skill.name;
-                  const active = skillIds.includes(id);
-                  return (
+                {skillIds.map((sid) => (
+                  <span
+                    key={sid}
+                    className="flex items-center gap-1.5 rounded-full bg-accent-teal/20 px-3 py-1 text-xs font-medium text-accent-teal"
+                  >
+                    {sid}
                     <button
-                      key={id}
-                      onClick={() => toggleSkill(id)}
-                      className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
-                        active
-                          ? "bg-accent-teal/20 text-accent-teal"
-                          : "bg-surface-hover text-text-muted hover:text-text-secondary"
-                      }`}
+                      onClick={() => removeSkill(sid)}
+                      className="text-accent-teal/60 hover:text-accent-teal"
                     >
-                      {skill.name || id}
+                      <X size={12} />
                     </button>
-                  );
-                })}
+                  </span>
+                ))}
+                {skillIds.length === 0 && (
+                  <span className="text-xs text-text-muted">No skills selected</span>
+                )}
+              </div>
+
+              {/* Available skills from API */}
+              {allSkills.length > 0 && (
+                <div className="mt-4">
+                  <p className="mb-2 text-xs font-medium text-text-muted">
+                    Available skills:
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    {allSkills.map((skill) => {
+                      const id = skill.id || skill.name;
+                      const active = skillIds.includes(id);
+                      return (
+                        <button
+                          key={id}
+                          onClick={() => toggleSkill(id)}
+                          className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
+                            active
+                              ? "bg-accent-teal/20 text-accent-teal"
+                              : "bg-surface-hover text-text-muted hover:text-text-secondary"
+                          }`}
+                        >
+                          {skill.name || id}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Add custom skill */}
+              <div className="mt-4 flex gap-2">
+                <input
+                  value={newSkillInput}
+                  onChange={(e) => setNewSkillInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      addCustomSkill();
+                    }
+                  }}
+                  placeholder="Add skill by name..."
+                  className="flex-1 rounded-lg border border-border/40 bg-workspace px-3 py-1.5 text-xs text-text-primary placeholder:text-text-muted/60 focus:border-accent-teal/50 focus:outline-none"
+                />
+                <button
+                  onClick={addCustomSkill}
+                  disabled={!newSkillInput.trim()}
+                  className="flex items-center gap-1 rounded-lg bg-accent-teal/10 px-3 py-1.5 text-xs font-medium text-accent-teal transition-colors hover:bg-accent-teal/20 disabled:opacity-40"
+                >
+                  <Plus size={12} />
+                  Add
+                </button>
               </div>
             </div>
           )}
         </div>
       )}
 
-      {/* Advanced config accordion */}
+      {/* Model & advanced config */}
       <div className="mt-6 border-t border-border/20 pt-4">
         <button
           onClick={() => setShowAdvanced((v) => !v)}
@@ -112,7 +182,7 @@ export default function StepPlugin({
             size={14}
             className={`transition-transform ${showAdvanced ? "rotate-180" : ""}`}
           />
-          Advanced Config
+          Edit Model &amp; Settings
         </button>
 
         {showAdvanced && (
