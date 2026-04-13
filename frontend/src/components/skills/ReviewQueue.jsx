@@ -307,10 +307,10 @@ export default function ReviewQueue() {
     setClearing(true);
     try {
       const resolved = submissions.filter(s => s.status === "accepted" || s.status === "discarded");
-      for (const sub of resolved) {
-        await deleteSubmission(sub.id);
-      }
+      await Promise.allSettled(resolved.map((sub) => deleteSubmission(sub.id)));
       await load();
+    } catch (err) {
+      setError(err.message);
     } finally {
       setClearing(false);
       setShowClearConfirm(false);
