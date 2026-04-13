@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { Loader2, AlertCircle, Save, X, Code, Pencil, Paperclip, Trash2, Upload, Send, Check } from "lucide-react";
+import { Loader2, AlertCircle, Save, X, Code, Pencil, Paperclip, Trash2, Upload, Send, Check, Maximize2 } from "lucide-react";
 import { updateSkill, deleteSkill, addSkillFiles, removeSkillFile } from "../../services/api";
 import { fileIcon } from "./utils";
 import FileViewer from "./FileViewer";
@@ -7,7 +7,7 @@ import ConfirmDialog from "./ConfirmDialog";
 import VersionTabs from "./VersionTabs";
 import useVersionHistory from "../../hooks/useVersionHistory";
 
-export default function SkillEditor({ skill, onSaved, onDeleted, viewingFile, onViewFile, onSubmit }) {
+export default function SkillEditor({ skill, onSaved, onDeleted, viewingFile, onViewFile, onSubmit, onPopOut }) {
   const [name, setName] = useState(skill.name);
   const [description, setDescription] = useState(skill.description);
   const [definition, setDefinition] = useState(skill.definition);
@@ -155,6 +155,15 @@ export default function SkillEditor({ skill, onSaved, onDeleted, viewingFile, on
               </button>
             );
           })()}
+          {onPopOut && (
+            <button
+              onClick={onPopOut}
+              className="rounded-lg p-1.5 text-text-muted transition-colors hover:bg-surface hover:text-text-secondary"
+              title="Pop out"
+            >
+              <Maximize2 size={14} />
+            </button>
+          )}
           {!isBuiltin && (
             <button
               onClick={handleDelete}

@@ -86,7 +86,7 @@ function DefinitionModal({ definition, skillName, onClose }) {
 
 /* ── Main panel ─────────────────────────────────────────────────────────── */
 
-export default function SkillDetailPanel({ skill, onClose, onInstall, onUninstall, onDelete, onSaved }) {
+export default function SkillDetailPanel({ skill, onClose, onInstall, onUninstall, onDelete, onSaved, onPopOut }) {
   const [viewingFile, setViewingFile] = useState(null);
   const [filesExpanded, setFilesExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -254,6 +254,15 @@ export default function SkillDetailPanel({ skill, onClose, onInstall, onUninstal
             >
               {submitDone || latestSubmitted ? <Check size={12} /> : submitting ? <Loader2 size={12} className="animate-spin" /> : <Send size={12} />}
               {submitDone || latestSubmitted ? `v${latestVersion} Submitted` : `Submit v${latestVersion}`}
+            </button>
+          )}
+          {onPopOut && (
+            <button
+              onClick={onPopOut}
+              className="rounded-md p-1 text-text-muted transition-colors hover:bg-surface hover:text-text-secondary"
+              title="Pop out"
+            >
+              <Maximize2 size={14} />
             </button>
           )}
           <button
