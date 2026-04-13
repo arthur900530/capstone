@@ -1,12 +1,16 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
+import { Routes, Route, useNavigate } from "react-router-dom";
 import { Menu, BarChart3, Bot, Database } from "lucide-react";
 import Sidebar from "./components/Sidebar";
 import WelcomeHeader from "./components/WelcomeHeader";
 import InputBox from "./components/InputBox";
 import ChatMessage from "./components/ChatMessage";
 import UploadedDataPanel from "./components/DataContext";
-import EvaluationView from "./components/EvaluationView";
-import SkillsView from "./components/skills/SkillsView";
+import DashboardPage from "./pages/DashboardPage";
+import PluginsPage from "./pages/PluginsPage";
+import EvaluationLabPage from "./pages/EvaluationLabPage";
+import { AppProvider } from "./context/AppContext";
+import { getEmployees } from "./services/employeeStore";
 import {
   streamChat,
   uploadFiles,
@@ -111,9 +115,131 @@ function restoreMessage(m) {
   }
 }
 
+/* ── Chat View (used at the / route when no employee context) ──────────── */
+function ChatView() {
+  const {
+    messages,
+    isStreaming,
+    sessionId,
+    visibleAgent,
+    chatFiles,
+    setChatFiles,
+    stagedFiles,
+    setStagedFiles,
+    config,
+    setConfig,
+    skills,
+    selectedSkillIds,
+    setSelectedSkillIds,
+    skipSkillConfirm,
+    setSkipSkillConfirm,
+    mountDir,
+    setMountDir,
+    handleSubmit,
+    handleViewEval,
+    scrollContainerRef,
+    updateVisibleAgent,
+    messagesEndRef,
+    registerSentinel,
+  } = useApp();
+
+  const hasMessages = messages.length > 0;
+
+  if (hasMessages) {
+    return (
+      <>
+        <div
+          ref={scrollContainerRef}
+          onScroll={updateVisibleAgent}
+          className="flex-1 overflow-y-auto"
+        >
+          <AgentBanner
+            agent={visibleAgent}
+            onViewEval={() => handleViewEval(visibleAgent?.id)}
+            files={chatFiles}
+            onRemoveFile={(i) =>
+              setChatFiles((prev) => prev.filter((_, idx) => idx !== i))
+            }
+          />
+          <div className="px-4 pt-4 pb-4">
+            <div className="mx-auto max-w-2xl space-y-3">
+              {messages.map((msg, i) =>
+                msg.type === "agent_marker" ? (
+                  <AgentDivider
+                    key={`${sessionId}-${i}`}
+                    agent={msg.agent}
+                    sentinelRef={(el) => registerSentinel(i, el, msg.agent)}
+                  />
+                ) : (
+                  <ChatMessage
+                    key={`${sessionId}-${i}`}
+                    message={msg}
+                    animate={msg.animate !== false}
+                  />
+                ),
+              )}
+              <div ref={messagesEndRef} />
+            </div>
+          </div>
+        </div>
+        <div className="border-t border-border/30 bg-workspace pb-4 pt-3">
+          <InputBox
+            onSubmit={handleSubmit}
+            isStreaming={isStreaming}
+            config={config}
+            onConfigChange={setConfig}
+            stagedFiles={stagedFiles}
+            onFilesChange={setStagedFiles}
+            skills={skills}
+            selectedSkillIds={selectedSkillIds}
+            onSelectedSkillsChange={setSelectedSkillIds}
+            skipConfirm={skipSkillConfirm}
+            onSkipConfirmChange={setSkipSkillConfirm}
+            mountDir={mountDir}
+            onMountDirChange={setMountDir}
+          />
+        </div>
+      </>
+    );
+  }
+
+  return (
+    <>
+      <div className="flex flex-1 flex-col items-center justify-center">
+        <div className="w-full">
+          <WelcomeHeader />
+          <InputBox
+            onSubmit={handleSubmit}
+            isStreaming={isStreaming}
+            config={config}
+            onConfigChange={setConfig}
+            stagedFiles={stagedFiles}
+            onFilesChange={setStagedFiles}
+            skills={skills}
+            selectedSkillIds={selectedSkillIds}
+            onSelectedSkillsChange={setSelectedSkillIds}
+            skipConfirm={skipSkillConfirm}
+            onSkipConfirmChange={setSkipSkillConfirm}
+            mountDir={mountDir}
+            onMountDirChange={setMountDir}
+          />
+        </div>
+      </div>
+      <footer className="pb-4 text-center text-xs text-text-muted">
+        AI may produce inaccurate information. Verify important facts.
+      </footer>
+    </>
+  );
+}
+
+/* ── Imports for context hook ──────────────────────────────────────────── */
+import { useApp } from "./context/AppContext";
+
+/* ── App (layout shell) ───────────────────────────────────────────────── */
 export default function App() {
+  const navigate = useNavigate();
+
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [activeTab, setActiveTab] = useState("chat");
   const [messages, setMessages] = useState([]);
   const [isStreaming, setIsStreaming] = useState(false);
   const [sessionId, setSessionId] = useState(null);
@@ -127,6 +253,7 @@ export default function App() {
   const [mountDir, setMountDir] = useState("");
   const [selectedSkillIds, setSelectedSkillIds] = useState([]);
   const [skipSkillConfirm, setSkipSkillConfirm] = useState(false);
+  const [employees, setEmployees] = useState(getEmployees());
   const [config, setConfig] = useState({
     model: "",
     maxTrials: 3,
@@ -207,6 +334,10 @@ export default function App() {
     } catch {
       /* sidebar stays stale */
     }
+  }, []);
+
+  const refreshEmployees = useCallback(() => {
+    setEmployees(getEmployees());
   }, []);
 
   useEffect(() => {
@@ -373,13 +504,12 @@ export default function App() {
 
   const handleSelectChat = async (chatId) => {
     if (chatId === sessionId) {
-      setActiveTab("chat");
+      navigate("/chat");
       return;
     }
     try {
       const chat = await fetchChatById(chatId);
       setSessionId(chatId);
-      setActiveTab("chat");
 
       const agent = agentMap[chat.agent_id] ?? null;
 
@@ -400,6 +530,7 @@ export default function App() {
         visibleAgentRef.current = agent.id;
         setVisibleAgent(agent);
       }
+      navigate("/chat");
     } catch {
       /* ignore */
     }
@@ -428,10 +559,8 @@ export default function App() {
 
   const handleViewEval = (agentId) => {
     if (agentId) setFocusAgentId(agentId);
-    setActiveTab("evaluation");
+    navigate("/evaluation");
   };
-
-  const hasMessages = messages.length > 0;
 
   const registerSentinel = (index, el, agent) => {
     if (el) {
@@ -441,126 +570,81 @@ export default function App() {
     }
   };
 
-  const renderChatView = () => {
-    if (hasMessages) {
-      return (
-        <>
-          <div
-            ref={scrollContainerRef}
-            onScroll={updateVisibleAgent}
-            className="flex-1 overflow-y-auto"
-          >
-            <AgentBanner
-              agent={visibleAgent}
-              onViewEval={() => handleViewEval(visibleAgent?.id)}
-              files={chatFiles}
-              onRemoveFile={(i) => setChatFiles((prev) => prev.filter((_, idx) => idx !== i))}
-            />
-            <div className="px-4 pt-4 pb-4">
-              <div className="mx-auto max-w-2xl space-y-3">
-                {messages.map((msg, i) =>
-                  msg.type === "agent_marker" ? (
-                    <AgentDivider
-                      key={`${sessionId}-${i}`}
-                      agent={msg.agent}
-                      sentinelRef={(el) => registerSentinel(i, el, msg.agent)}
-                    />
-                  ) : (
-                    <ChatMessage key={`${sessionId}-${i}`} message={msg} animate={msg.animate !== false} />
-                  ),
-                )}
-                <div ref={messagesEndRef} />
-              </div>
-            </div>
-          </div>
-          <div className="border-t border-border/30 bg-workspace pb-4 pt-3">
-            <InputBox
-              onSubmit={handleSubmit}
-              isStreaming={isStreaming}
-              config={config}
-              onConfigChange={setConfig}
-              stagedFiles={stagedFiles}
-              onFilesChange={setStagedFiles}
-              skills={skills}
-              selectedSkillIds={selectedSkillIds}
-              onSelectedSkillsChange={setSelectedSkillIds}
-              skipConfirm={skipSkillConfirm}
-              onSkipConfirmChange={setSkipSkillConfirm}
-              mountDir={mountDir}
-              onMountDirChange={setMountDir}
-            />
-          </div>
-        </>
-      );
-    }
-
-    return (
-      <>
-        <div className="flex flex-1 flex-col items-center justify-center">
-          <div className="w-full">
-            <WelcomeHeader />
-            <InputBox
-              onSubmit={handleSubmit}
-              isStreaming={isStreaming}
-              config={config}
-              onConfigChange={setConfig}
-              stagedFiles={stagedFiles}
-              onFilesChange={setStagedFiles}
-              skills={skills}
-              selectedSkillIds={selectedSkillIds}
-              onSelectedSkillsChange={setSelectedSkillIds}
-              skipConfirm={skipSkillConfirm}
-              onSkipConfirmChange={setSkipSkillConfirm}
-              mountDir={mountDir}
-              onMountDirChange={setMountDir}
-            />
-          </div>
-        </div>
-        <footer className="pb-4 text-center text-xs text-text-muted">
-          AI may produce inaccurate information. Verify important facts.
-        </footer>
-      </>
-    );
+  const ctxValue = {
+    messages,
+    setMessages,
+    isStreaming,
+    sessionId,
+    setSessionId,
+    visibleAgent,
+    agents,
+    agentMap,
+    chats,
+    chatFiles,
+    setChatFiles,
+    stagedFiles,
+    setStagedFiles,
+    skills,
+    selectedSkillIds,
+    setSelectedSkillIds,
+    skipSkillConfirm,
+    setSkipSkillConfirm,
+    config,
+    setConfig,
+    mountDir,
+    setMountDir,
+    focusAgentId,
+    setFocusAgentId,
+    employees,
+    refreshEmployees,
+    refreshSkills,
+    refreshChats,
+    handleSubmit,
+    handleNewChat,
+    handleSelectChat,
+    handleDeleteChat,
+    handleRenameChat,
+    handleViewEval,
+    scrollContainerRef,
+    messagesEndRef,
+    updateVisibleAgent,
+    registerSentinel,
   };
 
   return (
-    <div className="flex h-full bg-workspace">
-      <Sidebar
-        isOpen={sidebarOpen}
-        onClose={() => setSidebarOpen(false)}
-        activeTab={activeTab}
-        onTabChange={setActiveTab}
-        onNewChat={handleNewChat}
-        chats={chats}
-        agentMap={agentMap}
-        activeChatId={sessionId}
-        onSelectChat={handleSelectChat}
-        onDeleteChat={handleDeleteChat}
-        onRenameChat={handleRenameChat}
-      />
+    <AppProvider value={ctxValue}>
+      <div className="flex h-full bg-workspace">
+        <Sidebar
+          isOpen={sidebarOpen}
+          onClose={() => setSidebarOpen(false)}
+          onNewChat={handleNewChat}
+          chats={chats}
+          agentMap={agentMap}
+          activeChatId={sessionId}
+          onSelectChat={handleSelectChat}
+          onDeleteChat={handleDeleteChat}
+          onRenameChat={handleRenameChat}
+          employees={employees}
+        />
 
-      <main className="relative flex flex-1 flex-col">
-        <div className="absolute top-4 left-4 z-30 lg:hidden">
-          <button
-            onClick={() => setSidebarOpen(true)}
-            className="flex h-10 w-10 items-center justify-center rounded-lg text-text-secondary transition-colors hover:bg-surface"
-          >
-            <Menu size={20} />
-          </button>
-        </div>
+        <main className="relative flex flex-1 flex-col">
+          <div className="absolute top-4 left-4 z-30 lg:hidden">
+            <button
+              onClick={() => setSidebarOpen(true)}
+              className="flex h-10 w-10 items-center justify-center rounded-lg text-text-secondary transition-colors hover:bg-surface"
+            >
+              <Menu size={20} />
+            </button>
+          </div>
 
-        {activeTab === "evaluation" ? (
-          <EvaluationView
-            agentMap={agentMap}
-            focusAgentId={focusAgentId}
-            onClearFocus={() => setFocusAgentId(null)}
-          />
-        ) : activeTab === "skills" ? (
-          <SkillsView onSkillsChanged={refreshSkills} />
-        ) : (
-          renderChatView()
-        )}
-      </main>
-    </div>
+          <Routes>
+            <Route path="/" element={<DashboardPage />} />
+            <Route path="/chat" element={<ChatView />} />
+            <Route path="/plugins" element={<PluginsPage />} />
+            <Route path="/evaluation" element={<EvaluationLabPage />} />
+          </Routes>
+        </main>
+      </div>
+    </AppProvider>
   );
 }

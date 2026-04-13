@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useNavigate, useLocation } from "react-router-dom";
 import {
   MessageSquare,
   ClipboardCheck,
@@ -9,12 +10,14 @@ import {
   Pencil,
   Check,
   X,
+  LayoutDashboard,
 } from "lucide-react";
 
 const navItems = [
-  { icon: MessageSquare, label: "Chats", tab: "chat" },
-  { icon: ClipboardCheck, label: "Evaluation", tab: "evaluation" },
-  { icon: Store, label: "Marketplace", tab: "skills" },
+  { icon: LayoutDashboard, label: "Dashboard", path: "/" },
+  { icon: MessageSquare, label: "Chats", path: "/chat" },
+  { icon: ClipboardCheck, label: "Evaluation", path: "/evaluation" },
+  { icon: Store, label: "Marketplace", path: "/plugins" },
 ];
 
 function ChatHistoryItem({ chat, agentName, isActive, onSelect, onDelete, onRename }) {
@@ -90,8 +93,6 @@ function ChatHistoryItem({ chat, agentName, isActive, onSelect, onDelete, onRena
 export default function Sidebar({
   isOpen,
   onClose,
-  activeTab,
-  onTabChange,
   onNewChat,
   chats = [],
   agentMap = {},
@@ -100,6 +101,9 @@ export default function Sidebar({
   onDeleteChat,
   onRenameChat,
 }) {
+  const navigate = useNavigate();
+  const { pathname } = useLocation();
+
   return (
     <>
       {isOpen && (
@@ -119,7 +123,7 @@ export default function Sidebar({
       >
         <div className="p-4">
           <button
-            onClick={() => { onNewChat?.(); onTabChange("chat"); onClose(); }}
+            onClick={() => { onNewChat?.(); navigate("/chat"); onClose(); }}
             className="flex w-full items-center gap-3 rounded-xl bg-surface px-4 py-3 text-sm font-medium text-text-primary transition-colors hover:bg-surface-hover"
           >
             <Plus size={18} className="text-text-secondary" />
@@ -129,13 +133,13 @@ export default function Sidebar({
 
         <nav className="flex flex-col flex-1 overflow-hidden px-3 py-2">
           <ul className="space-y-0.5">
-            {navItems.map(({ icon: Icon, label, tab }) => (
+            {navItems.map(({ icon: Icon, label, path }) => (
               <li key={label}>
                 <button
-                  onClick={() => { onTabChange(tab); onClose(); }}
+                  onClick={() => { navigate(path); onClose(); }}
                   className={`
                     flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm transition-colors
-                    ${activeTab === tab
+                    ${pathname === path
                       ? "bg-surface text-text-primary"
                       : "text-text-secondary hover:bg-surface hover:text-text-primary"
                     }
