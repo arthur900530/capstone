@@ -47,7 +47,7 @@ class EmployeeUpdate(BaseModel):
 
 def _parse_uuid(employee_id: str) -> uuid.UUID:
     try:
-        return _parse_uuid(employee_id)
+        return uuid.UUID(employee_id)
     except ValueError:
         raise HTTPException(400, "Invalid employee ID format")
 
