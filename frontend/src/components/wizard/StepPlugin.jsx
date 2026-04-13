@@ -12,8 +12,8 @@ const MODEL_OPTIONS = [
 ];
 
 export default function StepPlugin({
-  selectedPluginId,
-  onSelectPlugin,
+  selectedPluginIds,
+  onSelectPlugins,
   skillIds,
   onSkillIdsChange,
   config,
@@ -24,18 +24,30 @@ export default function StepPlugin({
 }) {
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [showSkillEditor, setShowSkillEditor] = useState(false);
-  const [skillViewMode, setSkillViewMode] = useState("list"); // "list" | "graph"
+  const [skillViewMode, setSkillViewMode] = useState("list");
   const [newSkillInput, setNewSkillInput] = useState("");
-  const selectedPlugin = PLUGINS.find((p) => p.id === selectedPluginId);
 
-  const handlePluginSelect = (plugin) => {
-    onSelectPlugin(plugin.id);
-    onSkillIdsChange([...plugin.skillIds]);
-    onConfigChange({
-      ...config,
-      model: plugin.defaultModel,
-    });
-    setShowSkillEditor(false);
+  const selectedPlugins = PLUGINS.filter((p) => selectedPluginIds.includes(p.id));
+
+  const handlePluginToggle = (plugin) => {
+    const alreadySelected = selectedPluginIds.includes(plugin.id);
+    let nextIds;
+    if (alreadySelected) {
+      nextIds = selectedPluginIds.filter((id) => id !== plugin.id);
+    } else {
+      nextIds = [...selectedPluginIds, plugin.id];
+    }
+    onSelectPlugins(nextIds);
+
+    // Merge skill IDs from all selected plugins
+    const mergedPlugins = PLUGINS.filter((p) => nextIds.includes(p.id));
+    const mergedSkills = [...new Set(mergedPlugins.flatMap((p) => p.skillIds))];
+    onSkillIdsChange(mergedSkills);
+
+    // Use model from the most recently added plugin
+    if (!alreadySelected) {
+      onConfigChange({ ...config, model: plugin.defaultModel });
+    }
   };
 
   const toggleSkill = (sid) => {
@@ -58,16 +70,15 @@ export default function StepPlugin({
     }
   };
 
-  // Merge API skills with any custom skills that aren't in the API list
-  const apiSkillIds = new Set((allSkills || []).map((s) => s.id || s.name));
+  const hasSelection = selectedPluginIds.length > 0;
 
   return (
     <div className="mx-auto max-w-3xl">
       <h2 className="mb-2 text-xl font-semibold text-text-primary">
-        Choose a plugin
+        Choose plugins
       </h2>
       <p className="mb-6 text-sm text-text-muted">
-        Each plugin bundles a set of skills tailored to a specific role.
+        Select one or more plugins. Each bundles skills tailored to a role.
       </p>
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
@@ -75,14 +86,14 @@ export default function StepPlugin({
           <PluginCard
             key={plugin.id}
             plugin={plugin}
-            selected={selectedPluginId === plugin.id}
-            onClick={() => handlePluginSelect(plugin)}
+            selected={selectedPluginIds.includes(plugin.id)}
+            onClick={() => handlePluginToggle(plugin)}
           />
         ))}
       </div>
 
       {/* Skill editor */}
-      {selectedPlugin && (
+      {hasSelection && (
         <div className="mt-6">
           <div className="flex items-center gap-3">
             <button
@@ -126,7 +137,6 @@ export default function StepPlugin({
                 Add, remove, or create skills for this employee:
               </p>
 
-              {/* Currently active skills */}
               <div className="flex flex-wrap gap-2">
                 {skillIds.map((sid) => (
                   <span
@@ -147,7 +157,6 @@ export default function StepPlugin({
                 )}
               </div>
 
-              {/* Available skills from API */}
               {allSkills.length > 0 && (
                 <div className="mt-4">
                   <p className="mb-2 text-xs font-medium text-text-muted">
@@ -175,7 +184,6 @@ export default function StepPlugin({
                 </div>
               )}
 
-              {/* Add custom skill */}
               <div className="mt-4 flex gap-2">
                 <input
                   value={newSkillInput}
@@ -203,7 +211,7 @@ export default function StepPlugin({
 
           {showSkillEditor && skillViewMode === "graph" && (
             <SkillGraph
-              pluginId={selectedPluginId}
+              pluginIds={selectedPluginIds}
               skillIds={skillIds}
               onToggleSkill={toggleSkill}
             />
@@ -310,7 +318,7 @@ export default function StepPlugin({
         </button>
         <button
           onClick={onNext}
-          disabled={!selectedPluginId}
+          disabled={!hasSelection}
           className="rounded-lg bg-accent-teal px-6 py-2.5 text-sm font-medium text-workspace transition-colors hover:bg-accent-teal/90 disabled:opacity-40 disabled:cursor-not-allowed"
         >
           Next

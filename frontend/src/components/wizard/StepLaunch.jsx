@@ -5,15 +5,15 @@ export default function StepLaunch({
   name,
   onNameChange,
   task,
-  pluginId,
+  pluginIds,
   skillIds,
   config,
   files,
   onBack,
   onCreate,
 }) {
-  const plugin = PLUGINS.find((p) => p.id === pluginId);
-  const IconComp = Icons[plugin?.icon] || Icons.Bot;
+  const selectedPlugins = PLUGINS.filter((p) => pluginIds.includes(p.id));
+  const FirstIcon = Icons[selectedPlugins[0]?.icon] || Icons.Bot;
 
   return (
     <div className="mx-auto max-w-2xl">
@@ -37,11 +37,11 @@ export default function StepLaunch({
       <div className="mt-6 rounded-xl border border-border/40 bg-surface p-5 space-y-4">
         <div className="flex items-center gap-3">
           <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-accent-teal/10">
-            <IconComp size={20} className="text-accent-teal" />
+            <FirstIcon size={20} className="text-accent-teal" />
           </div>
           <div>
             <p className="font-medium text-text-primary">
-              {plugin?.name || "Custom"}
+              {selectedPlugins.map((p) => p.name).join(", ") || "Custom"}
             </p>
             <p className="text-xs text-text-muted">
               {config.model?.split("/").pop()}

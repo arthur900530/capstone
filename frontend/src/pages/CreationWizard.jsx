@@ -20,20 +20,22 @@ export default function CreationWizard() {
   // Pre-fill from template if ?template=id
   const templateId = searchParams.get("template");
   const template = EMPLOYEE_TEMPLATES.find((t) => t.id === templateId);
-  const templatePlugin = template
-    ? PLUGINS.find((p) => p.id === template.pluginId)
-    : null;
+  const templatePlugins = template
+    ? PLUGINS.filter((p) => template.pluginIds.includes(p.id))
+    : [];
 
   const [step, setStep] = useState(0);
   const [task, setTask] = useState("");
-  const [selectedPluginId, setSelectedPluginId] = useState(
-    template?.pluginId || "",
+  const [selectedPluginIds, setSelectedPluginIds] = useState(
+    template?.pluginIds || [],
   );
   const [skillIds, setSkillIds] = useState(
-    templatePlugin?.skillIds ? [...templatePlugin.skillIds] : [],
+    templatePlugins.length > 0
+      ? [...new Set(templatePlugins.flatMap((p) => p.skillIds))]
+      : [],
   );
   const [config, setConfig] = useState({
-    model: templatePlugin?.defaultModel || "openai/gpt-4o",
+    model: templatePlugins[0]?.defaultModel || "openai/gpt-4o",
     maxTrials: 3,
     confidenceThreshold: 0.7,
     useReflexion: false,
@@ -45,7 +47,7 @@ export default function CreationWizard() {
     const emp = createEmployee({
       name: name.trim(),
       task,
-      pluginId: selectedPluginId,
+      pluginIds: selectedPluginIds,
       skillIds,
       model: config.model,
       useReflexion: config.useReflexion,
@@ -59,7 +61,6 @@ export default function CreationWizard() {
 
   return (
     <div className="flex flex-1 flex-col overflow-y-auto">
-      {/* Top bar */}
       <div className="border-b border-border/30 px-6 py-4">
         <div className="mx-auto flex max-w-3xl items-center gap-4">
           <button
@@ -74,7 +75,6 @@ export default function CreationWizard() {
         </div>
       </div>
 
-      {/* Progress bar */}
       <div className="border-b border-border/20 px-6 py-3">
         <div className="mx-auto flex max-w-3xl items-center gap-2">
           {STEPS.map((label, i) => (
@@ -107,7 +107,6 @@ export default function CreationWizard() {
         </div>
       </div>
 
-      {/* Step content */}
       <div className="flex-1 px-6 py-8">
         {step === 0 && (
           <StepDescribe
@@ -118,8 +117,8 @@ export default function CreationWizard() {
         )}
         {step === 1 && (
           <StepPlugin
-            selectedPluginId={selectedPluginId}
-            onSelectPlugin={setSelectedPluginId}
+            selectedPluginIds={selectedPluginIds}
+            onSelectPlugins={setSelectedPluginIds}
             skillIds={skillIds}
             onSkillIdsChange={setSkillIds}
             config={config}
@@ -142,7 +141,7 @@ export default function CreationWizard() {
             name={name}
             onNameChange={setName}
             task={task}
-            pluginId={selectedPluginId}
+            pluginIds={selectedPluginIds}
             skillIds={skillIds}
             config={config}
             files={files}
