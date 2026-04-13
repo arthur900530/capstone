@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useNavigate, useLocation, useParams } from "react-router-dom";
+import { useNavigate, useLocation } from "react-router-dom";
 import * as Icons from "lucide-react";
 import {
   Plus,
@@ -119,7 +119,6 @@ export default function Sidebar({
 }) {
   const navigate = useNavigate();
   const { pathname } = useLocation();
-  const params = useParams();
   const [advancedOpen, setAdvancedOpen] = useState(false);
 
   const nav = (path) => {
