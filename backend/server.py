@@ -622,6 +622,21 @@ def _map_event_to_sse(event: Any, session_id: str) -> dict | None:
     return None
 
 
+def _validate_mount_dir(mount_dir: str | None) -> str | None:
+    """Reject mount_dir paths that escape the user's home or /tmp."""
+    if not mount_dir:
+        return None
+    resolved = os.path.realpath(mount_dir)
+    home = os.path.expanduser("~")
+    allowed_prefixes = (home + os.sep, tempfile.gettempdir() + os.sep)
+    if not resolved.startswith(allowed_prefixes):
+        raise HTTPException(
+            status_code=400,
+            detail="mount_dir must be under your home directory or /tmp",
+        )
+    return resolved
+
+
 def _resolve_workspace(session_id: str, mount_dir: str | None) -> tuple[str | None, str | None]:
     """Determine the effective mount directory and any staging dir to clean up.
 
@@ -631,6 +646,7 @@ def _resolve_workspace(session_id: str, mount_dir: str | None) -> tuple[str | No
 
     Returns (effective_mount_dir, staging_dir_to_cleanup_or_None).
     """
+    mount_dir = _validate_mount_dir(mount_dir)
     staging = _upload_dirs.pop(session_id, None)
 
     if staging and mount_dir:
@@ -726,7 +742,9 @@ def _materialize_skill_package(skills_root: str, skill_id: str) -> None:
         for rel_path, content in db_data.get("files", {}).items():
             if rel_path == "SKILL.md" or rel_path.endswith("/SKILL.md"):
                 continue
-            dest = os.path.join(pkg, rel_path)
+            dest = os.path.realpath(os.path.join(pkg, rel_path))
+            if not dest.startswith(os.path.realpath(pkg) + os.sep):
+                continue  # skip path traversal attempts
             os.makedirs(os.path.dirname(dest), exist_ok=True)
             with open(dest, "w", encoding="utf-8") as f:
                 f.write(content or "")
@@ -740,18 +758,24 @@ def _materialize_skill_package(skills_root: str, skill_id: str) -> None:
     with open(os.path.join(pkg, "SKILL.md"), "w", encoding="utf-8") as f:
         f.write(definition)
     by_name = _FILE_CONTENTS.get(skill_id, {})
+    pkg_real = os.path.realpath(pkg)
     for meta in skill.get("files") or []:
         rel = meta["name"].replace("\\", "/")
         if rel == "SKILL.md" or rel.endswith("/SKILL.md"):
             continue
-        dest = os.path.join(pkg, rel)
+        dest = os.path.realpath(os.path.join(pkg, rel))
+        if not dest.startswith(pkg_real + os.sep):
+            continue  # skip path traversal attempts
         dest_parent = os.path.dirname(dest)
         if dest_parent:
             os.makedirs(dest_parent, exist_ok=True)
         if rel in by_name:
             text = by_name[rel]
         else:
-            disk_path = os.path.join(_SKILLS_DIR, skill_id, rel)
+            skill_dir_real = os.path.realpath(os.path.join(_SKILLS_DIR, skill_id))
+            disk_path = os.path.realpath(os.path.join(_SKILLS_DIR, skill_id, rel))
+            if not disk_path.startswith(skill_dir_real + os.sep):
+                continue
             with open(disk_path, encoding="utf-8") as f:
                 text = f.read()
         with open(dest, "w", encoding="utf-8") as f:
@@ -929,13 +953,13 @@ async def upload_files(
     saved: list[dict] = []
 
     for upload in files:
-        dest = os.path.join(staging, upload.filename)
-        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        safe_name = os.path.basename(upload.filename) or f"upload_{uuid.uuid4().hex}"
+        dest = os.path.join(staging, safe_name)
         content = await upload.read()
         with open(dest, "wb") as f:
             f.write(content)
         saved.append({
-            "name": upload.filename,
+            "name": safe_name,
             "size": len(content),
             "type": upload.content_type,
         })
