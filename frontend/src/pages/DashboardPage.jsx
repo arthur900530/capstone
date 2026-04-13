@@ -1,6 +1,7 @@
 import { useNavigate } from "react-router-dom";
 import { Plus, Users } from "lucide-react";
 import EmployeeCard from "../components/dashboard/EmployeeCard";
+import TemplateGallery from "../components/dashboard/TemplateGallery";
 import { useApp } from "../context/AppContext";
 
 export default function DashboardPage() {
@@ -60,6 +61,9 @@ export default function DashboardPage() {
             </button>
           </div>
         )}
+
+        {/* Template gallery */}
+        <TemplateGallery />
       </div>
     </div>
   );
