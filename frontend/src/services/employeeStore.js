@@ -43,7 +43,7 @@ export function markActive(id) {
 export function createEmployee({
   name,
   task,
-  pluginId,
+  pluginIds = [],
   skillIds,
   model,
   useReflexion = false,
@@ -55,7 +55,7 @@ export function createEmployee({
     id: crypto.randomUUID(),
     name,
     task,
-    pluginId,
+    pluginIds,
     skillIds,
     model,
     useReflexion,
