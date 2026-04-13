@@ -101,7 +101,7 @@ async def lifespan(application):
         pass
 
 
-app = FastAPI(title="Skill Marketplace Agent API", lifespan=lifespan)
+app = FastAPI(title="Digital Employee Platform API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
