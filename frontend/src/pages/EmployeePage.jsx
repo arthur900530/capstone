@@ -114,9 +114,9 @@ export default function EmployeePage() {
         </div>
       </div>
 
-      {activeTab === "chat" && <EmployeeChat employee={employee} />}
-      {activeTab === "console" && <EmployeeConsole employee={employee} />}
-      {activeTab === "report" && <EmployeeReportCard employee={employee} />}
+      {activeTab === "chat" && <EmployeeChat key={id} employee={employee} />}
+      {activeTab === "console" && <EmployeeConsole key={id} employee={employee} />}
+      {activeTab === "report" && <EmployeeReportCard key={id} employee={employee} />}
     </div>
   );
 }
