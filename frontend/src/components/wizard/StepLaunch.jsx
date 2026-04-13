@@ -28,6 +28,7 @@ export default function StepLaunch({
         autoFocus
         value={name}
         onChange={(e) => onNameChange(e.target.value)}
+        maxLength={40}
         placeholder="e.g. Sarah"
         className="w-full rounded-xl border border-border/40 bg-surface px-4 py-3 text-lg font-medium text-text-primary placeholder:text-text-muted/60 focus:border-accent-teal/50 focus:outline-none focus:ring-1 focus:ring-accent-teal/30"
       />

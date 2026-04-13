@@ -91,7 +91,7 @@ export default function InputBox({
     }
   };
 
-  const displayModel = config.model
+  const displayModel = config?.model
     ? config.model.split("/").pop()
     : "openai/gpt-5.1";
 
