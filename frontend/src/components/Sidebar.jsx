@@ -181,7 +181,7 @@ export default function Sidebar({
                     onNavigate={nav}
                   />
                   {/* Show chats under active employee */}
-                  {emp.id === activeEmployeeId && emp.chatSessionIds.length > 0 && (
+                  {emp.id === activeEmployeeId && (emp.chatSessionIds?.length ?? 0) > 0 && (
                     <ul className="ml-6 mt-0.5 space-y-0.5">
                       {chats
                         .filter((c) => employeeChatIds.has(c.id))

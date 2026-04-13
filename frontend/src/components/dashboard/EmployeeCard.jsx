@@ -39,8 +39,8 @@ export default function EmployeeCard({ employee }) {
 
       <div className="flex items-center justify-between text-xs text-text-muted">
         <span>
-          {employee.chatSessionIds.length}{" "}
-          {employee.chatSessionIds.length === 1 ? "chat" : "chats"}
+          {(employee.chatSessionIds?.length ?? 0)}{" "}
+          {(employee.chatSessionIds?.length ?? 0) === 1 ? "chat" : "chats"}
         </span>
         <span>
           {new Date(employee.createdAt).toLocaleDateString()}
