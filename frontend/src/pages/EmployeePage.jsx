@@ -24,11 +24,12 @@ export default function EmployeePage() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    let cancelled = false;
     setLoading(true);
-    getEmployeeById(id).then((emp) => {
-      setEmployee(emp);
-      setLoading(false);
-    });
+    getEmployeeById(id)
+      .then((emp) => { if (!cancelled) { setEmployee(emp); setLoading(false); } })
+      .catch(() => { if (!cancelled) { setEmployee(null); setLoading(false); } });
+    return () => { cancelled = true; };
   }, [id]);
 
   if (loading) {

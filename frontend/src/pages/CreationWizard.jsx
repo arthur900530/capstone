@@ -43,20 +43,28 @@ export default function CreationWizard() {
   const [files, setFiles] = useState([]);
   const [name, setName] = useState(template?.suggestedName || "");
 
+  const [creating, setCreating] = useState(false);
+
   const handleCreate = async () => {
-    const emp = await createEmployee({
-      name: name.trim(),
-      task,
-      pluginIds: selectedPluginIds,
-      skillIds,
-      model: config.model,
-      useReflexion: config.useReflexion,
-      maxTrials: config.maxTrials,
-      confidenceThreshold: config.confidenceThreshold,
-      files: files.map((f) => ({ name: f.name, size: f.size, type: f.type })),
-    });
-    await refreshEmployees();
-    navigate(`/employee/${emp.id}`);
+    if (creating) return;
+    setCreating(true);
+    try {
+      const emp = await createEmployee({
+        name: name.trim(),
+        task,
+        pluginIds: selectedPluginIds,
+        skillIds,
+        model: config.model,
+        useReflexion: config.useReflexion,
+        maxTrials: config.maxTrials,
+        confidenceThreshold: config.confidenceThreshold,
+        files: files.map((f) => ({ name: f.name, size: f.size, type: f.type })),
+      });
+      await refreshEmployees();
+      navigate(`/employee/${emp.id}`);
+    } catch {
+      setCreating(false);
+    }
   };
 
   return (
