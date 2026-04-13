@@ -366,7 +366,7 @@ export default function SkillsView({ onSkillsChanged }) {
                       onDeleted={handleDeleted}
                       viewingFile={viewingFile}
                       onViewFile={setViewingFile}
-                      onSubmit={() => setShowSubmit({})}
+                      onSubmit={(skill, onSuccess) => setShowSubmit({ onSuccess })}
                       onPopOut={() => handlePopOut(selectedSkill.id, "editor")}
                     />
                   ) : (
@@ -447,7 +447,7 @@ export default function SkillsView({ onSkillsChanged }) {
         onClose={() => setShowSubmit(null)}
         skill={selectedSkill}
         version={showSubmit?.version}
-        onSubmitted={() => {}}
+        onSubmitted={() => showSubmit?.onSuccess?.()}
       />
 
       {/* Floating windows */}
@@ -471,7 +471,7 @@ export default function SkillsView({ onSkillsChanged }) {
                 onDeleted={(id) => { handleCloseFloating(fw.id); handleDeleted(id); }}
                 viewingFile={null}
                 onViewFile={() => {}}
-                onSubmit={() => setShowSubmit({})}
+                onSubmit={(skill, onSuccess) => setShowSubmit({ onSuccess })}
               />
             ) : (
               <SkillDetailPanel
