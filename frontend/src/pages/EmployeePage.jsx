@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { ArrowLeft, MessageSquare, Terminal, BarChart3, Trash2, Loader2 } from "lucide-react";
+import ConfirmDialog from "../components/skills/ConfirmDialog";
 import * as Icons from "lucide-react";
 import EmployeeChat from "../components/employee/EmployeeChat";
 import EmployeeConsole from "../components/employee/EmployeeConsole";
@@ -22,6 +23,8 @@ export default function EmployeePage() {
   const [activeTab, setActiveTab] = useState("chat");
   const [employee, setEmployee] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -53,11 +56,10 @@ export default function EmployeePage() {
   const RoleIcon = Icons[plugins[0]?.icon] || Icons.Bot;
 
   const handleDelete = async () => {
-    if (window.confirm(`Delete ${employee.name}? This cannot be undone.`)) {
-      await deleteEmployee(employee.id);
-      await refreshEmployees();
-      navigate("/");
-    }
+    setDeleting(true);
+    await deleteEmployee(employee.id);
+    await refreshEmployees();
+    navigate("/");
   };
 
   return (
@@ -87,7 +89,7 @@ export default function EmployeePage() {
           </div>
 
           <button
-            onClick={handleDelete}
+            onClick={() => setShowDeleteConfirm(true)}
             className="rounded-lg p-2 text-text-muted transition-colors hover:bg-surface hover:text-red-400"
           >
             <Trash2 size={16} />
@@ -117,6 +119,17 @@ export default function EmployeePage() {
       {activeTab === "chat" && <EmployeeChat key={id} employee={employee} />}
       {activeTab === "console" && <EmployeeConsole key={id} employee={employee} />}
       {activeTab === "report" && <EmployeeReportCard key={id} employee={employee} />}
+
+      <ConfirmDialog
+        open={showDeleteConfirm}
+        title="Delete Employee"
+        message={`Are you sure you want to delete ${employee.name}? This cannot be undone.`}
+        confirmLabel="Delete"
+        confirmColor="red"
+        onConfirm={handleDelete}
+        onCancel={() => setShowDeleteConfirm(false)}
+        loading={deleting}
+      />
     </div>
   );
 }
