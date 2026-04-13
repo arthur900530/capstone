@@ -164,10 +164,14 @@ async def create_skill(
     # Store file metadata
     if files:
         for f in files:
+            raw_name = f.get("name", "")
+            # Reject path traversal in file names
+            if ".." in raw_name or raw_name.startswith("/"):
+                continue
             session.add(SkillFile(
                 skill_version_id=version.id,
-                path=f.get("name", ""),
-                file_name=f.get("name", "").split("/")[-1],
+                path=raw_name,
+                file_name=raw_name.split("/")[-1],
                 mime_type=f.get("type"),
                 size_bytes=f.get("size"),
             ))
@@ -280,6 +284,8 @@ async def add_files(
     existing_paths = {f.path for f in version.files}
     for f in files:
         name = f.get("name", "")
+        if ".." in name or name.startswith("/"):
+            continue
         if name not in existing_paths:
             session.add(SkillFile(
                 skill_version_id=version.id,
