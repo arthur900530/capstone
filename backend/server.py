@@ -66,7 +66,40 @@ elif _agent_import_error:
 else:
     logger.info("Real agent mode DISABLED — MODEL/API_KEY env vars not set")
 
-app = FastAPI(title="Mock Reflexion Finance Agent API")
+from contextlib import asynccontextmanager
+
+from db.engine import engine
+from db.seed import seed_from_filesystem
+from routers.skills import router as skills_router
+from routers.marketplace import router as marketplace_router
+from routers.submissions import router as submissions_router
+
+
+@asynccontextmanager
+async def lifespan(application):
+    """Start DB engine and seed skills on first boot. Falls back to in-memory if no DB."""
+    from routers.skills import set_db_available
+    try:
+        # Run Alembic migrations programmatically
+        from alembic.config import Config
+        from alembic import command
+        alembic_cfg = Config(os.path.join(os.path.dirname(__file__), "alembic.ini"))
+        await asyncio.to_thread(command.upgrade, alembic_cfg, "head")
+        # Seed filesystem skills into DB if needed
+        await seed_from_filesystem()
+        set_db_available(True)
+        logger.info("Database initialized and seeded.")
+    except Exception as exc:
+        set_db_available(False)
+        logger.warning("DB init skipped — falling back to in-memory skills: %s", exc)
+    yield
+    try:
+        await engine.dispose()
+    except Exception:
+        pass
+
+
+app = FastAPI(title="Skill Marketplace Agent API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -76,9 +109,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(skills_router)
+app.include_router(marketplace_router)
+app.include_router(submissions_router)
+
 
 # ---------------------------------------------------------------------------
-# In-memory stores
+# In-memory stores (Have to change)
 # ---------------------------------------------------------------------------
 
 _AGENTS: dict[str, dict] = {
@@ -149,13 +186,22 @@ def _load_skills_from_disk() -> dict[str, dict]:
                 fpath_relative = os.path.join(fpath_relative, fname)
                 fpath = os.path.join(_root, fname)
                 fs.append({"name": fpath_relative, "size": os.path.getsize(fpath), "type": mimetypes.guess_type(fpath)[0]})
+        skill_type = "user" if skill.startswith("user_") else "builtin"
+        definition = open(skill_md).read()
+        fm = re.search(r'^name:\s*["\']?([^\n"\']+)["\']?', definition, re.MULTILINE)
+        if fm:
+            display_name = fm.group(1).strip()
+        elif skill_type == "user":
+            display_name = "_".join(skill.split("_")[1:-1]).replace("_", " ").title()
+        else:
+            display_name = " ".join(word.capitalize() for word in skill.split("-"))
         skills[skill] = {
             "id": skill,
-            "name": " ".join(word.capitalize() for word in skill.split("-")),
+            "name": display_name,
             "description": "Placeholder description for the skill",
-            "type": "builtin",
+            "type": skill_type,
             "files": fs,
-            "definition": open(skill_md).read(),
+            "definition": definition,
             "created_at": os.path.getctime(skill_md),
             "updated_at": os.path.getmtime(skill_md),
         }
@@ -257,22 +303,6 @@ def _append_event(session_id: str, event_type: str, data: dict):
 
 def _sse(event_type: str, data: dict[str, Any]) -> dict:
     return {"event": event_type, "data": json.dumps(data)}
-
-
-# _TASK_KEYWORDS = [
-#     "revenue", "earnings", "stock", "market cap", "profit", "SEC",
-#     "filing", "10-K", "10-Q", "annual report", "quarterly",
-#     "dividend", "balance sheet", "cash flow", "EPS", "P/E",
-#     "share price", "financial", "fiscal", "EBITDA", "debt",
-#     "net income", "gross margin", "operating", "valuation",
-#     "IPO", "acquisition", "merger", "GDP", "inflation",
-# ]
-
-
-# def _is_task(question: str) -> bool:
-#     """Determine whether the query requires the agent to work (use tools) vs just chat."""
-#     q = question.lower()
-#     return any(kw in q for kw in _TASK_KEYWORDS)
 
 
 # ---------------------------------------------------------------------------
@@ -387,6 +417,63 @@ async def _stream_task(question: str, session_id: str, max_trials: int, confiden
             yield _sse("tool_result", evt)
             _append_event(session_id, "tool_result", evt)
             await asyncio.sleep(random.uniform(0.1, 0.3))
+
+        # --- Mock file_edit events ---
+        mock_turn = len(tool_seq) + 1
+        fe_create = {
+            "turn": mock_turn,
+            "command": "create",
+            "path": "/workspace/testing_workdir/analysis.py",
+            "file_text": (
+                "import pandas as pd\n"
+                "import numpy as np\n"
+                "\n"
+                "\n"
+                "def load_data(filepath: str) -> pd.DataFrame:\n"
+                '    """Load and validate financial data from CSV."""\n'
+                "    df = pd.read_csv(filepath)\n"
+                '    required = ["date", "open", "high", "low", "close", "volume"]\n'
+                "    missing = [c for c in required if c not in df.columns]\n"
+                "    if missing:\n"
+                '        raise ValueError(f"Missing columns: {missing}")\n'
+                "    return df\n"
+                "\n"
+                "\n"
+                "def compute_returns(df: pd.DataFrame) -> pd.Series:\n"
+                '    """Calculate daily log returns."""\n'
+                '    return np.log(df["close"] / df["close"].shift(1)).dropna()\n'
+            ),
+        }
+        yield _sse("file_edit", fe_create)
+        _append_event(session_id, "file_edit", fe_create)
+        await asyncio.sleep(0.6)
+
+        fe_edit = {
+            "turn": mock_turn + 1,
+            "command": "str_replace",
+            "path": "/workspace/testing_workdir/analysis.py",
+            "old_str": (
+                "def compute_returns(df: pd.DataFrame) -> pd.Series:\n"
+                '    """Calculate daily log returns."""\n'
+                '    return np.log(df["close"] / df["close"].shift(1)).dropna()'
+            ),
+            "new_str": (
+                "def compute_returns(df: pd.DataFrame, method: str = \"log\") -> pd.Series:\n"
+                '    """Calculate daily returns.\n'
+                "\n"
+                "    Args:\n"
+                "        df: DataFrame with 'close' column.\n"
+                '        method: "log" for log returns, "simple" for arithmetic returns.\n'
+                '    """\n'
+                '    close = df["close"]\n'
+                '    if method == "log":\n'
+                "        return np.log(close / close.shift(1)).dropna()\n"
+                "    return (close / close.shift(1) - 1).dropna()"
+            ),
+        }
+        yield _sse("file_edit", fe_edit)
+        _append_event(session_id, "file_edit", fe_edit)
+        await asyncio.sleep(0.5)
 
         evt = {"text": random.choice(_REASONING_TEXTS)}
         yield _sse("reasoning", evt)
@@ -519,12 +606,28 @@ def _map_event_to_sse(event: Any, session_id: str) -> dict | None:
                         return _sse("answer", {"text": finish_text})
                     return None
 
+                _turn_counter.setdefault(session_id, 0)
+                _turn_counter[session_id] += 1
+
+                # Emit a richer event for file_editor tool calls
+                if tool_name.lower() in ("file_editor", "fileeditortool"):
+                    raw_path = args_dict.get("path", "")
+                    # Strip Docker workspace prefix → relative path
+                    if raw_path.startswith("/workspace/"):
+                        raw_path = raw_path[len("/workspace/"):]
+                    return _sse("file_edit", {
+                        "turn": _turn_counter[session_id],
+                        "command": args_dict.get("command", ""),
+                        "path": raw_path,
+                        "file_text": args_dict.get("file_text"),
+                        "old_str": args_dict.get("old_str"),
+                        "new_str": args_dict.get("new_str"),
+                        "insert_line": args_dict.get("insert_line"),
+                    })
+
                 detail = str(
                     args_dict.get("command", args_dict.get("query", args_dict.get("path", "")))
                 )[:120]
-
-                _turn_counter.setdefault(session_id, 0)
-                _turn_counter[session_id] += 1
 
                 return _sse("tool_call", {
                     "turn": _turn_counter[session_id],
@@ -622,9 +725,38 @@ def _copy_dir_contents(src_dir: str, dst_dir: str) -> None:
             shutil.copy2(src, dst)
 
 
+def _try_get_skill_from_db(skill_id: str) -> dict | None:
+    """Try to fetch skill materialization data from DB. Returns None if DB unavailable."""
+    from routers.skills import _db_available
+    if not _db_available:
+        return None
+    try:
+        import asyncio
+        from db import async_session
+        from services.skill_service import get_skill_for_materialization
+
+        async def _fetch():
+            async with async_session() as session:
+                return await get_skill_for_materialization(session, skill_id)
+
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            # We're in an async context — use to_thread with a new loop
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                return pool.submit(lambda: asyncio.run(_fetch())).result(timeout=5)
+        return asyncio.run(_fetch())
+    except Exception:
+        return None
+
+
 def _validate_skills_for_runtime(skill_ids: list[str]) -> None:
     """Ensure each skill can be materialized under workspace/skills/."""
     for sid in skill_ids:
+        # Check DB first, then in-memory
+        db_skill = _try_get_skill_from_db(sid)
+        if db_skill:
+            continue
         if sid not in _SKILLS:
             raise HTTPException(status_code=400, detail=f"Unknown skill_id: {sid}")
         skill = _SKILLS[sid]
@@ -647,6 +779,23 @@ def _validate_skills_for_runtime(skill_ids: list[str]) -> None:
 
 def _materialize_skill_package(skills_root: str, skill_id: str) -> None:
     """Write one skill package (SKILL.md + auxiliary files) under skills_root/skill_id/."""
+    # Try DB first for marketplace skills
+    db_data = _try_get_skill_from_db(skill_id)
+    if db_data:
+        pkg = os.path.join(skills_root, skill_id)
+        os.makedirs(pkg, exist_ok=True)
+        with open(os.path.join(pkg, "SKILL.md"), "w", encoding="utf-8") as f:
+            f.write(db_data.get("definition", ""))
+        for rel_path, content in db_data.get("files", {}).items():
+            if rel_path == "SKILL.md" or rel_path.endswith("/SKILL.md"):
+                continue
+            dest = os.path.join(pkg, rel_path)
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            with open(dest, "w", encoding="utf-8") as f:
+                f.write(content or "")
+        return
+
+    # Fallback to in-memory
     skill = _SKILLS[skill_id]
     pkg = os.path.join(skills_root, skill_id)
     os.makedirs(pkg, exist_ok=True)
@@ -881,7 +1030,13 @@ async def chat(req: ChatRequest):
             skill_ids=skill_ids,
         )
     else:
-        gen = _stream_conversation(req.question, session_id, agent)
+        gen = _stream_task(
+            req.question,
+            session_id,
+            req.max_trials,
+            req.confidence_threshold,
+            agent,
+        )
 
     return EventSourceResponse(gen)
 
@@ -1060,6 +1215,11 @@ async def create_skill(body: SkillCreate):
         "updated_at": now,
     }
     _SKILLS[skill_id] = skill
+    skill_dir = os.path.join(_SKILLS_DIR, skill_id)
+    os.makedirs(skill_dir, exist_ok=True)
+    frontmatter = f'---\nname: "{body.name}"\ndescription: "{body.description}"\n---\n\n'
+    with open(os.path.join(skill_dir, "SKILL.md"), "w") as f:
+        f.write(frontmatter + body.definition)
     return skill
 
 
@@ -1074,6 +1234,11 @@ async def update_skill(skill_id: str, body: SkillUpdate):
         skill["description"] = body.description
     if body.definition is not None:
         skill["definition"] = body.definition
+        skill_md = os.path.join(_SKILLS_DIR, skill_id, "SKILL.md")
+        if os.path.isfile(skill_md):
+            frontmatter = f'---\nname: "{skill["name"]}"\ndescription: "{skill["description"]}"\n---\n\n'
+            with open(skill_md, "w") as f:
+                f.write(frontmatter + body.definition)
     skill["updated_at"] = _now_iso()
     return skill
 
@@ -1109,6 +1274,9 @@ async def delete_skill(skill_id: str):
     if _SKILLS[skill_id]["type"] == "builtin":
         raise HTTPException(status_code=403, detail="Cannot delete builtin skills")
     del _SKILLS[skill_id]
+    skill_dir = os.path.join(_SKILLS_DIR, skill_id)
+    if os.path.isdir(skill_dir):
+        shutil.rmtree(skill_dir)
     return {"ok": True}
 
 
@@ -1166,6 +1334,76 @@ _SKILLSBENCH_ROOT = Path(__file__).resolve().parent / "skillsbench"
 _SKILLSBENCH_RUNS = _SKILLSBENCH_ROOT / "experiments" / "skill-eval-runs"
 
 
+@app.get("/api/agent-skills")
+async def get_agent_skills():
+    """Return agent→skills mapping from agent_skills.json, with display names resolved."""
+    path = _SKILLSBENCH_ROOT / "agent_skills.json"
+    if not path.is_file():
+        return {}
+    with open(path) as f:
+        data = json.load(f)
+    for agent_data in data.values():
+        agent_data["skill_details"] = [
+            {"id": sid, "name": _SKILLS.get(sid, {}).get("name", sid)}
+            for sid in agent_data.get("skills", [])
+        ]
+    return data
+
+
+@app.post("/api/skill-evals/run", status_code=202)
+async def run_skill_eval(agent_id: str):
+    """For each skill of the agent, run eval only if no existing result exists."""
+    agent_skills_path = _SKILLSBENCH_ROOT / "agent_skills.json"
+    if not agent_skills_path.is_file():
+        raise HTTPException(status_code=404, detail="agent_skills.json not found")
+    with open(agent_skills_path) as f:
+        agent_skills_data = json.load(f)
+    skill_ids = agent_skills_data.get(agent_id, {}).get("skills", [])
+
+    # Collect skill names that already have eval results
+    existing_names: set[str] = set()
+    if _SKILLSBENCH_RUNS.is_dir():
+        for run_dir in _SKILLSBENCH_RUNS.iterdir():
+            summary = run_dir / "evaluation_summary.json"
+            if summary.is_file():
+                with open(summary) as f:
+                    d = json.load(f)
+                name = d.get("inputs", {}).get("selected_skill_name")
+                if name:
+                    existing_names.add(name)
+
+    script = _SKILLSBENCH_ROOT / "experiments" / "skill_evaluation_framework.py"
+    venv_bin = _SKILLSBENCH_ROOT / ".venv" / "bin"
+    py_bin = str(venv_bin / "python") if (venv_bin / "python").exists() else "python3"
+    env = {**os.environ, "PYTHONUNBUFFERED": "1", "PATH": f"{venv_bin}:{os.environ.get('PATH', '')}"}
+
+    ran, skipped = [], []
+    for skill_id in skill_ids:
+        skill_name = _SKILLS.get(skill_id, {}).get("name", skill_id)
+        if skill_name in existing_names:
+            skipped.append(skill_id)
+            continue
+        asyncio.create_task(
+            asyncio.create_subprocess_exec(
+                py_bin, str(script),
+                "--skills-dir", str(_SKILLS_DIR),
+                "--skill", skill_id,
+                "--tasks-dir", str(_SKILLSBENCH_ROOT / "tasks"),
+                "--workspace-dir", str(_SKILLSBENCH_RUNS),
+                "--threshold", "0.357",
+                "--embedding-model", "openai/text-embedding-3-small",
+                "--base-config", str(_SKILLSBENCH_ROOT / "experiments" / "configs" / "sanity-check.yaml"),
+                "--agent-name", "codex",
+                "--model-name", "openai/gpt-5.2-codex",
+                "--run",
+                env=env,
+                cwd=str(_SKILLSBENCH_ROOT),
+            )
+        )
+        ran.append(skill_id)
+    return {"ok": True, "ran": ran, "skipped": skipped}
+
+
 @app.get("/api/skill-evals")
 async def list_skill_evals():
     """Return skill evaluation runs from skillsbench experiments/skill-eval-runs."""
@@ -1212,6 +1450,110 @@ async def list_skill_evals():
             }
         )
     return results
+
+
+# ---------------------------------------------------------------------------
+# Workspace browsing endpoints
+# ---------------------------------------------------------------------------
+
+_TEXT_EXTENSIONS = {
+    ".py", ".js", ".jsx", ".ts", ".tsx", ".json", ".md", ".txt",
+    ".yml", ".yaml", ".toml", ".cfg", ".ini", ".env", ".sh", ".bash",
+    ".css", ".html", ".htm", ".xml", ".sql", ".rs", ".go", ".java",
+    ".c", ".cpp", ".h", ".hpp", ".rb", ".lua", ".r", ".csv", ".log",
+    ".gitignore", ".dockerfile", ".makefile",
+}
+
+
+def _is_text_file(path: str) -> bool:
+    """Heuristic: consider file as text if extension is known or file is small."""
+    ext = os.path.splitext(path)[1].lower()
+    name = os.path.basename(path).lower()
+    if ext in _TEXT_EXTENSIONS or name in {"makefile", "dockerfile", ".gitignore", ".env"}:
+        return True
+    # For unknown extensions, try reading a small chunk
+    if ext == "" or ext not in {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico",
+                                  ".pdf", ".zip", ".tar", ".gz", ".exe", ".bin",
+                                  ".so", ".dll", ".whl", ".pyc", ".class"}:
+        try:
+            with open(path, "rb") as f:
+                chunk = f.read(512)
+            chunk.decode("utf-8")
+            return True
+        except (UnicodeDecodeError, OSError):
+            return False
+    return False
+
+
+def _build_tree(root: str, rel: str = "") -> list[dict]:
+    """Recursively build a JSON-friendly directory tree."""
+    full = os.path.join(root, rel) if rel else root
+    entries: list[dict] = []
+    try:
+        items = sorted(os.listdir(full))
+    except PermissionError:
+        return entries
+
+    for name in items:
+        if name.startswith("."):
+            continue  # skip hidden files/dirs
+        child_full = os.path.join(full, name)
+        child_rel = os.path.join(rel, name) if rel else name
+        if os.path.isdir(child_full):
+            entries.append({
+                "name": name,
+                "path": child_rel,
+                "type": "directory",
+                "children": _build_tree(root, child_rel),
+            })
+        else:
+            try:
+                size = os.path.getsize(child_full)
+            except OSError:
+                size = 0
+            entries.append({
+                "name": name,
+                "path": child_rel,
+                "type": "file",
+                "size": size,
+            })
+    return entries
+
+
+def _safe_resolve(base: str, requested: str) -> str:
+    """Resolve requested path and ensure it stays inside base. Raise 403 on traversal."""
+    base_resolved = os.path.realpath(base)
+    target = os.path.realpath(os.path.join(base_resolved, requested))
+    if not target.startswith(base_resolved):
+        raise HTTPException(status_code=403, detail="Path traversal blocked")
+    return target
+
+
+@app.get("/api/workspace/tree")
+async def workspace_tree(path: str):
+    """Return recursive file/directory tree for a given root path."""
+    if not path or not os.path.isdir(path):
+        raise HTTPException(status_code=400, detail="Invalid directory path")
+    tree = _build_tree(path)
+    return {"root": path, "tree": tree}
+
+
+@app.get("/api/workspace/file")
+async def workspace_file(root: str, path: str):
+    """Return text content of a file inside a workspace root."""
+    if not root or not os.path.isdir(root):
+        raise HTTPException(status_code=400, detail="Invalid root directory")
+    full_path = _safe_resolve(root, path)
+    if not os.path.isfile(full_path):
+        raise HTTPException(status_code=404, detail="File not found")
+    if not _is_text_file(full_path):
+        raise HTTPException(status_code=415, detail="Binary file — cannot display")
+    try:
+        with open(full_path, "r", encoding="utf-8", errors="replace") as f:
+            content = f.read(500_000)  # cap at 500KB
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    return {"path": path, "content": content}
 
 
 @app.get("/api/health")

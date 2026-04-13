@@ -1,5 +1,5 @@
 ---
-name: web-search
+name: "Web Search"
 description: "Search the web for real-time financial data, news articles, and market information using targeted queries."
 ---
 

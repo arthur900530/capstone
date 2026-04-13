@@ -50,7 +50,7 @@ to `openrouter/nvidia/nemotron-3-super-120b-a12b:free`.
 `openrouter/` in the `MODEL` variable. The same rule applies to other
 litellm-supported providers (e.g. `huggingface/`, `together_ai/`).
 
-### 3. Trajectory capture: wrong attribute path
+### 3. Trajectory capture: wrong attribute path, then repr format
 
 **Error:**
 ```
@@ -62,11 +62,21 @@ but in SDK v1.15, the event log lives at `conversation.state.events`.
 `LocalConversation` exposes a `.state` property which holds a
 `ConversationState` object, and the events are on that state.
 
-**Fix:** Changed `str(list(conversation.events))` to
+**Fix (phase 1):** Changed `str(list(conversation.events))` to
 `str(list(conversation.state.events))`.
 
+**Further fix (phase 2):** The resulting `str(list(...))` produced a Python
+repr dump of SDK objects (e.g. `MessageEvent(role='user', content=[...])`)
+that the LLM judge had to parse as Python notation. This was fragile: if the
+SDK renamed a class, the format changed silently. Replaced with
+`_serialize_trajectory(conversation.state.events)`, a purpose-built function
+that emits a labeled human-readable transcript (`[USER]`, `[Turn N] [ACTION]`,
+`[OBSERVATION]`, etc.) using duck-typing attribute checks so it remains SDK-
+version-agnostic.
+
 **Lesson:** The `Conversation` factory returns a `LocalConversation`.
-Always access events via `.state.events`, not directly on the conversation.
+Always access events via `.state.events`. Always pass the result through
+a structured serializer rather than relying on Python repr notation.
 
 ### 4. LLM adapter: wrong method name
 
@@ -118,28 +128,44 @@ within the same conversation.
 
 These are situations the Reflexion modules already handle without crashing.
 
-### 6. LLM returns malformed JSON from the evaluator
+### 6. LLM returns a malformed or missing field in the evaluator response
 
-**What happens:** The LLM judge returns a response that is not valid JSON,
-or wraps it in markdown code fences, or includes extra commentary.
+**Previous behavior (JSON era — now replaced):** The evaluator asked the LLM
+for strict JSON. If any field was missing or the response was wrapped in
+markdown fences, `json.loads()` raised an exception and the entire result
+collapsed to `EvaluationResult(success=False, score=0.0, ...)`. A score of
+`0.0` looked like a total task failure to the loop, causing the pipeline to
+over-trigger reflections and retries even when the agent had done a good job
+and the judge simply produced slightly malformed output.
 
-**How it's handled:** `_parse_llm_verdict()` in `evaluator.py`:
-1. Strips markdown `` ``` `` fences if present.
-2. Attempts `json.loads()`.
-3. On any parse error (`JSONDecodeError`, `KeyError`, `ValueError`,
-   `TypeError`), returns a fallback:
-   ```python
-   EvaluationResult(
-       success=False,
-       score=0.0,
-       failing_step=None,
-       summary=f"Evaluation parse error: {exc}",
-   )
-   ```
+**Current behavior (labeled-line format):** The evaluator now instructs the LLM
+to reply with four labeled plain-text lines. `_parse_llm_verdict()` extracts
+each field with its own regex so a missing or malformed field only affects
+that one field — never the entire result:
 
-**Effect:** The pipeline treats a parse failure as a task failure, which
-triggers a reflection and retry. This is the safe default — it's better
-to retry than to silently declare success.
+| Situation | Effect |
+|---|---|
+| `SCORE:` line missing | `score = 0.5` (neutral — no retry bias) |
+| `SUCCESS:` line missing | `success = False` (conservative — assume failure) |
+| `FAILING_STEP: none` or `N/A` | `failing_step = None` (string normalized to Python None) |
+| `SUMMARY:` line missing | `summary` = placeholder string; logged as WARNING |
+| Entire response is garbled | All four field defaults applied; three WARNINGs emitted |
+| Score outside `[0.0, 1.0]` | Clamped to `0.0` or `1.0`; logged as WARNING |
+| Score has leading minus (e.g. `-0.3`) | Regex doesn't match; treated as missing → `0.5` |
+
+**Why `SCORE` defaults to `0.5` (not `0.0`):** A neutral score doesn't push
+the score gate in either direction. `0.0` caused all judge format errors to
+look like total failures and force retries. `0.5` is below the default `0.75`
+threshold, so the loop still continues on a genuine failure — but it no longer
+incorrectly penalizes the agent for the judge's formatting slip.
+
+**Log signatures to watch:**
+```
+WARNING reflexion_agent.evaluator: [evaluator parse] SCORE field missing or unreadable — defaulting to 0.5 (neutral)
+WARNING reflexion_agent.evaluator: [evaluator parse] SUCCESS field missing or unreadable — defaulting to False
+DEBUG   reflexion_agent.evaluator: [evaluator parse] SUCCESS=True (from response)
+DEBUG   reflexion_agent.evaluator: [evaluator parse] SCORE=0.92 (from response)
+```
 
 ### 7. Corrupt or missing memory file
 
@@ -171,6 +197,112 @@ if past_context:
 **Effect:** The agent receives the raw instruction without any reflection
 prefix, equivalent to a first-ever attempt. No spurious or irrelevant
 reflections are injected.
+
+---
+
+## Over-Triggering Fixes (April 2026)
+
+The following edge cases were identified after observing the Reflexion loop
+retrying tasks that the agent had actually completed well. Seven targeted fixes
+were applied across `evaluator.py`, `agent.py`, and `reflector.py`.
+
+### Score escape hatch (Fix 1 — `agent.py`)
+
+**Problem:** The loop only stopped when `evaluation.success is True`. A high-
+quality partial result (e.g. `success=False, score=0.85`) was retried just as
+aggressively as a genuine failure (`success=False, score=0.1`).
+
+**Fix:** Added a second stop condition in `_run_with_reflexion`. If
+`evaluation.score >= REFLEXION_SCORE_THRESHOLD` (default `0.75`), the loop
+exits even when `success=False`. Log signature:
+```
+[reflexion gate] Stopping — score 0.80 >= threshold 0.75 despite success=False
+```
+Set `REFLEXION_SCORE_THRESHOLD=1.0` to disable the escape hatch and require
+an explicit `success=True` verdict.
+
+### Labeled-line evaluator prompt and per-field parser (Fixes 2 & 4 — `evaluator.py`)
+
+See §6 above for the full parse behavior. The evaluator system prompt was also
+rewritten with five named evaluation dimensions and a scoring guide so the
+judge has calibrated anchors rather than choosing scores by intuition.
+
+### Human-readable trajectory serializer (Fix 3 — `agent.py`)
+
+See §3 above. Replaced `str(list(conversation.state.events))` with
+`_serialize_trajectory()`.
+
+### Fresh agent per attempt (Fix 5 — `agent.py`)
+
+**Problem:** The same `Agent` object was reused across retry attempts. SDK
+internal state (cached completions, mutable agent fields) could leak from one
+attempt into the next, making the second attempt's behavior dependent on the
+first attempt's residual state in unpredictable ways.
+
+**Fix:** `_create_agent(llm, agent_context)` is now called once per attempt
+inside `_run_with_reflexion`. Log signature:
+```
+[reflexion] Created fresh Agent for attempt 2 (task=abc12345)
+```
+
+### Reflector receives critique string only (Fix 6 — `reflector.py`)
+
+**Problem:** `generate_reflection()` previously accepted the full
+`EvaluationResult` object (including numeric score and boolean flag). This
+mixed gating logic and reflection logic: the reflector was making decisions
+based on data it didn't need.
+
+**Fix:** The function signature now accepts `critique: str` — only the
+evaluator's summary sentence. The caller in `agent.py` passes
+`critique=evaluation.summary`. The reflector prompt contains a `CRITIQUE:`
+section with this string; it never sees `score` or `success`.
+
+### Numbered in-session reflections (Fix 7 — `agent.py`)
+
+**Problem:** The previous implementation injected a flat unordered list of
+reflections into the next attempt. There was no indication of trial order or
+how the agent's strategy had evolved.
+
+**Fix:** `_format_numbered_reflections(session_reflections)` produces labeled
+trial blocks (`--- Trial 1 ---`, `--- Trial 2 ---`, ...) prepended to the next
+attempt's prompt. Each label gives the agent a clear sense of progression and
+helps it avoid simply repeating the same reflection.
+
+---
+
+## Test Suite
+
+All seven fixes above are covered by an automated test suite at:
+
+```
+reflexion_agent/tests/test_reflexion_fixes.py
+```
+
+Run it with:
+
+```bash
+cd capstone_frontend/backend
+PYTHONPATH=. pytest reflexion_agent/tests/test_reflexion_fixes.py -v
+```
+
+For full log output showing data flow through each component:
+
+```bash
+PYTHONPATH=. pytest reflexion_agent/tests/test_reflexion_fixes.py -v -s --log-cli-level=INFO
+```
+
+**Test coverage by layer:**
+
+| Layer | Scope | Tests |
+|---|---|---|
+| Layer 1 | Unit tests for pure functions (no LLM, no network) | 29 tests across 5 function groups |
+| Layer 2 | Integration tests with mock LLM callables | 5 tests exercising the full evaluation-reflect-format pipeline |
+| Layer 3 | Live end-to-end runs logged to `reflexion_agent/tests/layer3_*.log` | 2 runs: simple (`hello.py`) and complex (Porsche financial analysis) |
+
+Layer 3 artifacts:
+- `layer3_hello_world_run.log` — 19-second simple task; score=1.00 on attempt 1
+- `layer3_porsche_analysis_run.log` — 159-second research task; score=0.75 on attempt 1
+- `layer3_porsche_analysis_output.md` — 209-line analysis report produced by the agent
 
 ---
 
