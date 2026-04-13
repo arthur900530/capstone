@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect } from "react";
 import { Bot, BarChart3, Database } from "lucide-react";
 import ChatMessage from "../ChatMessage";
 import InputBox from "../InputBox";
@@ -9,6 +9,7 @@ import {
   fetchChatById,
 } from "../../services/api";
 import { addChatSession, markActive } from "../../services/employeeStore";
+import { restoreMessage } from "../../services/messageUtils";
 
 function AgentBanner({ agent, files = [], onRemoveFile }) {
   const [showData, setShowData] = useState(false);
@@ -42,30 +43,6 @@ function AgentBanner({ agent, files = [], onRemoveFile }) {
       {showData && <UploadedDataPanel files={files} onRemoveFile={onRemoveFile} />}
     </div>
   );
-}
-
-function restoreMessage(m) {
-  const type = m.type || (m.role === "user" ? "user" : "chat_response");
-  const base = { role: m.role || "assistant", type, animate: false };
-  switch (type) {
-    case "user":
-      return { ...base, role: "user", content: m.content };
-    case "tool_call":
-      return { ...base, turn: m.turn, tool: m.tool, detail: m.detail };
-    case "tool_result":
-    case "reasoning":
-    case "reflection":
-    case "chat_response":
-      return { ...base, content: m.text ?? m.content };
-    case "self_eval":
-      return { ...base, content: m.critique ?? m.content, confidenceScore: m.confidence_score, isConfident: m.is_confident };
-    case "answer":
-      return { ...base, content: m.text ?? m.content };
-    case "status":
-      return { ...base, content: m.message ?? m.content, done: true };
-    default:
-      return { ...base, content: m.content ?? m.text ?? "" };
-  }
 }
 
 export default function EmployeeChat({ employee }) {

@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
-import { Routes, Route, useNavigate } from "react-router-dom";
+import { Routes, Route, Navigate, useNavigate } from "react-router-dom";
 import { Menu, BarChart3, Bot, Database } from "lucide-react";
 import Sidebar from "./components/Sidebar";
 import WelcomeHeader from "./components/WelcomeHeader";
@@ -11,8 +11,9 @@ import PluginsPage from "./pages/PluginsPage";
 import EvaluationLabPage from "./pages/EvaluationLabPage";
 import CreationWizard from "./pages/CreationWizard";
 import EmployeePage from "./pages/EmployeePage";
-import { AppProvider } from "./context/AppContext";
+import { AppProvider, useApp } from "./context/AppContext";
 import { getEmployees } from "./services/employeeStore";
+import { restoreMessage } from "./services/messageUtils";
 import {
   streamChat,
   uploadFiles,
@@ -83,38 +84,6 @@ function AgentDivider({ agent, sentinelRef }) {
       <div className="h-px flex-1 bg-border/40" />
     </div>
   );
-}
-
-function restoreMessage(m) {
-  const type = m.type || (m.role === "user" ? "user" : "chat_response");
-  const base = { role: m.role || "assistant", type, animate: false };
-
-  switch (type) {
-    case "user":
-      return { ...base, role: "user", content: m.content };
-    case "trial_start":
-      return { ...base, trial: m.trial, maxTrials: m.max_trials };
-    case "tool_call":
-      return { ...base, turn: m.turn, tool: m.tool, detail: m.detail };
-    case "tool_result":
-    case "reasoning":
-    case "reflection":
-    case "chat_response":
-      return { ...base, content: m.text ?? m.content };
-    case "self_eval":
-      return {
-        ...base,
-        content: m.critique ?? m.content,
-        confidenceScore: m.confidence_score,
-        isConfident: m.is_confident,
-      };
-    case "answer":
-      return { ...base, content: m.text ?? m.content };
-    case "status":
-      return { ...base, content: m.message ?? m.content, done: true };
-    default:
-      return { ...base, content: m.content ?? m.text ?? "" };
-  }
 }
 
 /* ── Chat View (used at the / route when no employee context) ──────────── */
@@ -233,9 +202,6 @@ function ChatView() {
     </>
   );
 }
-
-/* ── Imports for context hook ──────────────────────────────────────────── */
-import { useApp } from "./context/AppContext";
 
 /* ── App (layout shell) ───────────────────────────────────────────────── */
 export default function App() {
@@ -646,6 +612,7 @@ export default function App() {
             <Route path="/chat" element={<ChatView />} />
             <Route path="/plugins" element={<PluginsPage />} />
             <Route path="/evaluation" element={<EvaluationLabPage />} />
+            <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </main>
       </div>
