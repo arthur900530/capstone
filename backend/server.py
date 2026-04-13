@@ -71,12 +71,14 @@ from db.seed import seed_from_filesystem
 from routers.skills import router as skills_router
 from routers.marketplace import router as marketplace_router
 from routers.submissions import router as submissions_router
+from routers.employees import router as employees_router
 
 
 @asynccontextmanager
 async def lifespan(application):
     """Start DB engine and seed skills on first boot. Falls back to in-memory if no DB."""
     from routers.skills import set_db_available
+    from routers.employees import set_db_available as set_emp_db
     try:
         # Run Alembic migrations programmatically
         from alembic.config import Config
@@ -86,6 +88,7 @@ async def lifespan(application):
         # Seed filesystem skills into DB if needed
         await seed_from_filesystem()
         set_db_available(True)
+        set_emp_db(True)
         logger.info("Database initialized and seeded.")
     except Exception as exc:
         set_db_available(False)
@@ -110,6 +113,7 @@ app.add_middleware(
 app.include_router(skills_router)
 app.include_router(marketplace_router)
 app.include_router(submissions_router)
+app.include_router(employees_router)
 
 
 # ---------------------------------------------------------------------------
