@@ -3,12 +3,14 @@ import { Loader2, AlertCircle, Save, X, Code, Pencil, Paperclip, Trash2, Upload,
 import { updateSkill, deleteSkill, addSkillFiles, removeSkillFile } from "../../services/api";
 import { fileIcon } from "./utils";
 import FileViewer from "./FileViewer";
+import ConfirmDialog from "./ConfirmDialog";
 
 export default function SkillEditor({ skill, onSaved, onDeleted, viewingFile, onViewFile, onSubmit }) {
   const [name, setName] = useState(skill.name);
   const [description, setDescription] = useState(skill.description);
   const [definition, setDefinition] = useState(skill.definition);
   const [saving, setSaving] = useState(false);
+  const [showSaveConfirm, setShowSaveConfirm] = useState(false);
   const [error, setError] = useState(null);
   const [dirty, setDirty] = useState(false);
   const fileInputRef = useRef(null);
@@ -28,11 +30,15 @@ export default function SkillEditor({ skill, onSaved, onDeleted, viewingFile, on
     setDirty(true);
   };
 
-  const handleSave = async () => {
+  const handleSave = () => {
     if (!name.trim()) {
       setError("Name is required");
       return;
     }
+    setShowSaveConfirm(true);
+  };
+
+  const handleConfirmSave = async () => {
     setSaving(true);
     setError(null);
     try {
@@ -42,6 +48,7 @@ export default function SkillEditor({ skill, onSaved, onDeleted, viewingFile, on
         definition: definition.trim(),
       });
       setDirty(false);
+      setShowSaveConfirm(false);
       onSaved(updated);
     } catch (err) {
       setError(err.message);
@@ -261,6 +268,16 @@ export default function SkillEditor({ skill, onSaved, onDeleted, viewingFile, on
           </div>
         </div>
       </div>
+
+      <ConfirmDialog
+        open={showSaveConfirm}
+        title="Save changes?"
+        message="This will update the skill with your edits."
+        confirmLabel="Save"
+        onConfirm={handleConfirmSave}
+        onCancel={() => setShowSaveConfirm(false)}
+        loading={saving}
+      />
     </div>
   );
 }
