@@ -8,6 +8,7 @@ import ReactMarkdown from "react-markdown";
 import { updateSkill, createSubmission } from "../../services/api";
 import { fileIcon } from "./utils";
 import FileViewer from "./FileViewer";
+import ConfirmDialog from "./ConfirmDialog";
 
 /* ── Shared markdown component map ──────────────────────────────────────── */
 
@@ -96,6 +97,7 @@ export default function SkillDetailPanel({ skill, onClose, onInstall, onUninstal
   const [editDesc, setEditDesc] = useState(skill.description);
   const [editDef, setEditDef] = useState(skill.definition);
   const [saving, setSaving] = useState(false);
+  const [showSaveConfirm, setShowSaveConfirm] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [submitDone, setSubmitDone] = useState(false);
 
@@ -131,7 +133,9 @@ export default function SkillDetailPanel({ skill, onClose, onInstall, onUninstal
     try { await onUninstall?.(skill.id); } finally { setInstalling(false); }
   };
 
-  const handleSave = async () => {
+  const handleSave = () => setShowSaveConfirm(true);
+
+  const handleConfirmSave = async () => {
     setSaving(true);
     try {
       const updated = await updateSkill(skill.id, {
@@ -140,6 +144,7 @@ export default function SkillDetailPanel({ skill, onClose, onInstall, onUninstal
         definition: editDef.trim(),
       });
       setEditing(false);
+      setShowSaveConfirm(false);
       onSaved?.(updated);
     } finally {
       setSaving(false);
@@ -442,6 +447,16 @@ export default function SkillDetailPanel({ skill, onClose, onInstall, onUninstal
           onClose={() => setShowModal(false)}
         />
       )}
+
+      <ConfirmDialog
+        open={showSaveConfirm}
+        title="Save changes?"
+        message="This will update the skill with your edits."
+        confirmLabel="Save"
+        onConfirm={handleConfirmSave}
+        onCancel={() => setShowSaveConfirm(false)}
+        loading={saving}
+      />
     </div>
   );
 }
