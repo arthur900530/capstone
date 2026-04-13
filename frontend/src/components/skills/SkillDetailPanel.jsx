@@ -9,6 +9,8 @@ import { updateSkill, createSubmission } from "../../services/api";
 import { fileIcon } from "./utils";
 import FileViewer from "./FileViewer";
 import ConfirmDialog from "./ConfirmDialog";
+import VersionTabs from "./VersionTabs";
+import useVersionHistory from "../../hooks/useVersionHistory";
 
 /* ── Shared markdown component map ──────────────────────────────────────── */
 
@@ -101,6 +103,13 @@ export default function SkillDetailPanel({ skill, onClose, onInstall, onUninstal
   const [submitting, setSubmitting] = useState(false);
   const [submitDone, setSubmitDone] = useState(false);
 
+  const {
+    versions, activeVersion, setActiveVersion, addVersion, getVersion, latestVersion,
+  } = useVersionHistory(skill.id, skill);
+
+  const viewingOldVersion = activeVersion !== latestVersion;
+  const versionData = viewingOldVersion ? getVersion(activeVersion) : null;
+
   const files = skill.files ?? [];
   const isCloudOnly = skill.is_cloud_only;
   const isBuiltin = skill.is_builtin || skill.type === "builtin";
@@ -139,6 +148,11 @@ export default function SkillDetailPanel({ skill, onClose, onInstall, onUninstal
     setSaving(true);
     try {
       const updated = await updateSkill(skill.id, {
+        name: editName.trim(),
+        description: editDesc.trim(),
+        definition: editDef.trim(),
+      });
+      addVersion({
         name: editName.trim(),
         description: editDesc.trim(),
         definition: editDef.trim(),
@@ -194,7 +208,7 @@ export default function SkillDetailPanel({ skill, onClose, onInstall, onUninstal
         </h3>
         <div className="flex items-center gap-1.5">
           {/* Edit toggle */}
-          {!isBuiltin && !editing && (
+          {!isBuiltin && !editing && !viewingOldVersion && (
             <button
               onClick={() => setEditing(true)}
               className="flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-medium text-text-muted transition-colors hover:bg-surface hover:text-text-secondary"
@@ -247,9 +261,30 @@ export default function SkillDetailPanel({ skill, onClose, onInstall, onUninstal
         </div>
       </div>
 
+      <VersionTabs
+        versions={versions}
+        activeVersion={activeVersion}
+        onSelect={setActiveVersion}
+      />
+
       {/* Content */}
       <div className="flex-1 overflow-y-auto p-5">
         <div className="space-y-5">
+          {/* Old version banner */}
+          {viewingOldVersion && versionData && (
+            <div className="flex items-center justify-between rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2">
+              <span className="text-xs text-amber-400">
+                Viewing v{activeVersion} (read-only) — saved {new Date(versionData.savedAt).toLocaleDateString()}
+              </span>
+              <button
+                onClick={() => setActiveVersion(latestVersion)}
+                className="text-[11px] font-medium text-accent-teal hover:underline"
+              >
+                Go to latest
+              </button>
+            </div>
+          )}
+
           {/* Badges */}
           <div className="flex flex-wrap items-center gap-2">
             <span className={`rounded-full px-2.5 py-0.5 text-[11px] font-medium ${
@@ -315,8 +350,10 @@ export default function SkillDetailPanel({ skill, onClose, onInstall, onUninstal
           ) : (
             <>
               {/* Description */}
-              {skill.description && (
-                <p className="text-sm leading-relaxed text-text-secondary">{skill.description}</p>
+              {(viewingOldVersion ? versionData?.description : skill.description) && (
+                <p className="text-sm leading-relaxed text-text-secondary">
+                  {viewingOldVersion ? versionData.description : skill.description}
+                </p>
               )}
 
               {/* Actions */}
@@ -388,7 +425,7 @@ export default function SkillDetailPanel({ skill, onClose, onInstall, onUninstal
               )}
 
               {/* Rendered SKILL.md */}
-              {skill.definition && (
+              {(viewingOldVersion ? versionData?.definition : skill.definition) && (
                 <div className="group relative rounded-xl border border-border/20 bg-gradient-to-b from-surface/40 to-transparent p-[1px]">
                   <div className="rounded-[11px] bg-workspace px-5 py-4">
                     <div className="mb-3 flex items-center justify-between">
@@ -410,7 +447,9 @@ export default function SkillDetailPanel({ skill, onClose, onInstall, onUninstal
                         </button>
                       </div>
                     </div>
-                    <ReactMarkdown components={mdComponents}>{skill.definition}</ReactMarkdown>
+                    <ReactMarkdown components={mdComponents}>
+                      {viewingOldVersion ? versionData.definition : skill.definition}
+                    </ReactMarkdown>
                   </div>
                 </div>
               )}
@@ -423,10 +462,10 @@ export default function SkillDetailPanel({ skill, onClose, onInstall, onUninstal
               <span className="font-medium text-text-secondary">ID:</span>{" "}
               <code className="rounded bg-surface px-1.5 py-0.5 text-accent-teal">{skill.id}</code>
             </span>
-            {skill.version && (
+            {latestVersion > 0 && (
               <>
                 <span>&middot;</span>
-                <span>v{skill.version}</span>
+                <span>v{activeVersion} of {latestVersion}</span>
               </>
             )}
             {skill.created_at && (
@@ -450,8 +489,8 @@ export default function SkillDetailPanel({ skill, onClose, onInstall, onUninstal
 
       <ConfirmDialog
         open={showSaveConfirm}
-        title="Save changes?"
-        message="This will update the skill with your edits."
+        title={`Save as v${latestVersion + 1}?`}
+        message="This creates a new version of the skill. Previous versions remain viewable."
         confirmLabel="Save"
         onConfirm={handleConfirmSave}
         onCancel={() => setShowSaveConfirm(false)}
