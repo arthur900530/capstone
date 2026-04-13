@@ -4,8 +4,9 @@ import PLUGINS from "../../data/plugins";
 
 export default function EmployeeCard({ employee }) {
   const navigate = useNavigate();
-  const plugin = PLUGINS.find((p) => p.id === employee.pluginId);
-  const IconComp = Icons[plugin?.icon] || Icons.Bot;
+  const pluginIds = employee.pluginIds || (employee.pluginId ? [employee.pluginId] : []);
+  const plugins = PLUGINS.filter((p) => pluginIds.includes(p.id));
+  const IconComp = Icons[plugins[0]?.icon] || Icons.Bot;
   const isActive = employee.status === "active";
 
   return (
@@ -21,7 +22,7 @@ export default function EmployeeCard({ employee }) {
           <div>
             <h3 className="font-semibold text-text-primary">{employee.name}</h3>
             <p className="text-xs text-text-muted">
-              {plugin?.name || "Custom Role"}
+              {plugins.map((p) => p.name).join(", ") || "Custom Role"}
             </p>
           </div>
         </div>

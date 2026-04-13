@@ -30,8 +30,9 @@ export default function EmployeePage() {
     );
   }
 
-  const plugin = PLUGINS.find((p) => p.id === employee.pluginId);
-  const RoleIcon = Icons[plugin?.icon] || Icons.Bot;
+  const pluginIds = employee.pluginIds || (employee.pluginId ? [employee.pluginId] : []);
+  const plugins = PLUGINS.filter((p) => pluginIds.includes(p.id));
+  const RoleIcon = Icons[plugins[0]?.icon] || Icons.Bot;
   const isActive = employee.status === "active";
 
   const handleDelete = () => {
@@ -69,7 +70,7 @@ export default function EmployeePage() {
                 />
               </div>
               <p className="text-xs text-text-muted">
-                {plugin?.name || "Custom Role"}
+                {plugins.map((p) => p.name).join(", ") || "Custom Role"}
               </p>
             </div>
           </div>

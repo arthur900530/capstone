@@ -81,7 +81,8 @@ function ChatHistoryItem({ chat, agentName, isActive, onSelect, onDelete, onRena
 }
 
 function EmployeeListItem({ employee, isActive, onNavigate }) {
-  const plugin = PLUGINS.find((p) => p.id === employee.pluginId);
+  const pluginIds = employee.pluginIds || (employee.pluginId ? [employee.pluginId] : []);
+  const plugin = PLUGINS.find((p) => pluginIds.includes(p.id));
   const IconComp = Icons[plugin?.icon] || Icons.Bot;
   const isUp = employee.status === "active";
 
