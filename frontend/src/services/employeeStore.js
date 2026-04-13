@@ -17,12 +17,27 @@ function writeAll(employees) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(employees));
 }
 
+const ACTIVE_THRESHOLD_MS = 10 * 60 * 1000; // 10 minutes
+
+function deriveStatus(emp) {
+  if (emp.lastActiveAt) {
+    const elapsed = Date.now() - new Date(emp.lastActiveAt).getTime();
+    return elapsed < ACTIVE_THRESHOLD_MS ? "active" : "idle";
+  }
+  return "idle";
+}
+
 export function getEmployees() {
-  return readAll();
+  return readAll().map((e) => ({ ...e, status: deriveStatus(e) }));
 }
 
 export function getEmployeeById(id) {
-  return readAll().find((e) => e.id === id) || null;
+  const emp = readAll().find((e) => e.id === id);
+  return emp ? { ...emp, status: deriveStatus(emp) } : null;
+}
+
+export function markActive(id) {
+  updateEmployee(id, { lastActiveAt: new Date().toISOString() });
 }
 
 export function createEmployee({

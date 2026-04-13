@@ -8,7 +8,7 @@ import {
   uploadFiles,
   fetchChatById,
 } from "../../services/api";
-import { addChatSession } from "../../services/employeeStore";
+import { addChatSession, markActive } from "../../services/employeeStore";
 
 function AgentBanner({ agent, files = [], onRemoveFile }) {
   const [showData, setShowData] = useState(false);
@@ -118,6 +118,7 @@ export default function EmployeeChat({ employee }) {
       { role: "user", type: "user", content: question },
     ]);
     setIsStreaming(true);
+    markActive(employee.id);
 
     try {
       if (submittedFiles.length > 0) {
