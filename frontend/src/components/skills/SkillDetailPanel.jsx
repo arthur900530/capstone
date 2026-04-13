@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import {
-  X, Download, Trash2, Cloud, CheckCircle, Paperclip,
+  X, Download, Trash2, Cloud, CheckCircle, Paperclip, AlertCircle,
   ChevronDown, ChevronRight, ExternalLink, Copy, Check, Maximize2,
   Loader2, Pencil, Save, Undo2, Send,
 } from "lucide-react";
@@ -99,6 +99,7 @@ export default function SkillDetailPanel({ skill, onClose, onInstall, onUninstal
   const [editDesc, setEditDesc] = useState(skill.description);
   const [editDef, setEditDef] = useState(skill.definition);
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState(null);
   const [showSaveConfirm, setShowSaveConfirm] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [submitDone, setSubmitDone] = useState(false);
@@ -146,6 +147,7 @@ export default function SkillDetailPanel({ skill, onClose, onInstall, onUninstal
 
   const handleConfirmSave = async () => {
     setSaving(true);
+    setSaveError(null);
     try {
       const updated = await updateSkill(skill.id, {
         name: editName.trim(),
@@ -160,6 +162,9 @@ export default function SkillDetailPanel({ skill, onClose, onInstall, onUninstal
       setEditing(false);
       setShowSaveConfirm(false);
       onSaved?.(updated);
+    } catch (err) {
+      setSaveError(err.message);
+      setShowSaveConfirm(false);
     } finally {
       setSaving(false);
     }
@@ -295,6 +300,13 @@ export default function SkillDetailPanel({ skill, onClose, onInstall, onUninstal
               >
                 Go to latest
               </button>
+            </div>
+          )}
+
+          {saveError && (
+            <div className="flex items-center gap-2 rounded-lg bg-red-500/10 px-3 py-2 text-xs text-red-400">
+              <AlertCircle size={13} />
+              {saveError}
             </div>
           )}
 
