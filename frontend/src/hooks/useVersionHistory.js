@@ -71,22 +71,25 @@ export default function useVersionHistory(skillId, currentSkillData) {
   }, [skillId, versions]);
 
   const addVersion = useCallback((data) => {
-    const nextNum = versions.length > 0
-      ? versions[versions.length - 1].version + 1
-      : 1;
-    const entry = {
-      version: nextNum,
-      name: data.name,
-      description: data.description,
-      definition: data.definition,
-      savedAt: new Date().toISOString(),
-      submitted: false,
-    };
-    const updated = [...versions, entry].slice(-MAX_VERSIONS);
-    setVersions(updated);
+    let nextNum;
+    setVersions((prev) => {
+      nextNum = prev.length > 0
+        ? prev[prev.length - 1].version + 1
+        : 1;
+      const entry = {
+        version: nextNum,
+        name: data.name,
+        description: data.description,
+        definition: data.definition,
+        savedAt: new Date().toISOString(),
+        submitted: false,
+      };
+      return [...prev, entry].slice(-MAX_VERSIONS);
+    });
+    // setActiveVersion runs after the state update is queued
     setActiveVersion(nextNum);
     return nextNum;
-  }, [versions]);
+  }, []);
 
   const markSubmitted = useCallback((versionNum) => {
     setVersions((prev) =>
