@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { Loader2 } from "lucide-react";
 
 export default function ConfirmDialog({
@@ -10,6 +11,13 @@ export default function ConfirmDialog({
   onCancel,
   loading = false,
 }) {
+  useEffect(() => {
+    if (!open) return;
+    const handleKey = (e) => { if (e.key === "Escape" && !loading) onCancel?.(); };
+    document.addEventListener("keydown", handleKey);
+    return () => document.removeEventListener("keydown", handleKey);
+  }, [open, loading, onCancel]);
+
   if (!open) return null;
 
   const colorMap = {
@@ -18,7 +26,7 @@ export default function ConfirmDialog({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
+    <div className="fixed inset-0 z-50 flex items-center justify-center" role="dialog" aria-modal="true">
       <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onCancel} />
       <div className="relative z-10 w-full max-w-sm animate-scale-in rounded-xl border border-border/50 bg-workspace shadow-2xl">
         <div className="px-5 pt-5 pb-2">
