@@ -104,7 +104,7 @@ export default function SkillDetailPanel({ skill, onClose, onInstall, onUninstal
   const [submitDone, setSubmitDone] = useState(false);
 
   const {
-    versions, activeVersion, setActiveVersion, addVersion, getVersion, latestVersion,
+    versions, activeVersion, setActiveVersion, addVersion, markSubmitted, getVersion, latestVersion,
   } = useVersionHistory(skill.id, skill);
 
   const viewingOldVersion = activeVersion !== latestVersion;
@@ -172,15 +172,19 @@ export default function SkillDetailPanel({ skill, onClose, onInstall, onUninstal
     setEditing(false);
   };
 
+  const latestVersionData = getVersion(latestVersion);
+  const latestSubmitted = latestVersionData?.submitted ?? false;
+
   const handleSubmit = async () => {
     setSubmitting(true);
     try {
       await createSubmission({
-        name: editing ? editName : skill.name,
-        description: editing ? editDesc : skill.description,
-        skill_md: editing ? editDef : skill.definition,
+        name: skill.name,
+        description: skill.description,
+        skill_md: skill.definition,
         submission_type: "authored",
       });
+      markSubmitted(latestVersion);
       setSubmitDone(true);
       setTimeout(() => setSubmitDone(false), 3000);
     } finally {
@@ -237,19 +241,19 @@ export default function SkillDetailPanel({ skill, onClose, onInstall, onUninstal
               </button>
             </>
           )}
-          {/* Submit */}
-          {!isBuiltin && (
+          {/* Submit — shown when latest version is unsubmitted and not editing */}
+          {!isBuiltin && !editing && !viewingOldVersion && (
             <button
               onClick={handleSubmit}
-              disabled={submitting}
+              disabled={submitting || latestSubmitted}
               className={`flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-medium transition-colors ${
-                submitDone
+                submitDone || latestSubmitted
                   ? "bg-green-500/10 text-green-400"
-                  : "bg-purple-500/10 text-purple-400 hover:bg-purple-500/20"
+                  : "bg-accent-teal px-3 text-charcoal hover:bg-accent-light"
               } disabled:opacity-50`}
             >
-              {submitDone ? <Check size={12} /> : submitting ? <Loader2 size={12} className="animate-spin" /> : <Send size={12} />}
-              {submitDone ? "Submitted" : "Submit"}
+              {submitDone || latestSubmitted ? <Check size={12} /> : submitting ? <Loader2 size={12} className="animate-spin" /> : <Send size={12} />}
+              {submitDone || latestSubmitted ? `v${latestVersion} Submitted` : `Submit v${latestVersion}`}
             </button>
           )}
           <button

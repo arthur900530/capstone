@@ -28,7 +28,7 @@ export default function SkillsView({ onSkillsChanged }) {
   const [search, setSearch] = useState("");
   const [showCreate, setShowCreate] = useState(false);
   const [showTrain, setShowTrain] = useState(false);
-  const [showSubmit, setShowSubmit] = useState(false);
+  const [showSubmit, setShowSubmit] = useState(null); // null or { version }
   const [subTab, setSubTab] = useState("browse");
   const [viewMode, setViewMode] = useState("grid");
   const [typeFilter, setTypeFilter] = useState("all");
@@ -330,7 +330,7 @@ export default function SkillsView({ onSkillsChanged }) {
                       onDeleted={handleDeleted}
                       viewingFile={viewingFile}
                       onViewFile={setViewingFile}
-                      onSubmit={() => setShowSubmit(true)}
+                      onSubmit={() => setShowSubmit({})}
                     />
                   ) : (
                     <SkillDetailPanel
@@ -405,9 +405,10 @@ export default function SkillsView({ onSkillsChanged }) {
         onTrained={handleTrained}
       />
       <SubmitSkillModal
-        open={showSubmit}
-        onClose={() => setShowSubmit(false)}
+        open={!!showSubmit}
+        onClose={() => setShowSubmit(null)}
         skill={selectedSkill}
+        version={showSubmit?.version}
         onSubmitted={() => {}}
       />
     </>

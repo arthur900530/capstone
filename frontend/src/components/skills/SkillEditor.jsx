@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { Loader2, AlertCircle, Save, X, Code, Pencil, Paperclip, Trash2, Upload, Send } from "lucide-react";
+import { Loader2, AlertCircle, Save, X, Code, Pencil, Paperclip, Trash2, Upload, Send, Check } from "lucide-react";
 import { updateSkill, deleteSkill, addSkillFiles, removeSkillFile } from "../../services/api";
 import { fileIcon } from "./utils";
 import FileViewer from "./FileViewer";
@@ -18,7 +18,7 @@ export default function SkillEditor({ skill, onSaved, onDeleted, viewingFile, on
   const fileInputRef = useRef(null);
 
   const {
-    versions, activeVersion, setActiveVersion, addVersion, getVersion, latestVersion,
+    versions, activeVersion, setActiveVersion, addVersion, markSubmitted, getVersion, latestVersion,
   } = useVersionHistory(skill.id, skill);
 
   const viewingOldVersion = activeVersion !== latestVersion;
@@ -134,15 +134,27 @@ export default function SkillEditor({ skill, onSaved, onDeleted, viewingFile, on
               Save
             </button>
           )}
-          {onSubmit && skill.type !== "builtin" && (
-            <button
-              onClick={() => onSubmit(skill)}
-              className="flex items-center gap-1 rounded-lg bg-purple-500/10 px-2.5 py-1.5 text-xs font-medium text-purple-400 transition-colors hover:bg-purple-500/20"
-            >
-              <Send size={12} />
-              Submit
-            </button>
-          )}
+          {onSubmit && skill.type !== "builtin" && !dirty && !viewingOldVersion && (() => {
+            const latestData = getVersion(latestVersion);
+            const submitted = latestData?.submitted ?? false;
+            return (
+              <button
+                onClick={() => {
+                  onSubmit(skill);
+                  markSubmitted(latestVersion);
+                }}
+                disabled={submitted}
+                className={`flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-medium transition-colors ${
+                  submitted
+                    ? "bg-green-500/10 text-green-400"
+                    : "bg-accent-teal px-3 text-charcoal hover:bg-accent-light"
+                } disabled:opacity-50`}
+              >
+                {submitted ? <Check size={12} /> : <Send size={12} />}
+                {submitted ? `v${latestVersion} Submitted` : `Submit v${latestVersion}`}
+              </button>
+            );
+          })()}
           {!isBuiltin && (
             <button
               onClick={handleDelete}
