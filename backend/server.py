@@ -92,6 +92,7 @@ async def lifespan(application):
         logger.info("Database initialized and seeded.")
     except Exception as exc:
         set_db_available(False)
+        set_emp_db(False)
         logger.warning("DB init skipped — falling back to in-memory skills: %s", exc)
     yield
     try:

@@ -45,6 +45,23 @@ class EmployeeUpdate(BaseModel):
     lastActiveAt: str | None = None
 
 
+def _parse_uuid(employee_id: str) -> uuid.UUID:
+    try:
+        return _parse_uuid(employee_id)
+    except ValueError:
+        raise HTTPException(400, "Invalid employee ID format")
+
+
+_ACTIVE_THRESHOLD_SECS = 600  # 10 minutes
+
+
+def _derive_status(last_active_at) -> str:
+    if last_active_at:
+        elapsed = (datetime.now(timezone.utc) - last_active_at).total_seconds()
+        return "active" if elapsed < _ACTIVE_THRESHOLD_SECS else "idle"
+    return "idle"
+
+
 def _row_to_dict(row) -> dict:
     return {
         "id": str(row.id),
@@ -56,6 +73,7 @@ def _row_to_dict(row) -> dict:
         "useReflexion": row.use_reflexion,
         "maxTrials": row.max_trials,
         "confidenceThreshold": row.confidence_threshold,
+        "status": _derive_status(row.last_active_at),
         "chatSessionIds": row.chat_session_ids or [],
         "files": row.files or [],
         "lastActiveAt": row.last_active_at.isoformat() if row.last_active_at else None,
@@ -88,7 +106,7 @@ async def get_employee(employee_id: str):
 
         async with async_session() as session:
             row = (await session.execute(
-                select(Employee).where(Employee.id == uuid.UUID(employee_id))
+                select(Employee).where(Employee.id == _parse_uuid(employee_id))
             )).scalar_one_or_none()
             if not row:
                 raise HTTPException(404, "Employee not found")
@@ -135,6 +153,7 @@ async def create_employee(body: EmployeeCreate):
         "confidenceThreshold": body.confidenceThreshold,
         "chatSessionIds": [],
         "files": body.files,
+        "status": "idle",
         "lastActiveAt": None,
         "createdAt": datetime.now(timezone.utc).isoformat(),
     }
@@ -151,7 +170,7 @@ async def update_employee(employee_id: str, body: EmployeeUpdate):
 
         async with async_session() as session:
             row = (await session.execute(
-                select(Employee).where(Employee.id == uuid.UUID(employee_id))
+                select(Employee).where(Employee.id == _parse_uuid(employee_id))
             )).scalar_one_or_none()
             if not row:
                 raise HTTPException(404, "Employee not found")
@@ -200,7 +219,7 @@ async def delete_employee(employee_id: str):
 
         async with async_session() as session:
             row = (await session.execute(
-                select(Employee).where(Employee.id == uuid.UUID(employee_id))
+                select(Employee).where(Employee.id == _parse_uuid(employee_id))
             )).scalar_one_or_none()
             if not row:
                 raise HTTPException(404, "Employee not found")
