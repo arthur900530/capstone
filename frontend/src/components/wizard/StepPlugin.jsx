@@ -1,7 +1,8 @@
 import { useState } from "react";
-import { ChevronDown, Plus, X } from "lucide-react";
+import { ChevronDown, Plus, X, List, Share2 } from "lucide-react";
 import PLUGINS from "../../data/plugins";
 import PluginCard from "../PluginCard";
+import SkillGraph from "./SkillGraph";
 
 const MODEL_OPTIONS = [
   { value: "openai/gpt-5.1", label: "GPT-5.1" },
@@ -23,6 +24,7 @@ export default function StepPlugin({
 }) {
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [showSkillEditor, setShowSkillEditor] = useState(false);
+  const [skillViewMode, setSkillViewMode] = useState("list"); // "list" | "graph"
   const [newSkillInput, setNewSkillInput] = useState("");
   const selectedPlugin = PLUGINS.find((p) => p.id === selectedPluginId);
 
@@ -82,14 +84,43 @@ export default function StepPlugin({
       {/* Skill editor */}
       {selectedPlugin && (
         <div className="mt-6">
-          <button
-            onClick={() => setShowSkillEditor((v) => !v)}
-            className="text-sm font-medium text-accent-teal hover:underline"
-          >
-            {showSkillEditor ? "Hide" : "Edit"} skills
-          </button>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => setShowSkillEditor((v) => !v)}
+              className="text-sm font-medium text-accent-teal hover:underline"
+            >
+              {showSkillEditor ? "Hide" : "Edit"} skills
+            </button>
 
-          {showSkillEditor && (
+            {showSkillEditor && (
+              <div className="flex rounded-lg border border-border/40 bg-workspace p-0.5">
+                <button
+                  onClick={() => setSkillViewMode("list")}
+                  className={`flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
+                    skillViewMode === "list"
+                      ? "bg-surface text-text-primary shadow-sm"
+                      : "text-text-muted hover:text-text-secondary"
+                  }`}
+                >
+                  <List size={12} />
+                  List
+                </button>
+                <button
+                  onClick={() => setSkillViewMode("graph")}
+                  className={`flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
+                    skillViewMode === "graph"
+                      ? "bg-surface text-text-primary shadow-sm"
+                      : "text-text-muted hover:text-text-secondary"
+                  }`}
+                >
+                  <Share2 size={12} />
+                  Graph
+                </button>
+              </div>
+            )}
+          </div>
+
+          {showSkillEditor && skillViewMode === "list" && (
             <div className="mt-3 rounded-xl border border-border/40 bg-surface p-4">
               <p className="mb-3 text-xs text-text-muted">
                 Add, remove, or create skills for this employee:
@@ -168,6 +199,14 @@ export default function StepPlugin({
                 </button>
               </div>
             </div>
+          )}
+
+          {showSkillEditor && skillViewMode === "graph" && (
+            <SkillGraph
+              pluginId={selectedPluginId}
+              skillIds={skillIds}
+              onToggleSkill={toggleSkill}
+            />
           )}
         </div>
       )}
