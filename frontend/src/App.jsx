@@ -10,6 +10,7 @@ import DashboardPage from "./pages/DashboardPage";
 import PluginsPage from "./pages/PluginsPage";
 import EvaluationLabPage from "./pages/EvaluationLabPage";
 import CreationWizard from "./pages/CreationWizard";
+import EmployeePage from "./pages/EmployeePage";
 import { AppProvider } from "./context/AppContext";
 import { getEmployees } from "./services/employeeStore";
 import {
@@ -641,6 +642,7 @@ export default function App() {
           <Routes>
             <Route path="/" element={<DashboardPage />} />
             <Route path="/new" element={<CreationWizard />} />
+            <Route path="/employee/:id" element={<EmployeePage />} />
             <Route path="/chat" element={<ChatView />} />
             <Route path="/plugins" element={<PluginsPage />} />
             <Route path="/evaluation" element={<EvaluationLabPage />} />
