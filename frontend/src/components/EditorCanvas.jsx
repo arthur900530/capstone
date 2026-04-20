@@ -1,4 +1,6 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import {
   X,
   FileCode2,
@@ -7,9 +9,12 @@ import {
   Copy,
   Check,
   Code2,
+  Eye,
+  FileText,
   PanelLeftClose,
   PanelRightClose,
 } from "lucide-react";
+import { workspaceRawUrl } from "../services/api";
 
 /* ── helpers ──────────────────────────────────────────────────── */
 
@@ -24,8 +29,93 @@ function langFromExt(path) {
     json: "json", md: "markdown", yml: "yaml", yaml: "yaml", sh: "bash",
     css: "css", html: "html", sql: "sql", rs: "rust", go: "go", java: "java",
     c: "c", cpp: "cpp", h: "c", hpp: "cpp", rb: "ruby", csv: "csv",
+    pdf: "pdf",
   };
   return map[ext] || ext || "";
+}
+
+const MARKDOWN_EXTS = new Set(["md", "markdown", "mdown", "mkd"]);
+const IMAGE_EXTS = new Set(["png", "jpg", "jpeg", "gif", "bmp", "webp", "svg", "ico"]);
+const TEXT_EXTS = new Set([
+  "txt", "log", "csv", "tsv",
+  "py", "js", "jsx", "ts", "tsx", "mjs", "cjs",
+  "json", "yml", "yaml", "toml", "ini", "cfg", "env",
+  "sh", "bash", "zsh", "fish",
+  "css", "scss", "less", "html", "htm", "xml", "svg",
+  "sql", "rs", "go", "java", "kt", "swift",
+  "c", "cc", "cpp", "h", "hpp", "rb", "lua", "r", "php", "pl",
+  "dockerfile", "makefile", "gitignore",
+]);
+
+function getExt(path) {
+  if (!path) return "";
+  const name = path.split("/").pop() || "";
+  const lower = name.toLowerCase();
+  // Files like "Dockerfile" / "Makefile" with no extension: treat the name as the ext.
+  if (!lower.includes(".")) return lower;
+  return lower.split(".").pop() || "";
+}
+
+function fileKind(path) {
+  const ext = getExt(path);
+  if (!ext) return "text";
+  if (ext === "pdf") return "pdf";
+  if (MARKDOWN_EXTS.has(ext)) return "markdown";
+  if (IMAGE_EXTS.has(ext)) return "image";
+  return "text";
+}
+
+// Agent-internal artifacts that should never auto-open the canvas. They still
+// appear in the workspace tree, so the user can click them on demand.
+const AUTO_OPEN_IGNORED_BASENAMES = new Set([
+  "TASKS.json",
+  "TASKS.md",
+  "reflexion_memory.json",
+  "base_state.json",
+]);
+const AUTO_OPEN_IGNORED_SEGMENTS = new Set([
+  "subagents",
+  "events",
+  "conversations",
+]);
+// OpenHands per-event journal files: event-00001-<uuid>.json, …
+const AUTO_OPEN_IGNORED_BASENAME_PATTERNS = [
+  /^event-\d{5}-[0-9a-fA-F-]{8,}\.json$/,
+];
+
+function basenameOf(path) {
+  if (!path) return "";
+  return path.split("/").pop() || "";
+}
+
+function isAgentInternalPath(path) {
+  if (!path) return false;
+  const base = basenameOf(path);
+  if (AUTO_OPEN_IGNORED_BASENAMES.has(base)) return true;
+  if (AUTO_OPEN_IGNORED_BASENAME_PATTERNS.some((re) => re.test(base))) return true;
+  const parts = path.split("/");
+  // Match a segment anywhere in the directory portion of the path.
+  for (let i = 0; i < parts.length - 1; i++) {
+    if (AUTO_OPEN_IGNORED_SEGMENTS.has(parts[i])) return true;
+  }
+  return false;
+}
+
+/**
+ * True when the canvas knows how to render the file in a useful way AND
+ * the file isn't an agent-internal artifact (task tracker, reflexion memory,
+ * subagent state, etc.). Used to decide whether to auto-open a file produced
+ * by the agent.
+ */
+export function isCanvasPreviewable(path) {
+  if (isAgentInternalPath(path)) return false;
+  const ext = getExt(path);
+  if (!ext) return false;
+  if (ext === "pdf") return true;
+  if (MARKDOWN_EXTS.has(ext)) return true;
+  if (IMAGE_EXTS.has(ext)) return true;
+  if (TEXT_EXTS.has(ext)) return true;
+  return false;
 }
 
 /* ── Animated line reveal ─────────────────────────────────────── */
@@ -200,7 +290,7 @@ function InsertOverlay({ newStr, insertLine, animate = true }) {
 
 /* ── File content viewer ──────────────────────────────────────── */
 
-function FileViewer({ content, filePath, editEvents }) {
+function FileViewer({ content, filePath, editEvents, hideHeader = false }) {
   const lines = useMemo(
     () => (content || "").replace(/\n$/, "").split("\n"),
     [content],
@@ -224,7 +314,7 @@ function FileViewer({ content, filePath, editEvents }) {
 
   return (
     <div ref={scrollRef} className="flex-1 overflow-auto">
-      {lang && (
+      {!hideHeader && lang && (
         <div className="sticky top-0 z-10 flex justify-between items-center px-3 py-1 bg-[#1a1a1a]/95 backdrop-blur-sm border-b border-border/20">
           <span className="text-[10px] text-text-muted">{filePath}</span>
           <div className="flex items-center gap-2">
@@ -326,6 +416,190 @@ function CreateViewer({ content, filePath }) {
 }
 
 
+/* ── Markdown viewer (Preview / Source toggle) ────────────────── */
+
+const MARKDOWN_COMPONENTS = {
+  h1: ({ children }) => <h1 className="mb-3 mt-4 text-xl font-semibold text-text-primary">{children}</h1>,
+  h2: ({ children }) => <h2 className="mb-2 mt-4 text-lg font-semibold text-text-primary">{children}</h2>,
+  h3: ({ children }) => <h3 className="mb-2 mt-3 text-base font-semibold text-text-primary">{children}</h3>,
+  h4: ({ children }) => <h4 className="mb-2 mt-3 text-sm font-semibold text-text-primary">{children}</h4>,
+  p: ({ children }) => <p className="mb-3 leading-relaxed last:mb-0">{children}</p>,
+  strong: ({ children }) => <strong className="font-semibold text-accent-light">{children}</strong>,
+  em: ({ children }) => <em className="italic text-text-secondary">{children}</em>,
+  ul: ({ children }) => <ul className="mb-3 list-disc pl-6 last:mb-0">{children}</ul>,
+  ol: ({ children }) => <ol className="mb-3 list-decimal pl-6 last:mb-0">{children}</ol>,
+  li: ({ children }) => <li className="mb-1">{children}</li>,
+  blockquote: ({ children }) => (
+    <blockquote className="my-3 border-l-2 border-accent-teal/50 pl-3 italic text-text-secondary">
+      {children}
+    </blockquote>
+  ),
+  hr: () => <hr className="my-4 border-border/30" />,
+  a: ({ href, children }) => (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="text-accent-teal underline hover:text-accent-light"
+    >
+      {children}
+    </a>
+  ),
+  code: ({ inline, children }) =>
+    inline ? (
+      <code className="rounded bg-charcoal px-1.5 py-0.5 text-[12px] font-mono text-accent-light">
+        {children}
+      </code>
+    ) : (
+      <code className="font-mono text-[12px]">{children}</code>
+    ),
+  pre: ({ children }) => (
+    <pre className="my-3 overflow-x-auto rounded-md border border-border/30 bg-[#0d0d0d] p-3 text-[12px] leading-[1.6] text-text-primary">
+      {children}
+    </pre>
+  ),
+  table: ({ children }) => (
+    <div className="my-3 overflow-x-auto">
+      <table className="w-full border-collapse text-[12px]">{children}</table>
+    </div>
+  ),
+  th: ({ children }) => (
+    <th className="border border-border/30 bg-surface px-2 py-1 text-left font-semibold text-text-primary">
+      {children}
+    </th>
+  ),
+  td: ({ children }) => (
+    <td className="border border-border/30 px-2 py-1 text-text-secondary">{children}</td>
+  ),
+};
+
+function MarkdownViewer({ content, filePath }) {
+  const [view, setView] = useState("preview"); // 'preview' | 'source'
+
+  return (
+    <div className="flex flex-1 flex-col overflow-hidden">
+      <div className="sticky top-0 z-10 flex items-center justify-between border-b border-border/20 bg-[#1a1a1a]/95 px-3 py-1 backdrop-blur-sm">
+        <span className="flex items-center gap-1.5 text-[10px] text-text-muted">
+          <FileText size={11} className="text-accent-teal" />
+          {filePath}
+        </span>
+        <div className="flex items-center gap-2">
+          <div className="flex overflow-hidden rounded border border-border/30">
+            <button
+              onClick={() => setView("preview")}
+              className={`flex items-center gap-1 px-1.5 py-0.5 text-[10px] transition-colors ${
+                view === "preview"
+                  ? "bg-accent-teal/15 text-accent-teal"
+                  : "text-text-muted hover:bg-surface-hover hover:text-text-secondary"
+              }`}
+              title="Rendered Markdown"
+            >
+              <Eye size={10} />
+              Preview
+            </button>
+            <button
+              onClick={() => setView("source")}
+              className={`flex items-center gap-1 px-1.5 py-0.5 text-[10px] transition-colors ${
+                view === "source"
+                  ? "bg-accent-teal/15 text-accent-teal"
+                  : "text-text-muted hover:bg-surface-hover hover:text-text-secondary"
+              }`}
+              title="Raw source"
+            >
+              <Code2 size={10} />
+              Source
+            </button>
+          </div>
+          <CopyButton text={content} />
+        </div>
+      </div>
+
+      {view === "preview" ? (
+        <div className="flex-1 overflow-auto px-6 py-4">
+          <div className="mx-auto max-w-3xl text-sm text-text-primary">
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
+              components={MARKDOWN_COMPONENTS}
+            >
+              {content || ""}
+            </ReactMarkdown>
+          </div>
+        </div>
+      ) : (
+        <FileViewer content={content} filePath={filePath} editEvents={[]} hideHeader />
+      )}
+    </div>
+  );
+}
+
+/* ── PDF viewer (browser-native via iframe) ───────────────────── */
+
+function PdfViewer({ filePath, mountDir }) {
+  if (!mountDir) {
+    return (
+      <div className="flex flex-1 items-center justify-center">
+        <p className="text-sm text-text-muted">PDF preview requires a workspace mount.</p>
+      </div>
+    );
+  }
+  const url = workspaceRawUrl(mountDir, filePath);
+  return (
+    <div className="flex flex-1 flex-col overflow-hidden">
+      <div className="sticky top-0 z-10 flex items-center justify-between border-b border-border/20 bg-[#1a1a1a]/95 px-3 py-1 backdrop-blur-sm">
+        <span className="flex items-center gap-1.5 text-[10px] text-text-muted">
+          <FileText size={11} className="text-accent-teal" />
+          {filePath}
+        </span>
+        <a
+          href={url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-[10px] text-accent-teal underline hover:text-accent-light"
+        >
+          Open
+        </a>
+      </div>
+      <iframe
+        key={url}
+        src={url}
+        title={filePath}
+        className="flex-1 w-full border-0 bg-white"
+      />
+    </div>
+  );
+}
+
+/* ── Image viewer ─────────────────────────────────────────────── */
+
+function ImageViewer({ filePath, mountDir }) {
+  if (!mountDir) {
+    return (
+      <div className="flex flex-1 items-center justify-center">
+        <p className="text-sm text-text-muted">Image preview requires a workspace mount.</p>
+      </div>
+    );
+  }
+  const url = workspaceRawUrl(mountDir, filePath);
+  return (
+    <div className="flex flex-1 flex-col overflow-hidden">
+      <div className="sticky top-0 z-10 flex items-center justify-between border-b border-border/20 bg-[#1a1a1a]/95 px-3 py-1 backdrop-blur-sm">
+        <span className="text-[10px] text-text-muted">{filePath}</span>
+        <a
+          href={url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-[10px] text-accent-teal underline hover:text-accent-light"
+        >
+          Open
+        </a>
+      </div>
+      <div className="flex flex-1 items-center justify-center overflow-auto bg-[#0a0a0a] p-4">
+        <img src={url} alt={filePath} className="max-h-full max-w-full object-contain" />
+      </div>
+    </div>
+  );
+}
+
 /* ── Empty state ──────────────────────────────────────────────── */
 
 function EmptyCanvas() {
@@ -391,6 +665,7 @@ export default function EditorCanvas({
   fileContents,
   modifiedFiles,
   editEvents,
+  mountDir,
   onSelectFile,
   onCloseFile,
   collapsed = false,
@@ -401,6 +676,7 @@ export default function EditorCanvas({
     () => (editEvents || []).find((e) => e.path === activeFile && e.command === "create"),
     [editEvents, activeFile],
   );
+  const kind = useMemo(() => fileKind(activeFile), [activeFile]);
 
   if (collapsed) {
     return (
@@ -412,6 +688,9 @@ export default function EditorCanvas({
       />
     );
   }
+
+  // Binary previews don't depend on `content` being loaded.
+  const isBinaryPreview = kind === "pdf" || kind === "image";
 
   return (
     <div className="flex flex-1 flex-col bg-[#111111] min-w-[300px]">
@@ -426,14 +705,20 @@ export default function EditorCanvas({
 
       {!activeFile || openFiles.length === 0 ? (
         <EmptyCanvas />
-      ) : content === null ? (
+      ) : !isBinaryPreview && content === null ? (
         <div className="flex flex-1 items-center justify-center">
           <div className="flex items-center gap-2 text-sm text-text-muted">
             <div className="h-4 w-4 animate-spin rounded-full border-2 border-accent-teal/30 border-t-accent-teal" />
             Loading…
           </div>
         </div>
-      ) : createEvent ? (
+      ) : kind === "pdf" ? (
+        <PdfViewer filePath={activeFile} mountDir={mountDir} />
+      ) : kind === "image" ? (
+        <ImageViewer filePath={activeFile} mountDir={mountDir} />
+      ) : kind === "markdown" ? (
+        <MarkdownViewer content={content} filePath={activeFile} />
+      ) : createEvent && createEvent.fileText ? (
         <CreateViewer content={createEvent.fileText} filePath={activeFile} />
       ) : (
         <FileViewer content={content} filePath={activeFile} editEvents={editEvents} />

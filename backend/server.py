@@ -30,6 +30,7 @@ from typing import Any
 import dotenv
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
@@ -782,6 +783,137 @@ def _resolve_workspace_for_runtime(
     return workspace, cleanup
 
 
+# ---------------------------------------------------------------------------
+# Workspace-watcher helpers (auto-detect files created by terminal tools)
+# ---------------------------------------------------------------------------
+
+# Files we know how to render in the canvas. Mirrors the frontend allowlist
+# in EditorCanvas.jsx (`isCanvasPreviewable`). Anything outside this set is
+# tracked in the workspace tree but not auto-opened.
+_PREVIEWABLE_EXTS: set[str] = {
+    ".md", ".markdown", ".mdown", ".mkd",
+    ".txt", ".log", ".csv", ".tsv",
+    ".pdf",
+    ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".svg", ".ico",
+    ".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs",
+    ".json", ".yml", ".yaml", ".toml", ".ini", ".cfg",
+    ".sh", ".bash", ".zsh",
+    ".css", ".scss", ".less", ".html", ".htm", ".xml",
+    ".sql", ".rs", ".go", ".java", ".kt", ".swift",
+    ".c", ".cc", ".cpp", ".h", ".hpp", ".rb", ".lua", ".r", ".php", ".pl",
+}
+
+# Files written by agent-internal tooling (task tracker, reflexion memory,
+# OpenHands conversation persistence, …) that should never auto-open the
+# canvas. They still show up in the workspace tree so the user can inspect
+# them on demand. Match by basename so the rule applies regardless of the
+# persistence directory's location.
+_AUTO_OPEN_IGNORED_BASENAMES: set[str] = {
+    "TASKS.json",
+    "TASKS.md",
+    "reflexion_memory.json",
+    "base_state.json",  # OpenHands conversation root state
+}
+
+# Substring/segment matches: skip any path that contains one of these path
+# segments (e.g. anything inside an OpenHands "subagents/" persistence dir
+# or the per-conversation "events/" log directory).
+_AUTO_OPEN_IGNORED_SEGMENTS: tuple[str, ...] = (
+    "subagents",
+    "events",
+    "conversations",
+)
+
+# Regex matches against the basename — covers OpenHands per-event journal
+# files (event-00001-<uuid>.json, event-00002-<uuid>.json, …).
+_AUTO_OPEN_IGNORED_BASENAME_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"^event-\d{5}-[0-9a-fA-F\-]{8,}\.json$"),
+)
+
+
+def _should_skip_auto_open(rel_path: str) -> bool:
+    base = os.path.basename(rel_path)
+    if base in _AUTO_OPEN_IGNORED_BASENAMES:
+        return True
+    if any(p.match(base) for p in _AUTO_OPEN_IGNORED_BASENAME_PATTERNS):
+        return True
+    parts = rel_path.replace("\\", "/").split("/")
+    return any(seg in _AUTO_OPEN_IGNORED_SEGMENTS for seg in parts[:-1])
+
+
+# Tracks paths we've already announced as "create" per session, so the snapshot
+# diff doesn't re-emit a file that the file_editor tool already reported.
+_announced_paths: dict[str, set[str]] = {}
+
+
+def _snapshot_files(root: str) -> dict[str, float]:
+    """Return {relative_path: mtime} for non-hidden files under ``root``."""
+    snap: dict[str, float] = {}
+    if not root or not os.path.isdir(root):
+        return snap
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+        for name in filenames:
+            if name.startswith("."):
+                continue
+            full = os.path.join(dirpath, name)
+            rel = os.path.relpath(full, root)
+            try:
+                snap[rel] = os.path.getmtime(full)
+            except OSError:
+                continue
+    return snap
+
+
+def _build_synthetic_creates(
+    root: str,
+    prev: dict[str, float],
+    curr: dict[str, float],
+    session_id: str,
+) -> list[dict]:
+    """Return file_edit-style payloads for newly created previewable files."""
+    seen = _announced_paths.setdefault(session_id, set())
+    payloads: list[dict] = []
+
+    for rel, mtime in curr.items():
+        if rel in seen:
+            continue
+        if rel in prev:
+            continue  # only brand-new files; modifications come via file_editor
+        if _should_skip_auto_open(rel):
+            seen.add(rel)  # don't re-evaluate next time either
+            continue
+        ext = os.path.splitext(rel)[1].lower()
+        if ext not in _PREVIEWABLE_EXTS:
+            continue
+
+        full = os.path.join(root, rel)
+        # Read text content for text files; leave None for binaries (PDF/image).
+        # Reuses the same heuristic as the /api/workspace/file endpoint.
+        file_text: str | None = None
+        if _is_text_file(full):
+            try:
+                with open(full, "r", encoding="utf-8", errors="replace") as f:
+                    file_text = f.read(500_000)
+            except OSError:
+                file_text = None
+
+        _turn_counter.setdefault(session_id, 0)
+        _turn_counter[session_id] += 1
+        payloads.append({
+            "turn": _turn_counter[session_id],
+            "command": "create",
+            "path": rel,
+            "file_text": file_text,
+            "old_str": None,
+            "new_str": None,
+            "insert_line": None,
+        })
+        seen.add(rel)
+
+    return payloads
+
+
 async def _stream_real_task(
     question: str,
     session_id: str,
@@ -844,6 +976,11 @@ async def _stream_real_task(
     got_answer = False
     last_tool_text: str | None = None
 
+    # Baseline snapshot: anything already in the workspace before the agent
+    # starts should never be reported as "created" by our diff.
+    prev_snapshot = _snapshot_files(effective_mount or "")
+    _announced_paths[session_id] = set()
+
     while True:
         item = await queue.get()
         if item is None:
@@ -853,10 +990,26 @@ async def _stream_real_task(
         _append_event(session_id, event_type, data)
         yield item
 
+        # Remember paths the file_editor explicitly announced, so the
+        # post-tool snapshot diff doesn't duplicate them.
+        if event_type == "file_edit" and data.get("path"):
+            _announced_paths.setdefault(session_id, set()).add(data["path"])
+
         if event_type == "answer":
             got_answer = True
         elif event_type == "tool_result":
             last_tool_text = data.get("text")
+            # Detect new files dropped on disk by terminal commands, scripts,
+            # pandoc, etc. — anything the file_editor tool didn't surface.
+            if effective_mount:
+                curr_snapshot = _snapshot_files(effective_mount)
+                synthetic = _build_synthetic_creates(
+                    effective_mount, prev_snapshot, curr_snapshot, session_id,
+                )
+                for payload in synthetic:
+                    yield _sse("file_edit", payload)
+                    _append_event(session_id, "file_edit", payload)
+                prev_snapshot = curr_snapshot
 
     if not got_answer and last_tool_text:
         evt = {"text": last_tool_text}
@@ -864,6 +1017,7 @@ async def _stream_real_task(
         _append_event(session_id, "answer", evt)
 
     _turn_counter.pop(session_id, None)
+    _announced_paths.pop(session_id, None)
     yield _sse("done", {"message": "Complete"})
 
 
@@ -1379,6 +1533,27 @@ async def workspace_file(root: str, path: str):
     except OSError as e:
         raise HTTPException(status_code=500, detail=str(e))
     return {"path": path, "content": content}
+
+
+@app.get("/api/workspace/raw")
+async def workspace_raw(root: str, path: str):
+    """Stream a file's bytes as-is (used for PDFs, images, etc.)."""
+    if not root or not os.path.isdir(root):
+        raise HTTPException(status_code=400, detail="Invalid root directory")
+    full_path = _safe_resolve(root, path)
+    if not os.path.isfile(full_path):
+        raise HTTPException(status_code=404, detail="File not found")
+
+    media_type, _ = mimetypes.guess_type(full_path)
+    if media_type is None:
+        ext = os.path.splitext(full_path)[1].lower()
+        if ext == ".pdf":
+            media_type = "application/pdf"
+        else:
+            media_type = "application/octet-stream"
+
+    headers = {"Content-Disposition": f'inline; filename="{os.path.basename(full_path)}"'}
+    return FileResponse(full_path, media_type=media_type, headers=headers)
 
 
 @app.get("/api/health")

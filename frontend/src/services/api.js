@@ -222,3 +222,7 @@ export async function fetchWorkspaceFile(rootDir, filePath) {
   return res.json();
 }
 
+export function workspaceRawUrl(rootDir, filePath) {
+  return `${API_BASE}/workspace/raw?root=${encodeURIComponent(rootDir)}&path=${encodeURIComponent(filePath)}`;
+}
+

@@ -7,7 +7,7 @@ import ChatMessage from "./components/ChatMessage";
 import UploadedDataPanel from "./components/DataContext";
 import EvaluationView from "./components/EvaluationView";
 import SkillsView from "./components/SkillsView";
-import EditorCanvas from "./components/EditorCanvas";
+import EditorCanvas, { isCanvasPreviewable } from "./components/EditorCanvas";
 import WorkspacePanel from "./components/WorkspacePanel";
 import {
   streamChat,
@@ -383,21 +383,23 @@ export default function App() {
                 setModifiedFiles((prev) => new Set(prev).add(data.path));
                 if (workspaceActive) setTreeRefreshTrigger((n) => n + 1);
 
-                // Auto-open the file in canvas
+                // Auto-open in the canvas only for files we can preview.
+                // Files with unknown / binary extensions still appear in the
+                // workspace tree, but won't pop up an unreadable tab.
                 const filePath = data.path;
-                setOpenFiles((prev) =>
-                  prev.includes(filePath) ? prev : [...prev, filePath],
-                );
-                setActiveFile(filePath);
+                if (isCanvasPreviewable(filePath)) {
+                  setOpenFiles((prev) =>
+                    prev.includes(filePath) ? prev : [...prev, filePath],
+                  );
+                  setActiveFile(filePath);
 
-                // For "create" commands, store the content directly
-                if (data.command === "create" && data.file_text) {
-                  setFileContents((prev) => ({ ...prev, [filePath]: data.file_text }));
-                } else if (mountDir) {
-                  // Refresh file content from backend
-                  fetchWorkspaceFile(mountDir, filePath)
-                    .then((res) => setFileContents((prev) => ({ ...prev, [filePath]: res.content })))
-                    .catch(() => {});
+                  if (data.command === "create" && data.file_text) {
+                    setFileContents((prev) => ({ ...prev, [filePath]: data.file_text }));
+                  } else if (mountDir) {
+                    fetchWorkspaceFile(mountDir, filePath)
+                      .then((res) => setFileContents((prev) => ({ ...prev, [filePath]: res.content })))
+                      .catch(() => {});
+                  }
                 }
               }
               break;
@@ -527,6 +529,16 @@ export default function App() {
       );
       setActiveFile(filePath);
       if (!fileContents[filePath] && mountDir) {
+        // Binary previews (PDF, images) are rendered directly from the raw
+        // endpoint; don't try to fetch them as text.
+        const ext = filePath.split(".").pop()?.toLowerCase();
+        const binaryExts = new Set([
+          "pdf", "png", "jpg", "jpeg", "gif", "bmp", "webp", "svg", "ico",
+        ]);
+        if (binaryExts.has(ext)) {
+          setFileContents((prev) => ({ ...prev, [filePath]: "" }));
+          return;
+        }
         try {
           const res = await fetchWorkspaceFile(mountDir, filePath);
           setFileContents((prev) => ({ ...prev, [filePath]: res.content }));
@@ -689,6 +701,7 @@ export default function App() {
                 fileContents={fileContents}
                 modifiedFiles={modifiedFiles}
                 editEvents={editEvents}
+                mountDir={mountDir}
                 onSelectFile={handleCanvasSelectFile}
                 onCloseFile={handleCanvasCloseFile}
                 collapsed={canvasCollapsed}
