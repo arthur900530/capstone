@@ -163,9 +163,9 @@ export default function SkillBrowser({ selectedSkillIds, onToggleSkill, onSkills
                 </p>
               </div>
             ) : viewMode === "grid" ? (
-              <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+              <div className="grid auto-rows-fr grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
                 {filtered.map((skill) => (
-                  <div key={skill.id} className="relative">
+                  <div key={skill.id} className="relative min-h-0">
                     <SkillCard
                       skill={skill}
                       isSelected={skill.id === selectedId}
@@ -175,7 +175,7 @@ export default function SkillBrowser({ selectedSkillIds, onToggleSkill, onSkills
                     {/* Selection overlay */}
                     <button
                       onClick={(e) => { e.stopPropagation(); onToggleSkill(skill.id); }}
-                      className={`absolute right-2 top-2 flex h-6 w-6 items-center justify-center rounded-full border transition-colors ${
+                      className={`absolute right-2 top-2 z-10 flex h-6 w-6 items-center justify-center rounded-full border transition-colors ${
                         isSelected(skill.id)
                           ? "border-accent-teal bg-accent-teal text-workspace"
                           : "border-border/60 bg-surface/80 text-text-muted hover:border-accent-teal/50 hover:text-accent-teal"
