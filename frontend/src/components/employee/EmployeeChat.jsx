@@ -8,6 +8,9 @@ import {
   uploadFiles,
   fetchChatById,
 } from "../../services/api";
+import { mockStreamChat } from "../../services/mockStream";
+
+const IS_MOCK = import.meta.env.VITE_MOCK === "true";
 import { addChatSession, markActive } from "../../services/employeeStore";
 import { restoreMessage } from "../../services/messageUtils";
 
@@ -45,7 +48,7 @@ function AgentBanner({ agent, files = [], onRemoveFile }) {
   );
 }
 
-export default function EmployeeChat({ employee }) {
+export default function EmployeeChat({ employee, onDesktopEvent }) {
   const [messages, setMessages] = useState([]);
   const [isStreaming, setIsStreaming] = useState(false);
   const [sessionId, setSessionId] = useState(null);
@@ -97,73 +100,82 @@ export default function EmployeeChat({ employee }) {
     setIsStreaming(true);
     markActive(employee.id);
 
+    const handleEvent = (eventType, data) => {
+      let msg = null;
+      switch (eventType) {
+        case "session":
+          setSessionId(data.session_id);
+          addChatSession(employee.id, data.session_id);
+          onDesktopEvent?.(eventType, data);
+          return;
+        case "agent":
+          setVisibleAgent(data);
+          setMessages((prev) => [...prev, { type: "agent_marker", agent: data }]);
+          onDesktopEvent?.(eventType, data);
+          return;
+        case "status":
+          msg = { role: "assistant", type: "status", content: data.message };
+          break;
+        case "trial_start":
+          msg = { role: "assistant", type: "trial_start", trial: data.trial, maxTrials: data.max_trials };
+          break;
+        case "tool_call":
+          msg = { role: "assistant", type: "tool_call", turn: data.turn, tool: data.tool, detail: data.detail };
+          break;
+        case "tool_result":
+          msg = { role: "assistant", type: "tool_result", content: data.text };
+          break;
+        case "reasoning":
+          msg = { role: "assistant", type: "reasoning", content: data.text };
+          break;
+        case "self_eval":
+          msg = { role: "assistant", type: "self_eval", content: data.critique, confidenceScore: data.confidence_score, isConfident: data.is_confident };
+          break;
+        case "reflection":
+          msg = { role: "assistant", type: "reflection", content: data.text };
+          break;
+        case "answer":
+          msg = { role: "assistant", type: "answer", content: data.text, question };
+          break;
+        case "chat_response":
+          msg = { role: "assistant", type: "chat_response", content: data.text };
+          break;
+        case "error":
+          msg = { role: "assistant", type: "error", content: data.message };
+          break;
+      }
+      if (msg) {
+        setMessages((prev) => {
+          const updated = prev.map((m) =>
+            m.type === "status" && !m.done ? { ...m, done: true } : m,
+          );
+          return [...updated, msg];
+        });
+      }
+      onDesktopEvent?.(eventType, data);
+    };
+
     try {
-      if (submittedFiles.length > 0) {
+      if (!IS_MOCK && submittedFiles.length > 0) {
         await uploadFiles(sid, submittedFiles);
       }
 
-      await streamChat(
-        {
-          question,
-          sessionId: sid,
-          model: employee.model || undefined,
-          maxTrials: employee.maxTrials,
-          confidenceThreshold: employee.confidenceThreshold,
-          useReflexion: employee.useReflexion,
-          skillIds: employee.skillIds,
-        },
-        (eventType, data) => {
-          let msg = null;
-          switch (eventType) {
-            case "session":
-              setSessionId(data.session_id);
-              addChatSession(employee.id, data.session_id);
-              return;
-            case "agent":
-              setVisibleAgent(data);
-              setMessages((prev) => [...prev, { type: "agent_marker", agent: data }]);
-              return;
-            case "status":
-              msg = { role: "assistant", type: "status", content: data.message };
-              break;
-            case "trial_start":
-              msg = { role: "assistant", type: "trial_start", trial: data.trial, maxTrials: data.max_trials };
-              break;
-            case "tool_call":
-              msg = { role: "assistant", type: "tool_call", turn: data.turn, tool: data.tool, detail: data.detail };
-              break;
-            case "tool_result":
-              msg = { role: "assistant", type: "tool_result", content: data.text };
-              break;
-            case "reasoning":
-              msg = { role: "assistant", type: "reasoning", content: data.text };
-              break;
-            case "self_eval":
-              msg = { role: "assistant", type: "self_eval", content: data.critique, confidenceScore: data.confidence_score, isConfident: data.is_confident };
-              break;
-            case "reflection":
-              msg = { role: "assistant", type: "reflection", content: data.text };
-              break;
-            case "answer":
-              msg = { role: "assistant", type: "answer", content: data.text, question };
-              break;
-            case "chat_response":
-              msg = { role: "assistant", type: "chat_response", content: data.text };
-              break;
-            case "error":
-              msg = { role: "assistant", type: "error", content: data.message };
-              break;
-          }
-          if (msg) {
-            setMessages((prev) => {
-              const updated = prev.map((m) =>
-                m.type === "status" && !m.done ? { ...m, done: true } : m,
-              );
-              return [...updated, msg];
-            });
-          }
-        },
-      );
+      if (IS_MOCK) {
+        await mockStreamChat({ question }, handleEvent);
+      } else {
+        await streamChat(
+          {
+            question,
+            sessionId: sid,
+            model: employee.model || undefined,
+            maxTrials: employee.maxTrials,
+            confidenceThreshold: employee.confidenceThreshold,
+            useReflexion: employee.useReflexion,
+            skillIds: employee.skillIds,
+          },
+          handleEvent,
+        );
+      }
     } catch (err) {
       setMessages((prev) => [
         ...prev,

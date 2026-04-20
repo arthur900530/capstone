@@ -1,10 +1,13 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { ArrowLeft, MessageSquare, Terminal, BarChart3, Wrench, Trash2, Loader2 } from "lucide-react";
 import ConfirmDialog from "../components/skills/ConfirmDialog";
 import * as Icons from "lucide-react";
 import EmployeeChat from "../components/employee/EmployeeChat";
+import DesktopSimulator from "../components/desktop/DesktopSimulator";
 import EmployeeConsole from "../components/employee/EmployeeConsole";
+
+const IS_DEMO = import.meta.env.VITE_DEMO === "true";
 import EmployeeReportCard from "../components/employee/EmployeeReportCard";
 import EmployeeSkillsTab from "../components/employee/EmployeeSkillsTab";
 import PLUGINS from "../data/plugins";
@@ -27,6 +30,7 @@ export default function EmployeePage() {
   const [loading, setLoading] = useState(true);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const desktopEventRef = useRef(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -56,6 +60,10 @@ export default function EmployeePage() {
   const pluginIds = employee.pluginIds || (employee.pluginId ? [employee.pluginId] : []);
   const plugins = PLUGINS.filter((p) => pluginIds.includes(p.id));
   const RoleIcon = Icons[plugins[0]?.icon] || Icons.Bot;
+
+  const handleDesktopEvent = (type, data) => {
+    desktopEventRef.current?.(type, data);
+  };
 
   const handleDelete = async () => {
     setDeleting(true);
@@ -118,7 +126,19 @@ export default function EmployeePage() {
         </div>
       </div>
 
-      {activeTab === "chat" && <EmployeeChat key={id} employee={employee} />}
+      {activeTab === "chat" && !IS_DEMO && (
+        <EmployeeChat key={id} employee={employee} />
+      )}
+      {activeTab === "chat" && IS_DEMO && (
+        <div className="flex flex-1 overflow-hidden">
+          <div className="flex min-w-0 flex-1 flex-col border-r border-border/20 lg:max-w-[50%]">
+            <EmployeeChat key={id} employee={employee} onDesktopEvent={handleDesktopEvent} />
+          </div>
+          <div className="hidden flex-1 flex-col lg:flex">
+            <DesktopSimulator employee={employee} onEventRef={desktopEventRef} />
+          </div>
+        </div>
+      )}
       {activeTab === "skills" && (
         <EmployeeSkillsTab
           key={id}
