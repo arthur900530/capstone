@@ -5,6 +5,15 @@
 
 set -euo pipefail
 
+MOCK_MODE=0
+DEMO_MODE=0
+for arg in "$@"; do
+  case "$arg" in
+    --mock) MOCK_MODE=1 ;;
+    --demo) DEMO_MODE=1 ;;
+  esac
+done
+
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 FRONTEND_DIR="$ROOT_DIR/frontend"
 BACKEND_DIR="$ROOT_DIR/backend"
@@ -234,11 +243,26 @@ else
   info "Install with: ${CYAN}sudo apt install postgresql${RESET}"
 fi
 
+
 # ── Launch ────────────────────────────────────────────────────────────────────
 
 header "Starting services"
 
-# Start backend first, wait for it to be ready
+# Build frontend env vars from flags
+VITE_ENV=""
+MODE_LABEL=""
+if [[ "$MOCK_MODE" == "1" ]]; then
+  VITE_ENV="VITE_MOCK=true $VITE_ENV"
+  MODE_LABEL="${MODE_LABEL} mock"
+  step "Mock LLM streaming enabled"
+fi
+if [[ "$DEMO_MODE" == "1" ]]; then
+  VITE_ENV="VITE_DEMO=true $VITE_ENV"
+  MODE_LABEL="${MODE_LABEL} demo"
+  step "Desktop simulator demo enabled"
+fi
+
+# Start backend
 (cd "$BACKEND_DIR" && PYTHONPATH=. .venv/bin/uvicorn server:app --reload --host 127.0.0.1 --port 8000 >/dev/null 2>&1) &
 PIDS+=($!)
 
@@ -251,8 +275,8 @@ for i in $(seq 1 15); do
 done
 step "API server running"
 
-# Start frontend after backend is ready
-(cd "$FRONTEND_DIR" && npx vite --host 0.0.0.0 >/dev/null 2>&1) &
+# Start frontend with env vars
+(cd "$FRONTEND_DIR" && env $VITE_ENV npx vite --host 0.0.0.0 >/dev/null 2>&1) &
 PIDS+=($!)
 
 sleep 2
@@ -261,7 +285,11 @@ step "Frontend server running"
 echo ""
 line
 echo ""
-echo -e "  ${GREEN}${BOLD}Ready!${RESET}"
+if [[ -n "$MODE_LABEL" ]]; then
+  echo -e "  ${GREEN}${BOLD}Ready!${RESET}  ${YELLOW}[${MODE_LABEL# }]${RESET}"
+else
+  echo -e "  ${GREEN}${BOLD}Ready!${RESET}"
+fi
 echo ""
 echo -e "  ${ARROW}  API         ${BOLD}http://localhost:8000${RESET}"
 echo -e "  ${ARROW}  Frontend    ${BOLD}http://localhost:5173${RESET}"
