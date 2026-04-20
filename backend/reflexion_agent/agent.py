@@ -335,9 +335,6 @@ def _run_without_reflexion(agent, instruction, workspace, callbacks=None):
     conversation.send_message(instruction)
     conversation.run()
 
-    conversation.send_message("According to the history of this task, summarize the preferences of the user, or key memories, and save them in AGENT.md and MEMORY.md.")
-    conversation.run()
-
 
 def _format_numbered_reflections(reflections: list[str]) -> str:
     """Format in-session reflections as numbered trial blocks for prompt injection.

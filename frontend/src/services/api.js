@@ -196,6 +196,8 @@ export async function streamChat(
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  let currentEvent = "message";
+  const terminalEvents = new Set(["done", "answer", "chat_response", "error"]);
 
   while (true) {
     const { done, value } = await reader.read();
@@ -205,7 +207,6 @@ export async function streamChat(
     const lines = buffer.split("\n");
     buffer = lines.pop() || "";
 
-    let currentEvent = "message";
     for (const line of lines) {
       if (line.startsWith("event:")) {
         currentEvent = line.slice(6).trim();
@@ -217,6 +218,10 @@ export async function streamChat(
           onEvent(currentEvent, data);
         } catch {
           onEvent(currentEvent, { text: raw });
+        }
+        if (terminalEvents.has(currentEvent)) {
+          await reader.cancel();
+          return;
         }
         currentEvent = "message";
       }
