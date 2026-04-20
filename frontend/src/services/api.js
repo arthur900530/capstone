@@ -1,8 +1,23 @@
 const API_BASE = "/api";
 
+export async function fetchAgentSkills() {
+  const res = await fetch(`${API_BASE}/agent-skills`);
+  if (!res.ok) throw new Error(`Failed to load agent skills: ${res.status}`);
+  return res.json();
+}
+
 export async function fetchSkillEvals() {
   const res = await fetch(`${API_BASE}/skill-evals`);
   if (!res.ok) throw new Error(`Failed to load skill evals: ${res.status}`);
+  return res.json();
+}
+
+export async function runSkillEval(agentId) {
+  const res = await fetch(
+    `${API_BASE}/skill-evals/run?agent_id=${encodeURIComponent(agentId)}`,
+    { method: "POST" },
+  );
+  if (!res.ok) throw new Error(`Failed to run skill eval: ${res.status}`);
   return res.json();
 }
 
@@ -89,21 +104,28 @@ export async function addSkillFiles(skillId, files) {
 }
 
 export async function removeSkillFile(skillId, filename) {
-  const res = await fetch(`${API_BASE}/skills/${skillId}/files/${encodeURIComponent(filename)}`, {
-    method: "DELETE",
-  });
+  const res = await fetch(
+    `${API_BASE}/skills/${skillId}/files/${encodeURIComponent(filename)}`,
+    {
+      method: "DELETE",
+    },
+  );
   if (!res.ok) throw new Error(`Failed to remove file: ${res.status}`);
   return res.json();
 }
 
 export async function fetchSkillFileContent(skillId, filename) {
-  const res = await fetch(`${API_BASE}/skills/${skillId}/files/${encodeURIComponent(filename)}`);
+  const res = await fetch(
+    `${API_BASE}/skills/${skillId}/files/${encodeURIComponent(filename)}`,
+  );
   if (!res.ok) throw new Error(`Failed to load file: ${res.status}`);
   return res.json();
 }
 
 export async function deleteSkill(skillId) {
-  const res = await fetch(`${API_BASE}/skills/${skillId}`, { method: "DELETE" });
+  const res = await fetch(`${API_BASE}/skills/${skillId}`, {
+    method: "DELETE",
+  });
   if (!res.ok) throw new Error(`Failed to delete skill: ${res.status}`);
   return res.json();
 }
@@ -200,6 +222,79 @@ export async function streamChat(
       }
     }
   }
+}
+
+
+// ── Marketplace APIs ─────────────────────────────────────────────────────────
+
+export async function browseMarketplaceSkills(params = {}) {
+  const qs = new URLSearchParams();
+  if (params.q) qs.set("q", params.q);
+  if (params.status) qs.set("status", params.status);
+  if (params.source_type) qs.set("source_type", params.source_type);
+  if (params.tag) qs.set("tag", params.tag);
+  if (params.page) qs.set("page", params.page);
+  const url = `${API_BASE}/marketplace/skills${qs.toString() ? "?" + qs : ""}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Failed to browse marketplace: ${res.status}`);
+  return res.json();
+}
+
+export async function getMarketplaceSkill(slug) {
+  const res = await fetch(`${API_BASE}/marketplace/skills/${slug}`);
+  if (!res.ok) throw new Error(`Failed to load marketplace skill: ${res.status}`);
+  return res.json();
+}
+
+export async function installSkill(slug) {
+  const res = await fetch(`${API_BASE}/marketplace/skills/${slug}/install`, { method: "POST" });
+  if (!res.ok) throw new Error(`Failed to install skill: ${res.status}`);
+  return res.json();
+}
+
+export async function uninstallSkill(slug) {
+  const res = await fetch(`${API_BASE}/marketplace/skills/${slug}/uninstall`, { method: "POST" });
+  if (!res.ok) throw new Error(`Failed to uninstall skill: ${res.status}`);
+  return res.json();
+}
+
+export async function createSubmission({ name, description, skill_md, submission_type }) {
+  const res = await fetch(`${API_BASE}/marketplace/submissions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, description, skill_md, submission_type }),
+  });
+  if (!res.ok) throw new Error(`Failed to create submission: ${res.status}`);
+  return res.json();
+}
+
+export async function fetchSubmissions(status) {
+  const qs = status ? `?status=${status}` : "";
+  const res = await fetch(`${API_BASE}/marketplace/submissions${qs}`);
+  if (!res.ok) throw new Error(`Failed to load submissions: ${res.status}`);
+  return res.json();
+}
+
+export async function getSubmission(submissionId) {
+  const res = await fetch(`${API_BASE}/marketplace/submissions/${submissionId}`);
+  if (!res.ok) throw new Error(`Failed to load submission: ${res.status}`);
+  return res.json();
+}
+
+export async function reviewSubmission(submissionId, { decision, reason }) {
+  const res = await fetch(`${API_BASE}/marketplace/submissions/${submissionId}/decision`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ decision, reason }),
+  });
+  if (!res.ok) throw new Error(`Failed to submit decision: ${res.status}`);
+  return res.json();
+}
+
+export async function deleteSubmission(submissionId) {
+  const res = await fetch(`${API_BASE}/marketplace/submissions/${submissionId}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(`Failed to delete submission: ${res.status}`);
+  return res.json();
 }
 
 // ---------------------------------------------------------------------------

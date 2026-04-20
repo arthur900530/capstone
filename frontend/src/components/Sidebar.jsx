@@ -2,7 +2,7 @@ import { useState } from "react";
 import {
   MessageSquare,
   ClipboardCheck,
-  Wrench,
+  Store,
   Plus,
   ChevronDown,
   Trash2,
@@ -14,7 +14,7 @@ import {
 const navItems = [
   { icon: MessageSquare, label: "Chats", tab: "chat" },
   { icon: ClipboardCheck, label: "Evaluation", tab: "evaluation" },
-  { icon: Wrench, label: "Skills", tab: "skills" },
+  { icon: Store, label: "Marketplace", tab: "skills" },
 ];
 
 function ChatHistoryItem({ chat, agentName, isActive, onSelect, onDelete, onRename }) {

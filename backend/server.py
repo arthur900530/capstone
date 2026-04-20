@@ -67,7 +67,40 @@ elif _agent_import_error:
 else:
     logger.info("Real agent mode DISABLED — MODEL/API_KEY env vars not set")
 
-app = FastAPI(title="Mock Reflexion Finance Agent API")
+from contextlib import asynccontextmanager
+
+from db.engine import engine
+from db.seed import seed_from_filesystem
+from routers.skills import router as skills_router
+from routers.marketplace import router as marketplace_router
+from routers.submissions import router as submissions_router
+
+
+@asynccontextmanager
+async def lifespan(application):
+    """Start DB engine and seed skills on first boot. Falls back to in-memory if no DB."""
+    from routers.skills import set_db_available
+    try:
+        # Run Alembic migrations programmatically
+        from alembic.config import Config
+        from alembic import command
+        alembic_cfg = Config(os.path.join(os.path.dirname(__file__), "alembic.ini"))
+        await asyncio.to_thread(command.upgrade, alembic_cfg, "head")
+        # Seed filesystem skills into DB if needed
+        await seed_from_filesystem()
+        set_db_available(True)
+        logger.info("Database initialized and seeded.")
+    except Exception as exc:
+        set_db_available(False)
+        logger.warning("DB init skipped — falling back to in-memory skills: %s", exc)
+    yield
+    try:
+        await engine.dispose()
+    except Exception:
+        pass
+
+
+app = FastAPI(title="Skill Marketplace Agent API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -76,6 +109,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(skills_router)
+app.include_router(marketplace_router)
+app.include_router(submissions_router)
 
 
 # ---------------------------------------------------------------------------
@@ -150,13 +187,22 @@ def _load_skills_from_disk() -> dict[str, dict]:
                 fpath_relative = os.path.join(fpath_relative, fname)
                 fpath = os.path.join(_root, fname)
                 fs.append({"name": fpath_relative, "size": os.path.getsize(fpath), "type": mimetypes.guess_type(fpath)[0]})
+        skill_type = "user" if skill.startswith("user_") else "builtin"
+        definition = open(skill_md).read()
+        fm = re.search(r'^name:\s*["\']?([^\n"\']+)["\']?', definition, re.MULTILINE)
+        if fm:
+            display_name = fm.group(1).strip()
+        elif skill_type == "user":
+            display_name = "_".join(skill.split("_")[1:-1]).replace("_", " ").title()
+        else:
+            display_name = " ".join(word.capitalize() for word in skill.split("-"))
         skills[skill] = {
             "id": skill,
-            "name": " ".join(word.capitalize() for word in skill.split("-")),
+            "name": display_name,
             "description": "Placeholder description for the skill",
-            "type": "builtin",
+            "type": skill_type,
             "files": fs,
-            "definition": open(skill_md).read(),
+            "definition": definition,
             "created_at": os.path.getctime(skill_md),
             "updated_at": os.path.getmtime(skill_md),
         }
@@ -680,9 +726,38 @@ def _copy_dir_contents(src_dir: str, dst_dir: str) -> None:
             shutil.copy2(src, dst)
 
 
+def _try_get_skill_from_db(skill_id: str) -> dict | None:
+    """Try to fetch skill materialization data from DB. Returns None if DB unavailable."""
+    from routers.skills import _db_available
+    if not _db_available:
+        return None
+    try:
+        import asyncio
+        from db import async_session
+        from services.skill_service import get_skill_for_materialization
+
+        async def _fetch():
+            async with async_session() as session:
+                return await get_skill_for_materialization(session, skill_id)
+
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            # We're in an async context — use to_thread with a new loop
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                return pool.submit(lambda: asyncio.run(_fetch())).result(timeout=5)
+        return asyncio.run(_fetch())
+    except Exception:
+        return None
+
+
 def _validate_skills_for_runtime(skill_ids: list[str]) -> None:
     """Ensure each skill can be materialized under workspace/skills/."""
     for sid in skill_ids:
+        # Check DB first, then in-memory
+        db_skill = _try_get_skill_from_db(sid)
+        if db_skill:
+            continue
         if sid not in _SKILLS:
             raise HTTPException(status_code=400, detail=f"Unknown skill_id: {sid}")
         skill = _SKILLS[sid]
@@ -705,6 +780,23 @@ def _validate_skills_for_runtime(skill_ids: list[str]) -> None:
 
 def _materialize_skill_package(skills_root: str, skill_id: str) -> None:
     """Write one skill package (SKILL.md + auxiliary files) under skills_root/skill_id/."""
+    # Try DB first for marketplace skills
+    db_data = _try_get_skill_from_db(skill_id)
+    if db_data:
+        pkg = os.path.join(skills_root, skill_id)
+        os.makedirs(pkg, exist_ok=True)
+        with open(os.path.join(pkg, "SKILL.md"), "w", encoding="utf-8") as f:
+            f.write(db_data.get("definition", ""))
+        for rel_path, content in db_data.get("files", {}).items():
+            if rel_path == "SKILL.md" or rel_path.endswith("/SKILL.md"):
+                continue
+            dest = os.path.join(pkg, rel_path)
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            with open(dest, "w", encoding="utf-8") as f:
+                f.write(content or "")
+        return
+
+    # Fallback to in-memory
     skill = _SKILLS[skill_id]
     pkg = os.path.join(skills_root, skill_id)
     os.makedirs(pkg, exist_ok=True)
@@ -1277,6 +1369,11 @@ async def create_skill(body: SkillCreate):
         "updated_at": now,
     }
     _SKILLS[skill_id] = skill
+    skill_dir = os.path.join(_SKILLS_DIR, skill_id)
+    os.makedirs(skill_dir, exist_ok=True)
+    frontmatter = f'---\nname: "{body.name}"\ndescription: "{body.description}"\n---\n\n'
+    with open(os.path.join(skill_dir, "SKILL.md"), "w") as f:
+        f.write(frontmatter + body.definition)
     return skill
 
 
@@ -1291,6 +1388,11 @@ async def update_skill(skill_id: str, body: SkillUpdate):
         skill["description"] = body.description
     if body.definition is not None:
         skill["definition"] = body.definition
+        skill_md = os.path.join(_SKILLS_DIR, skill_id, "SKILL.md")
+        if os.path.isfile(skill_md):
+            frontmatter = f'---\nname: "{skill["name"]}"\ndescription: "{skill["description"]}"\n---\n\n'
+            with open(skill_md, "w") as f:
+                f.write(frontmatter + body.definition)
     skill["updated_at"] = _now_iso()
     return skill
 
@@ -1326,6 +1428,9 @@ async def delete_skill(skill_id: str):
     if _SKILLS[skill_id]["type"] == "builtin":
         raise HTTPException(status_code=403, detail="Cannot delete builtin skills")
     del _SKILLS[skill_id]
+    skill_dir = os.path.join(_SKILLS_DIR, skill_id)
+    if os.path.isdir(skill_dir):
+        shutil.rmtree(skill_dir)
     return {"ok": True}
 
 
@@ -1381,6 +1486,76 @@ async def train_skills(files: list[UploadFile] = File(...)):
 
 _SKILLSBENCH_ROOT = Path(__file__).resolve().parent / "skillsbench"
 _SKILLSBENCH_RUNS = _SKILLSBENCH_ROOT / "experiments" / "skill-eval-runs"
+
+
+@app.get("/api/agent-skills")
+async def get_agent_skills():
+    """Return agent→skills mapping from agent_skills.json, with display names resolved."""
+    path = _SKILLSBENCH_ROOT / "agent_skills.json"
+    if not path.is_file():
+        return {}
+    with open(path) as f:
+        data = json.load(f)
+    for agent_data in data.values():
+        agent_data["skill_details"] = [
+            {"id": sid, "name": _SKILLS.get(sid, {}).get("name", sid)}
+            for sid in agent_data.get("skills", [])
+        ]
+    return data
+
+
+@app.post("/api/skill-evals/run", status_code=202)
+async def run_skill_eval(agent_id: str):
+    """For each skill of the agent, run eval only if no existing result exists."""
+    agent_skills_path = _SKILLSBENCH_ROOT / "agent_skills.json"
+    if not agent_skills_path.is_file():
+        raise HTTPException(status_code=404, detail="agent_skills.json not found")
+    with open(agent_skills_path) as f:
+        agent_skills_data = json.load(f)
+    skill_ids = agent_skills_data.get(agent_id, {}).get("skills", [])
+
+    # Collect skill names that already have eval results
+    existing_names: set[str] = set()
+    if _SKILLSBENCH_RUNS.is_dir():
+        for run_dir in _SKILLSBENCH_RUNS.iterdir():
+            summary = run_dir / "evaluation_summary.json"
+            if summary.is_file():
+                with open(summary) as f:
+                    d = json.load(f)
+                name = d.get("inputs", {}).get("selected_skill_name")
+                if name:
+                    existing_names.add(name)
+
+    script = _SKILLSBENCH_ROOT / "experiments" / "skill_evaluation_framework.py"
+    venv_bin = _SKILLSBENCH_ROOT / ".venv" / "bin"
+    py_bin = str(venv_bin / "python") if (venv_bin / "python").exists() else "python3"
+    env = {**os.environ, "PYTHONUNBUFFERED": "1", "PATH": f"{venv_bin}:{os.environ.get('PATH', '')}"}
+
+    ran, skipped = [], []
+    for skill_id in skill_ids:
+        skill_name = _SKILLS.get(skill_id, {}).get("name", skill_id)
+        if skill_name in existing_names:
+            skipped.append(skill_id)
+            continue
+        asyncio.create_task(
+            asyncio.create_subprocess_exec(
+                py_bin, str(script),
+                "--skills-dir", str(_SKILLS_DIR),
+                "--skill", skill_id,
+                "--tasks-dir", str(_SKILLSBENCH_ROOT / "tasks"),
+                "--workspace-dir", str(_SKILLSBENCH_RUNS),
+                "--threshold", "0.357",
+                "--embedding-model", "openai/text-embedding-3-small",
+                "--base-config", str(_SKILLSBENCH_ROOT / "experiments" / "configs" / "sanity-check.yaml"),
+                "--agent-name", "codex",
+                "--model-name", "openai/gpt-5.2-codex",
+                "--run",
+                env=env,
+                cwd=str(_SKILLSBENCH_ROOT),
+            )
+        )
+        ran.append(skill_id)
+    return {"ok": True, "ran": ran, "skipped": skipped}
 
 
 @app.get("/api/skill-evals")
@@ -1562,4 +1737,3 @@ async def health():
         "status": "ok",
         "real_agent_enabled": REAL_AGENT_ENABLED,
     }
-

@@ -6,7 +6,7 @@ import InputBox from "./components/InputBox";
 import ChatMessage from "./components/ChatMessage";
 import UploadedDataPanel from "./components/DataContext";
 import EvaluationView from "./components/EvaluationView";
-import SkillsView from "./components/SkillsView";
+import SkillsView from "./components/skills/SkillsView";
 import EditorCanvas, { isCanvasPreviewable } from "./components/EditorCanvas";
 import WorkspacePanel from "./components/WorkspacePanel";
 import {
