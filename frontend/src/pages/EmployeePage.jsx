@@ -1,17 +1,19 @@
 import { useState, useEffect } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { ArrowLeft, MessageSquare, Terminal, BarChart3, Trash2, Loader2 } from "lucide-react";
+import { ArrowLeft, MessageSquare, Terminal, BarChart3, Wrench, Trash2, Loader2 } from "lucide-react";
 import ConfirmDialog from "../components/skills/ConfirmDialog";
 import * as Icons from "lucide-react";
 import EmployeeChat from "../components/employee/EmployeeChat";
 import EmployeeConsole from "../components/employee/EmployeeConsole";
 import EmployeeReportCard from "../components/employee/EmployeeReportCard";
+import EmployeeSkillsTab from "../components/employee/EmployeeSkillsTab";
 import PLUGINS from "../data/plugins";
 import { getEmployeeById, deleteEmployee } from "../services/employeeStore";
 import { useApp } from "../context/AppContext";
 
 const TABS = [
   { id: "chat", label: "Chat", icon: MessageSquare },
+  { id: "skills", label: "Skills", icon: Wrench },
   { id: "console", label: "Console", icon: Terminal },
   { id: "report", label: "Report Card", icon: BarChart3 },
 ];
@@ -117,6 +119,13 @@ export default function EmployeePage() {
       </div>
 
       {activeTab === "chat" && <EmployeeChat key={id} employee={employee} />}
+      {activeTab === "skills" && (
+        <EmployeeSkillsTab
+          key={id}
+          employee={employee}
+          onEmployeeUpdated={(emp) => setEmployee(emp)}
+        />
+      )}
       {activeTab === "console" && <EmployeeConsole key={id} employee={employee} />}
       {activeTab === "report" && <EmployeeReportCard key={id} employee={employee} />}
 
