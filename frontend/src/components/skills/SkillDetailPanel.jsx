@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import {
-  X, Download, Trash2, Cloud, CheckCircle, Paperclip,
+  X, Download, Trash2, Cloud, CheckCircle, Paperclip, AlertCircle,
   ChevronDown, ChevronRight, ExternalLink, Copy, Check, Maximize2,
   Loader2, Pencil, Save, Undo2, Send,
 } from "lucide-react";
@@ -8,6 +8,9 @@ import ReactMarkdown from "react-markdown";
 import { updateSkill, createSubmission } from "../../services/api";
 import { fileIcon } from "./utils";
 import FileViewer from "./FileViewer";
+import ConfirmDialog from "./ConfirmDialog";
+import VersionTabs from "./VersionTabs";
+import useVersionHistory from "../../hooks/useVersionHistory";
 
 /* ── Shared markdown component map ──────────────────────────────────────── */
 
@@ -83,7 +86,7 @@ function DefinitionModal({ definition, skillName, onClose }) {
 
 /* ── Main panel ─────────────────────────────────────────────────────────── */
 
-export default function SkillDetailPanel({ skill, onClose, onInstall, onUninstall, onDelete, onSaved }) {
+export default function SkillDetailPanel({ skill, onClose, onInstall, onUninstall, onDelete, onSaved, onPopOut }) {
   const [viewingFile, setViewingFile] = useState(null);
   const [filesExpanded, setFilesExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -96,8 +99,17 @@ export default function SkillDetailPanel({ skill, onClose, onInstall, onUninstal
   const [editDesc, setEditDesc] = useState(skill.description);
   const [editDef, setEditDef] = useState(skill.definition);
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState(null);
+  const [showSaveConfirm, setShowSaveConfirm] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [submitDone, setSubmitDone] = useState(false);
+
+  const {
+    versions, activeVersion, setActiveVersion, addVersion, markSubmitted, getVersion, latestVersion,
+  } = useVersionHistory(skill.id, skill);
+
+  const viewingOldVersion = activeVersion !== latestVersion;
+  const versionData = viewingOldVersion ? getVersion(activeVersion) : null;
 
   const files = skill.files ?? [];
   const isCloudOnly = skill.is_cloud_only;
@@ -131,16 +143,28 @@ export default function SkillDetailPanel({ skill, onClose, onInstall, onUninstal
     try { await onUninstall?.(skill.id); } finally { setInstalling(false); }
   };
 
-  const handleSave = async () => {
+  const handleSave = () => setShowSaveConfirm(true);
+
+  const handleConfirmSave = async () => {
     setSaving(true);
+    setSaveError(null);
     try {
       const updated = await updateSkill(skill.id, {
         name: editName.trim(),
         description: editDesc.trim(),
         definition: editDef.trim(),
       });
+      addVersion({
+        name: editName.trim(),
+        description: editDesc.trim(),
+        definition: editDef.trim(),
+      });
       setEditing(false);
+      setShowSaveConfirm(false);
       onSaved?.(updated);
+    } catch (err) {
+      setSaveError(err.message);
+      setShowSaveConfirm(false);
     } finally {
       setSaving(false);
     }
@@ -153,15 +177,19 @@ export default function SkillDetailPanel({ skill, onClose, onInstall, onUninstal
     setEditing(false);
   };
 
+  const latestVersionData = getVersion(latestVersion);
+  const latestSubmitted = latestVersionData?.submitted ?? false;
+
   const handleSubmit = async () => {
     setSubmitting(true);
     try {
       await createSubmission({
-        name: editing ? editName : skill.name,
-        description: editing ? editDesc : skill.description,
-        skill_md: editing ? editDef : skill.definition,
+        name: skill.name,
+        description: skill.description,
+        skill_md: skill.definition,
         submission_type: "authored",
       });
+      markSubmitted(latestVersion);
       setSubmitDone(true);
       setTimeout(() => setSubmitDone(false), 3000);
     } finally {
@@ -189,7 +217,7 @@ export default function SkillDetailPanel({ skill, onClose, onInstall, onUninstal
         </h3>
         <div className="flex items-center gap-1.5">
           {/* Edit toggle */}
-          {!isBuiltin && !editing && (
+          {!isBuiltin && !editing && !viewingOldVersion && (
             <button
               onClick={() => setEditing(true)}
               className="flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-medium text-text-muted transition-colors hover:bg-surface hover:text-text-secondary"
@@ -218,19 +246,28 @@ export default function SkillDetailPanel({ skill, onClose, onInstall, onUninstal
               </button>
             </>
           )}
-          {/* Submit */}
-          {!isBuiltin && (
+          {/* Submit — shown when latest version is unsubmitted and not editing */}
+          {!isBuiltin && !editing && !viewingOldVersion && (
             <button
               onClick={handleSubmit}
-              disabled={submitting}
+              disabled={submitting || latestSubmitted}
               className={`flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-medium transition-colors ${
-                submitDone
+                submitDone || latestSubmitted
                   ? "bg-green-500/10 text-green-400"
-                  : "bg-purple-500/10 text-purple-400 hover:bg-purple-500/20"
+                  : "bg-accent-teal px-3 text-charcoal hover:bg-accent-light"
               } disabled:opacity-50`}
             >
-              {submitDone ? <Check size={12} /> : submitting ? <Loader2 size={12} className="animate-spin" /> : <Send size={12} />}
-              {submitDone ? "Submitted" : "Submit"}
+              {submitDone || latestSubmitted ? <Check size={12} /> : submitting ? <Loader2 size={12} className="animate-spin" /> : <Send size={12} />}
+              {submitDone || latestSubmitted ? `v${latestVersion} Submitted` : `Submit v${latestVersion}`}
+            </button>
+          )}
+          {onPopOut && (
+            <button
+              onClick={onPopOut}
+              className="rounded-md p-1 text-text-muted transition-colors hover:bg-surface hover:text-text-secondary"
+              title="Pop out"
+            >
+              <Maximize2 size={14} />
             </button>
           )}
           <button
@@ -242,9 +279,37 @@ export default function SkillDetailPanel({ skill, onClose, onInstall, onUninstal
         </div>
       </div>
 
+      <VersionTabs
+        versions={versions}
+        activeVersion={activeVersion}
+        onSelect={setActiveVersion}
+      />
+
       {/* Content */}
       <div className="flex-1 overflow-y-auto p-5">
         <div className="space-y-5">
+          {/* Old version banner */}
+          {viewingOldVersion && versionData && (
+            <div className="flex items-center justify-between rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2">
+              <span className="text-xs text-amber-400">
+                Viewing v{activeVersion} (read-only) — saved {new Date(versionData.savedAt).toLocaleDateString()}
+              </span>
+              <button
+                onClick={() => setActiveVersion(latestVersion)}
+                className="text-[11px] font-medium text-accent-teal hover:underline"
+              >
+                Go to latest
+              </button>
+            </div>
+          )}
+
+          {saveError && (
+            <div className="flex items-center gap-2 rounded-lg bg-red-500/10 px-3 py-2 text-xs text-red-400">
+              <AlertCircle size={13} />
+              {saveError}
+            </div>
+          )}
+
           {/* Badges */}
           <div className="flex flex-wrap items-center gap-2">
             <span className={`rounded-full px-2.5 py-0.5 text-[11px] font-medium ${
@@ -310,8 +375,10 @@ export default function SkillDetailPanel({ skill, onClose, onInstall, onUninstal
           ) : (
             <>
               {/* Description */}
-              {skill.description && (
-                <p className="text-sm leading-relaxed text-text-secondary">{skill.description}</p>
+              {(viewingOldVersion ? versionData?.description : skill.description) && (
+                <p className="text-sm leading-relaxed text-text-secondary">
+                  {viewingOldVersion ? versionData.description : skill.description}
+                </p>
               )}
 
               {/* Actions */}
@@ -383,7 +450,7 @@ export default function SkillDetailPanel({ skill, onClose, onInstall, onUninstal
               )}
 
               {/* Rendered SKILL.md */}
-              {skill.definition && (
+              {(viewingOldVersion ? versionData?.definition : skill.definition) && (
                 <div className="group relative rounded-xl border border-border/20 bg-gradient-to-b from-surface/40 to-transparent p-[1px]">
                   <div className="rounded-[11px] bg-workspace px-5 py-4">
                     <div className="mb-3 flex items-center justify-between">
@@ -405,7 +472,9 @@ export default function SkillDetailPanel({ skill, onClose, onInstall, onUninstal
                         </button>
                       </div>
                     </div>
-                    <ReactMarkdown components={mdComponents}>{skill.definition}</ReactMarkdown>
+                    <ReactMarkdown components={mdComponents}>
+                      {viewingOldVersion ? versionData.definition : skill.definition}
+                    </ReactMarkdown>
                   </div>
                 </div>
               )}
@@ -418,10 +487,10 @@ export default function SkillDetailPanel({ skill, onClose, onInstall, onUninstal
               <span className="font-medium text-text-secondary">ID:</span>{" "}
               <code className="rounded bg-surface px-1.5 py-0.5 text-accent-teal">{skill.id}</code>
             </span>
-            {skill.version && (
+            {latestVersion > 0 && (
               <>
                 <span>&middot;</span>
-                <span>v{skill.version}</span>
+                <span>v{activeVersion} of {latestVersion}</span>
               </>
             )}
             {skill.created_at && (
@@ -442,6 +511,16 @@ export default function SkillDetailPanel({ skill, onClose, onInstall, onUninstal
           onClose={() => setShowModal(false)}
         />
       )}
+
+      <ConfirmDialog
+        open={showSaveConfirm}
+        title={`Save as v${latestVersion + 1}?`}
+        message="This creates a new version of the skill. Previous versions remain viewable."
+        confirmLabel="Save"
+        onConfirm={handleConfirmSave}
+        onCancel={() => setShowSaveConfirm(false)}
+        loading={saving}
+      />
     </div>
   );
 }

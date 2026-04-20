@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# BNY Skill Marketplace — startup script
+# BNY Digital Employee Platform — startup script
 # =============================================================================
 
 set -euo pipefail
@@ -104,7 +104,7 @@ echo " / /_/ / /|  /   / /  / ___ / /_/ /  __/ / / / /_  "
 echo "/_____/_/ |_/   /_/  /_/  |_\\__, /\\___/_/ /_/\\__/  "
 echo "                           /____/                   "
 echo -e "${RESET}"
-echo -e "  ${DIM}Skill Marketplace${RESET}                    ${DIM}$(date '+%Y-%m-%d %H:%M')${RESET}"
+echo -e "  ${DIM}Digital Employee Platform${RESET}              ${DIM}$(date '+%Y-%m-%d %H:%M')${RESET}"
 line
 echo ""
 

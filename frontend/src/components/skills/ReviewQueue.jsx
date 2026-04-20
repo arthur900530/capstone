@@ -5,6 +5,7 @@ import {
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { fetchSubmissions, reviewSubmission, deleteSubmission, fetchSkillById } from "../../services/api";
+import ConfirmDialog from "./ConfirmDialog";
 
 /* ── Compact markdown renderer ──────────────────────────────────────────── */
 
@@ -267,6 +268,8 @@ export default function ReviewQueue() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [comparing, setComparing] = useState(null); // { submission, existingSkill, similarity }
+  const [showClearConfirm, setShowClearConfirm] = useState(false);
+  const [clearing, setClearing] = useState(false);
 
   const load = async () => {
     try {
@@ -301,11 +304,17 @@ export default function ReviewQueue() {
   };
 
   const handleClearResolved = async () => {
-    const resolved = submissions.filter(s => s.status === "accepted" || s.status === "discarded");
-    for (const sub of resolved) {
-      await deleteSubmission(sub.id);
+    setClearing(true);
+    try {
+      const resolved = submissions.filter(s => s.status === "accepted" || s.status === "discarded");
+      await Promise.allSettled(resolved.map((sub) => deleteSubmission(sub.id)));
+      await load();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setClearing(false);
+      setShowClearConfirm(false);
     }
-    await load();
   };
 
   if (loading) {
@@ -349,8 +358,8 @@ export default function ReviewQueue() {
             </span>
             {resolvedCount > 0 && (
               <button
-                onClick={handleClearResolved}
-                className="flex items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] text-text-muted transition-colors hover:bg-surface hover:text-text-secondary"
+                onClick={() => setShowClearConfirm(true)}
+                className="flex items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] text-text-muted transition-colors hover:bg-red-500/10 hover:text-red-400"
               >
                 <X size={11} />
                 Clear {resolvedCount} resolved
@@ -368,6 +377,17 @@ export default function ReviewQueue() {
           ))}
         </div>
       </div>
+
+      <ConfirmDialog
+        open={showClearConfirm}
+        title="Clear resolved submissions?"
+        message={`Remove ${resolvedCount} resolved submission${resolvedCount !== 1 ? "s" : ""} from the queue. This cannot be undone.`}
+        confirmLabel="Clear"
+        confirmColor="red"
+        onConfirm={handleClearResolved}
+        onCancel={() => setShowClearConfirm(false)}
+        loading={clearing}
+      />
 
       {/* Comparison modal */}
       {comparing && (

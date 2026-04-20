@@ -1,4 +1,4 @@
-"""SQLAlchemy ORM models for the skill marketplace."""
+"""SQLAlchemy ORM models for the skill marketplace and digital employees."""
 
 from __future__ import annotations
 
@@ -8,7 +8,9 @@ from datetime import datetime, timezone
 from sqlalchemy import (
     Boolean,
     DateTime,
+    Float,
     ForeignKey,
+    Integer,
     Numeric,
     String,
     Text,
@@ -16,7 +18,7 @@ from sqlalchemy import (
     UniqueConstraint,
     text,
 )
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -301,3 +303,30 @@ class SkillPolicyDecision(Base):
     )
 
     submission: Mapped[SkillSubmission] = relationship(back_populates="policy_decisions")
+
+
+# ── Digital Employees ────────────────────────────────────────────────────────
+
+
+class Employee(Base):
+    __tablename__ = "employees"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    name: Mapped[str] = mapped_column(String(40), nullable=False)
+    task: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    plugin_ids: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    skill_ids: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    model: Mapped[str] = mapped_column(String(120), nullable=False, default="openai/gpt-4o")
+    use_reflexion: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    max_trials: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    confidence_threshold: Mapped[float] = mapped_column(Float, nullable=False, default=0.7)
+    chat_session_ids: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    files: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    last_active_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow
+    )

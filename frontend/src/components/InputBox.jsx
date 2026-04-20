@@ -33,6 +33,8 @@ export default function InputBox({
   onSkipConfirmChange,
   mountDir = "",
   onMountDirChange,
+  hideSkillPicker = false,
+  hideModelPicker = false,
 }) {
   const [text, setText] = useState("");
   const [isFocused, setIsFocused] = useState(false);
@@ -89,7 +91,7 @@ export default function InputBox({
     }
   };
 
-  const displayModel = config.model
+  const displayModel = config?.model
     ? config.model.split("/").pop()
     : "openai/gpt-5.1";
 
@@ -193,6 +195,7 @@ export default function InputBox({
               <span className="text-xs">Files</span>
             </button>
 
+            {!hideSkillPicker && (
             <div className="relative" ref={skillRef}>
               <button
                 onClick={() => {
@@ -254,6 +257,7 @@ export default function InputBox({
                 </div>
               )}
             </div>
+            )}
 
             <div className="relative" ref={workspaceRef}>
               <button
@@ -329,28 +333,30 @@ export default function InputBox({
           </div>
 
           <div className="flex items-center gap-2">
+            {!hideModelPicker && (
+            <>
             <button
               type="button"
               role="switch"
-              aria-checked={Boolean(config.useReflexion)}
+              aria-checked={Boolean(config?.useReflexion)}
               onClick={() =>
-                onConfigChange({ ...config, useReflexion: !config.useReflexion })
+                onConfigChange?.({ ...config, useReflexion: !config?.useReflexion })
               }
               title="Enable Reflexion (evaluate, reflect, retry on failure)"
               className={`flex h-8 items-center gap-2 rounded-lg px-2.5 text-xs font-medium transition-colors ${
-                config.useReflexion
+                config?.useReflexion
                   ? "bg-accent-teal/20 text-accent-teal"
                   : "text-text-muted hover:bg-surface-hover hover:text-text-secondary"
               }`}
             >
               <span
                 className={`relative inline-flex h-4 w-7 shrink-0 items-center rounded-full transition-colors ${
-                  config.useReflexion ? "bg-accent-teal" : "bg-border"
+                  config?.useReflexion ? "bg-accent-teal" : "bg-border"
                 }`}
               >
                 <span
                   className={`absolute top-0.5 left-0.5 h-3 w-3 rounded-full bg-white shadow transition-transform ${
-                    config.useReflexion ? "translate-x-3" : "translate-x-0"
+                    config?.useReflexion ? "translate-x-3" : "translate-x-0"
                   }`}
                 />
               </span>
@@ -374,20 +380,22 @@ export default function InputBox({
                     <button
                       key={m}
                       onClick={() => {
-                        onConfigChange({ ...config, model: m });
+                        onConfigChange?.({ ...config, model: m });
                         setShowModelPicker(false);
                       }}
                       className={`flex w-full items-center gap-2 px-4 py-2 text-left text-xs transition-colors hover:bg-surface ${
-                        config.model === m ? "text-accent-teal" : "text-text-secondary"
+                        config?.model === m ? "text-accent-teal" : "text-text-secondary"
                       }`}
                     >
-                      <div className={`h-2 w-2 rounded-full ${config.model === m ? "bg-accent-teal" : "bg-border"}`} />
+                      <div className={`h-2 w-2 rounded-full ${config?.model === m ? "bg-accent-teal" : "bg-border"}`} />
                       {m}
                     </button>
                   ))}
                 </div>
               )}
             </div>
+            </>
+            )}
 
             <button
               onClick={handleSubmit}
