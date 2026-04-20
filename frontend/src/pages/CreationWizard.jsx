@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { ArrowLeft } from "lucide-react";
 import StepDescribe from "../components/wizard/StepDescribe";
 import StepPlugin from "../components/wizard/StepPlugin";
+import StepLearnSkills from "../components/wizard/StepLearnSkills";
 import StepUpload from "../components/wizard/StepUpload";
 import StepLaunch from "../components/wizard/StepLaunch";
 import PLUGINS from "../data/plugins";
@@ -10,7 +11,7 @@ import EMPLOYEE_TEMPLATES from "../data/employeeTemplates";
 import { createEmployee } from "../services/employeeStore";
 import { useApp } from "../context/AppContext";
 
-const STEPS = ["Describe", "Plugin", "Upload", "Launch"];
+const STEPS = ["Describe", "Plugin", "Learn Skills", "Upload", "Launch"];
 
 export default function CreationWizard() {
   const navigate = useNavigate();
@@ -137,14 +138,22 @@ export default function CreationWizard() {
           />
         )}
         {step === 2 && (
-          <StepUpload
-            files={files}
-            onFilesChange={setFiles}
+          <StepLearnSkills
+            skillIds={skillIds}
+            onSkillIdsChange={setSkillIds}
             onBack={() => setStep(1)}
             onNext={() => setStep(3)}
           />
         )}
         {step === 3 && (
+          <StepUpload
+            files={files}
+            onFilesChange={setFiles}
+            onBack={() => setStep(2)}
+            onNext={() => setStep(4)}
+          />
+        )}
+        {step === 4 && (
           <StepLaunch
             name={name}
             onNameChange={setName}
@@ -153,7 +162,7 @@ export default function CreationWizard() {
             skillIds={skillIds}
             config={config}
             files={files}
-            onBack={() => setStep(2)}
+            onBack={() => setStep(3)}
             onCreate={handleCreate}
           />
         )}
