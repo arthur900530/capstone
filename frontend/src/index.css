@@ -115,3 +115,63 @@ body {
 .animate-slide-in-right {
   animation: slideInRight 0.15s ease-out;
 }
+
+/* ── Desktop simulator animations ──────────────────────── */
+
+@keyframes blink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
+.animate-blink { animation: blink 1s step-end infinite; }
+
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(40px) scale(0.95); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+.animate-slide-up { animation: slideUp 0.3s ease-out; }
+
+@keyframes minimizeOut {
+  to { opacity: 0; transform: translateY(100px) scale(0.3); }
+}
+.animate-minimize { animation: minimizeOut 0.3s ease-in forwards; }
+
+@keyframes highlightSweep {
+  from { background-size: 0% 100%; }
+  to { background-size: 100% 100%; }
+}
+.animate-highlight {
+  background-image: linear-gradient(rgba(45, 155, 173, 0.25), rgba(45, 155, 173, 0.25));
+  background-repeat: no-repeat;
+  background-position: left;
+  animation: highlightSweep 1.5s ease-out forwards;
+}
+
+@keyframes progressFill {
+  from { width: 0%; }
+  to { width: 100%; }
+}
+.animate-progress { animation: progressFill 2s ease-in-out; }
+
+@keyframes meterFill {
+  from { width: 0%; }
+}
+.animate-meter { animation: meterFill 1s ease-out forwards; }
+
+@keyframes pulseGlow {
+  0%, 100% { box-shadow: 0 0 8px rgba(250, 204, 21, 0.2); }
+  50% { box-shadow: 0 0 20px rgba(250, 204, 21, 0.5); }
+}
+.animate-pulse-glow { animation: pulseGlow 2s ease-in-out infinite; }
+
+@keyframes badgeEntrance {
+  0% { opacity: 0; transform: scale(0.5); }
+  60% { transform: scale(1.1); }
+  100% { opacity: 1; transform: scale(1); }
+}
+.animate-badge { animation: badgeEntrance 0.5s ease-out; }
+
+@keyframes scrollPage {
+  from { transform: translateY(0); }
+  to { transform: translateY(-200px); }
+}
+.animate-scroll-page { animation: scrollPage 2s ease-in-out forwards; }
