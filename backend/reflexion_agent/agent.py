@@ -18,7 +18,7 @@ from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.tools.file_editor import FileEditorTool
 from openhands.tools.task_tracker import TaskTrackerTool
 from openhands.tools.terminal import TerminalTool
-from openhands.sdk.workspace import LocalWorkspace
+from openhands.workspace import DockerWorkspace
 
 from reflexion_agent import evaluate_trajectory, generate_reflection, ReflexionMemory
 from config import BASE_URL, API_KEY, AGENT_MODEL
@@ -72,14 +72,45 @@ def _detect_platform():
     return "linux/arm64" if "arm" in m or "aarch64" in m else "linux/amd64"
 
 
-def _find_port(start=8010):
-    port = start
-    while True:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            if s.connect_ex(("localhost", port)) != 0:
+def _find_port(start: int = 8010, end: int = 9010) -> int:
+    """Find a host port we can actually bind on 127.0.0.1.
+
+    We test by binding (with SO_REUSEADDR off) rather than ``connect_ex``:
+    ``connect_ex`` only detects "someone is listening", but Docker needs the
+    port to be free to bind — which also excludes ports held by zombie
+    containers, ports reserved by the OS, and ports bound on different
+    interfaces. Matching DockerWorkspace's own check avoids races where we
+    pick a port it then rejects.
+    """
+    for port in range(start, end):
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.bind(("127.0.0.1", port))
                 return port
-        port += 1
-        
+        except OSError:
+            continue
+    raise RuntimeError(f"No free port available in range [{start}, {end})")
+
+
+def build_workspace(mount_host_dir: str | None = None) -> DockerWorkspace:
+    """Construct a DockerWorkspace with our standard image/platform settings.
+
+    Used by both the CLI path (which opens a short-lived workspace) and the
+    FastAPI server (which keeps one alive for the lifetime of the process and
+    copies session files in/out of the bind-mounted host directory).
+    """
+    if mount_host_dir:
+        abs_mount = str(Path(mount_host_dir).resolve())
+        volumes = [f"{abs_mount}:/workspace:rw"]
+    else:
+        volumes = []
+    return DockerWorkspace(
+        server_image="ghcr.io/openhands/agent-server:latest-python",
+        host_port=_find_port(),
+        platform=_detect_platform(),
+        volumes=volumes,
+    )
+
 
 def _make_llm_call(llm_client):
     """Create a simple callable that wraps the OpenHands LLM client.
@@ -129,13 +160,11 @@ def runtime(
     mount_dir: str = None,
     event_callback: Callable | None = None,
     use_reflexion: bool | None = None,
+    workspace=None,
 ):
-    if mount_dir:
-        abs_mount = str(Path(mount_dir).resolve())
-        volumes = [f"{abs_mount}:/workspace:rw"]
-    else:
-        volumes = []
-
+    """
+    Run one agent conversation against a DockerWorkspace.
+    """
     callbacks = [event_callback] if event_callback else []
 
     llm = LLM(model=model, api_key=SecretStr(api_key), base_url=base_url, service_id="agent")
@@ -148,19 +177,28 @@ def runtime(
     agent_context = AgentContext(skills=skills)
     use_rx = ENABLE_REFLEXION if use_reflexion is None else use_reflexion
     logger.info(
-        "model=%s, base_url=%s, mounted_dir=%s, use_reflexion=%s",
+        "model=%s, base_url=%s, mounted_dir=%s, use_reflexion=%s, injected_workspace=%s",
         model,
         base_url,
         mount_dir,
         use_rx,
+        workspace is not None,
     )
-    working_dir = abs_mount if mount_dir else repo_dir or "."
-    with LocalWorkspace(working_dir=working_dir) as workspace:
+
+    def _run(ws):
         if use_rx:
-            _run_with_reflexion(llm, agent_context, instruction, workspace, callbacks=callbacks)
+            _run_with_reflexion(llm, agent_context, instruction, ws, callbacks=callbacks)
         else:
             agent = _create_agent(llm, agent_context)
-            _run_without_reflexion(agent, instruction, workspace, callbacks=callbacks)
+            _run_without_reflexion(agent, instruction, ws, callbacks=callbacks)
+
+    if workspace is not None:
+        _run(workspace)
+        return
+
+    # CLI fallback: no injected workspace, so own the lifecycle here.
+    with build_workspace(mount_host_dir=mount_dir) as owned_ws:
+        _run(owned_ws)
 
 
 def _extract_trajectory_text(obj) -> str:

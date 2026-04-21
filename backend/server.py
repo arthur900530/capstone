@@ -49,6 +49,7 @@ _agent_import_error: str | None = None
 if REAL_AGENT_ENABLED:
     try:
         from reflexion_agent.agent import runtime as _agent_runtime
+        from reflexion_agent.agent import build_workspace as _build_workspace
         from openhands.sdk.event import (
             ActionEvent,
             ObservationEvent,
@@ -78,18 +79,44 @@ from routers.submissions import router as submissions_router
 from routers.employees import router as employees_router
 
 
+# ---------------------------------------------------------------------------
+# Shared DockerWorkspace
+# ---------------------------------------------------------------------------
+# A single DockerWorkspace is started at server boot with its bind mount
+# pointing at a neutral scratch directory on the host (``_SHARED_WS["host_dir"]``).
+# Sessions never bind-mount their own directories; instead, at session-swap
+# time we (1) sync the current owner's changes back to their original
+# ``mount_dir`` on the host, (2) wipe the shared bind mount, and (3) copy
+# the incoming session's files in. Within a single session, no copying
+# happens between turns — the container and its /workspace contents are
+# reused as-is, so every turn after the first is instant.
+#
+# The tradeoffs (spelled out so the next reader isn't surprised):
+#   - Only one agent runs at a time; ``_SHARED_WS["lock"]`` serializes them.
+#   - The user's ``mount_dir`` on disk is not live: changes are synced back
+#     after each turn of the owning session, and again on eviction.
+#   - Hidden top-level dirs (``.agents``, ``.openhands``) are excluded from
+#     sync-back to avoid polluting the user's project with agent-internal
+#     scaffolding. They still live inside /workspace during the run.
+
+_SHARED_WS: dict[str, Any] = {
+    "workspace": None,       # DockerWorkspace instance (entered via __enter__)
+    "host_dir": None,        # str: host path bind-mounted at /workspace
+    "lock": None,            # asyncio.Lock — serializes session access
+    "current_owner": None,   # dict or None — see _prime_shared_workspace
+}
+
+
 @asynccontextmanager
 async def lifespan(application):
-    """Start DB engine and seed skills on first boot. Falls back to in-memory if no DB."""
+    """Start DB engine, seed skills, and warm the shared DockerWorkspace."""
     from routers.skills import set_db_available
     from routers.employees import set_db_available as set_emp_db
     try:
-        # Run Alembic migrations programmatically
         from alembic.config import Config
         from alembic import command
         alembic_cfg = Config(os.path.join(os.path.dirname(__file__), "alembic.ini"))
         await asyncio.to_thread(command.upgrade, alembic_cfg, "head")
-        # Seed filesystem skills into DB if needed
         await seed_from_filesystem()
         set_db_available(True)
         set_emp_db(True)
@@ -98,11 +125,72 @@ async def lifespan(application):
         set_db_available(False)
         set_emp_db(False)
         logger.warning("DB init skipped — falling back to in-memory skills: %s", exc)
+
+    # Warm the shared DockerWorkspace once, before accepting requests.
+    if REAL_AGENT_ENABLED:
+        host_dir = tempfile.mkdtemp(prefix="shared_ws_")
+        logger.info("Starting shared DockerWorkspace (host_dir=%s) …", host_dir)
+        workspace = None
+        last_exc: Exception | None = None
+        # Retry a few times: a freshly-chosen host port may race with another
+        # container / process coming up on the same port. On each retry
+        # _find_port picks a new one.
+        for attempt in range(1, 4):
+            try:
+                workspace = await asyncio.to_thread(_start_shared_workspace, host_dir)
+                break
+            except Exception as exc:
+                last_exc = exc
+                logger.warning(
+                    "Shared DockerWorkspace start attempt %d/3 failed: %s",
+                    attempt, exc,
+                )
+        if workspace is not None:
+            _SHARED_WS["host_dir"] = host_dir
+            _SHARED_WS["workspace"] = workspace
+            _SHARED_WS["lock"] = asyncio.Lock()
+            _SHARED_WS["current_owner"] = None
+            logger.info("Shared DockerWorkspace ready — bind mount %s:/workspace", host_dir)
+        else:
+            logger.error(
+                "Failed to start shared DockerWorkspace after 3 attempts; real agent disabled. "
+                "Check for stale containers: `docker ps -a | rg openhands/agent-server`. "
+                "Last error: %s",
+                last_exc,
+            )
+            shutil.rmtree(host_dir, ignore_errors=True)
+            _SHARED_WS["workspace"] = None
+            _SHARED_WS["host_dir"] = None
+            _SHARED_WS["lock"] = None
+
     yield
+
+    # Shut down: sync back the last owner's changes and tear down the container.
+    if _SHARED_WS.get("workspace") is not None:
+        try:
+            await asyncio.to_thread(_evict_current_owner_sync)
+            await asyncio.to_thread(
+                _SHARED_WS["workspace"].__exit__, None, None, None
+            )
+        except Exception:
+            logger.exception("Error while tearing down shared DockerWorkspace")
+        finally:
+            host_dir = _SHARED_WS.get("host_dir")
+            if host_dir and os.path.isdir(host_dir):
+                shutil.rmtree(host_dir, ignore_errors=True)
+            _SHARED_WS["workspace"] = None
+            _SHARED_WS["host_dir"] = None
+
     try:
         await engine.dispose()
     except Exception:
         pass
+
+
+def _start_shared_workspace(host_dir: str):
+    """Synchronous helper: build the workspace and enter its context."""
+    ws = _build_workspace(mount_host_dir=host_dir)
+    return ws.__enter__()
 
 
 app = FastAPI(title="Digital Employee Platform API", lifespan=lifespan)
@@ -758,6 +846,160 @@ def _copy_dir_contents(src_dir: str, dst_dir: str) -> None:
             shutil.copy2(src, dst)
 
 
+# Top-level entries excluded when syncing back the shared workspace to the
+# user's real mount_dir. These are agent-internal scaffolding (skill packs,
+# task tracker files, conversation journals, …) that should not pollute
+# the user's project directory.
+_SYNC_BACK_EXCLUDE_TOPLEVEL: set[str] = {".agents", ".openhands"}
+
+
+def _sync_dir_contents_for_export(src_dir: str, dst_dir: str) -> None:
+    """Copy src_dir → dst_dir, skipping agent-internal scaffolding dirs.
+
+    Used to flush /workspace back to the user's original ``mount_dir`` after
+    a run. Hidden dotfiles are kept (users may intentionally create them),
+    but the well-known agent-internal top-level dirs are excluded so the
+    user's tree stays clean.
+    """
+    if not os.path.isdir(src_dir) or not dst_dir:
+        return
+    os.makedirs(dst_dir, exist_ok=True)
+    for name in os.listdir(src_dir):
+        if name in _SYNC_BACK_EXCLUDE_TOPLEVEL:
+            continue
+        src = os.path.join(src_dir, name)
+        dst = os.path.join(dst_dir, name)
+        if os.path.isdir(src):
+            shutil.copytree(src, dst, dirs_exist_ok=True)
+        else:
+            shutil.copy2(src, dst)
+
+
+def _clear_dir_contents(path: str) -> None:
+    """Remove everything inside ``path`` but keep the directory itself."""
+    if not path or not os.path.isdir(path):
+        return
+    for name in os.listdir(path):
+        full = os.path.join(path, name)
+        try:
+            if os.path.isdir(full) and not os.path.islink(full):
+                shutil.rmtree(full)
+            else:
+                os.unlink(full)
+        except OSError:
+            logger.warning("Failed to remove %s while clearing %s", full, path)
+
+
+def _owner_key(
+    session_id: str,
+    mount_dir: str | None,
+    skill_ids: list[str] | None,
+) -> tuple[str, str | None, tuple[str, ...]]:
+    """Stable identity for 'the session + workspace config currently in /workspace'."""
+    return (session_id, mount_dir, tuple(sorted(skill_ids or [])))
+
+
+def _evict_current_owner_sync() -> None:
+    """Sync-back + cleanup for the current owner. Caller must hold the lock.
+
+    - If the owner set a ``sync_target`` (the user's real mount_dir), copy
+      the current /workspace contents back into it, skipping agent-internal
+      dirs.
+    - Remove any temp ``cleanup_dirs`` the owner accumulated (skill staging,
+      upload staging).
+    - Clear ``_SHARED_WS["current_owner"]`` so the next prime runs a full swap.
+    """
+    owner = _SHARED_WS.get("current_owner")
+    if not owner:
+        return
+
+    host_dir = _SHARED_WS.get("host_dir")
+    sync_target = owner.get("sync_target")
+    if host_dir and sync_target:
+        try:
+            _sync_dir_contents_for_export(host_dir, sync_target)
+            logger.info(
+                "Synced shared workspace back to mount_dir=%s (session=%s)",
+                sync_target, owner.get("session_id"),
+            )
+        except Exception:
+            logger.exception(
+                "Sync-back failed for session=%s → %s",
+                owner.get("session_id"), sync_target,
+            )
+
+    for path in owner.get("cleanup_dirs") or []:
+        if path and os.path.isdir(path):
+            shutil.rmtree(path, ignore_errors=True)
+
+    _SHARED_WS["current_owner"] = None
+
+
+def _prime_shared_workspace_sync(
+    session_id: str,
+    effective_mount: str | None,
+    sync_target: str | None,
+    cleanup_dirs: list[str],
+    key: tuple,
+) -> None:
+    """Make /workspace reflect ``effective_mount``. Caller must hold the lock.
+
+    Fast path: if the incoming ``key`` matches the current owner, do nothing —
+    the session is continuing and /workspace already holds its state.
+
+    Slow path: evict the current owner (sync-back + cleanup), wipe the shared
+    bind mount, copy ``effective_mount`` contents in, and record this session
+    as the new owner.
+    """
+    current = _SHARED_WS.get("current_owner")
+    if current and current.get("key") == key:
+        # Same session + mount + skills as last turn — reuse as-is.
+        for path in cleanup_dirs or []:
+            if path and os.path.isdir(path) and path not in (current.get("cleanup_dirs") or []):
+                shutil.rmtree(path, ignore_errors=True)
+        return
+
+    _evict_current_owner_sync()
+
+    host_dir = _SHARED_WS["host_dir"]
+    _clear_dir_contents(host_dir)
+    if effective_mount and os.path.isdir(effective_mount):
+        _copy_dir_contents(effective_mount, host_dir)
+
+    _SHARED_WS["current_owner"] = {
+        "key": key,
+        "session_id": session_id,
+        "sync_target": sync_target,
+        "cleanup_dirs": list(cleanup_dirs or []),
+    }
+    logger.info(
+        "Primed shared workspace: session=%s mount=%s skills_cached=%s",
+        session_id, sync_target, bool(cleanup_dirs),
+    )
+
+
+def _sync_current_owner_back_sync() -> None:
+    """Copy /workspace contents back to the owner's sync target (no eviction).
+
+    Called after each turn so the user sees their files on disk without
+    having to wait for session eviction. Caller must hold the lock.
+    """
+    owner = _SHARED_WS.get("current_owner")
+    if not owner:
+        return
+    host_dir = _SHARED_WS.get("host_dir")
+    sync_target = owner.get("sync_target")
+    if not (host_dir and sync_target):
+        return
+    try:
+        _sync_dir_contents_for_export(host_dir, sync_target)
+    except Exception:
+        logger.exception(
+            "Post-turn sync-back failed for session=%s → %s",
+            owner.get("session_id"), sync_target,
+        )
+
+
 def _try_get_skill_from_db(skill_id: str) -> dict | None:
     """Try to fetch skill materialization data from DB. Returns None if DB unavailable."""
     from routers.skills import _db_available
@@ -1054,7 +1296,20 @@ async def _stream_real_task(
     use_reflexion: bool = False,
     skill_ids: list[str] | None = None,
 ):
-    """Run the real OpenHands agent in a background thread, streaming events as SSE."""
+    """Run the real OpenHands agent against the shared DockerWorkspace.
+
+    The container is started once at app boot (see ``lifespan``). Here we:
+      1. Resolve the request's source workspace (user mount_dir ± skills).
+      2. Under the shared lock, prime /workspace (noop if this session already
+         owns it; full wipe + copy-in otherwise).
+      3. Run the agent against the shared workspace, streaming events.
+      4. Sync /workspace back to the user's mount_dir so the UI sees results.
+    """
+    if _SHARED_WS.get("workspace") is None:
+        yield _sse("error", {"message": "Shared workspace is not available."})
+        yield _sse("done", {"message": "Complete"})
+        return
+
     queue: asyncio.Queue = asyncio.Queue()
     loop = asyncio.get_running_loop()
 
@@ -1068,6 +1323,12 @@ async def _stream_real_task(
             skill_ids,
         )
 
+    # Where sync-back writes. Only the user's declared mount_dir is a valid
+    # sync target; skills-only or staging-only runs don't write back anywhere.
+    sync_target = _validate_mount_dir(mount_dir)
+    owner_key = _owner_key(session_id, sync_target, skill_ids)
+    host_dir = _SHARED_WS["host_dir"]
+
     _turn_counter[session_id] = 0
 
     def _callback(event):
@@ -1079,19 +1340,17 @@ async def _stream_real_task(
         error = None
         try:
             _agent_runtime(
-                repo_dir=effective_mount or "",
+                repo_dir=host_dir,
                 instruction=question,
-                mount_dir=effective_mount,
+                mount_dir=host_dir,
                 event_callback=_callback,
                 use_reflexion=use_reflexion,
+                workspace=_SHARED_WS["workspace"],
             )
         except Exception as exc:
             error = str(exc)
             logger.exception("Agent runtime failed")
         finally:
-            for path in cleanup_dirs:
-                if path and os.path.isdir(path):
-                    shutil.rmtree(path, ignore_errors=True)
             if error:
                 loop.call_soon_threadsafe(
                     queue.put_nowait,
@@ -1103,45 +1362,71 @@ async def _stream_real_task(
     yield _sse("agent", agent_info)
     yield _sse("status", {"message": f"Agent starting work — model: {agent_info.get('model', 'unknown')}"})
 
-    loop.run_in_executor(None, _run_agent)
+    lock: asyncio.Lock = _SHARED_WS["lock"]
+    async with lock:
+        # Prime /workspace: fast path if the same session/mount is continuing,
+        # full swap otherwise (sync out previous owner, wipe, copy in).
+        try:
+            await asyncio.to_thread(
+                _prime_shared_workspace_sync,
+                session_id,
+                effective_mount,
+                sync_target,
+                cleanup_dirs,
+                owner_key,
+            )
+        except Exception as exc:
+            logger.exception("Failed to prime shared workspace")
+            yield _sse("error", {"message": f"workspace prime failed: {exc}"})
+            yield _sse("done", {"message": "Complete"})
+            return
 
-    got_answer = False
-    last_tool_text: str | None = None
+        # Baseline snapshot: taken from the shared host dir AFTER priming so
+        # files we just copied in aren't reported as newly-created by the agent.
+        prev_snapshot = _snapshot_files(host_dir)
+        _announced_paths[session_id] = set()
 
-    # Baseline snapshot: anything already in the workspace before the agent
-    # starts should never be reported as "created" by our diff.
-    prev_snapshot = _snapshot_files(effective_mount or "")
-    _announced_paths[session_id] = set()
+        loop.run_in_executor(None, _run_agent)
 
-    while True:
-        item = await queue.get()
-        if item is None:
-            break
-        event_type = item["event"]
-        data = json.loads(item["data"])
-        _append_event(session_id, event_type, data)
-        yield item
+        got_answer = False
+        last_tool_text: str | None = None
 
-        # Remember paths the file_editor explicitly announced, so the
-        # post-tool snapshot diff doesn't duplicate them.
-        if event_type == "file_edit" and data.get("path"):
-            _announced_paths.setdefault(session_id, set()).add(data["path"])
+        while True:
+            item = await queue.get()
+            if item is None:
+                break
+            event_type = item["event"]
+            data = json.loads(item["data"])
+            _append_event(session_id, event_type, data)
+            yield item
 
-        if event_type == "answer":
-            got_answer = True
-        elif event_type == "tool_result":
-            last_tool_text = data.get("text")
-            # Detect new files dropped on disk by terminal commands, scripts,
-            # pandoc, etc. — anything the file_editor tool didn't surface.
-            if effective_mount:
-                curr_snapshot = _snapshot_files(effective_mount)
+            # Remember paths the file_editor explicitly announced, so the
+            # post-tool snapshot diff doesn't duplicate them.
+            if event_type == "file_edit" and data.get("path"):
+                _announced_paths.setdefault(session_id, set()).add(data["path"])
+
+            if event_type == "answer":
+                got_answer = True
+            elif event_type == "tool_result":
+                last_tool_text = data.get("text")
+                # Detect new files dropped on disk by terminal commands, scripts,
+                # pandoc, etc. — anything the file_editor tool didn't surface.
+                curr_snapshot = _snapshot_files(host_dir)
                 synthetic = _build_synthetic_creates(
-                    effective_mount, prev_snapshot, curr_snapshot, session_id,
+                    host_dir, prev_snapshot, curr_snapshot, session_id,
                 )
                 for payload in synthetic:
                     yield _sse("file_edit", payload)
                     _append_event(session_id, "file_edit", payload)
                 prev_snapshot = curr_snapshot
+
+        # Flush this turn's changes back to the user's mount_dir (if any).
+        # The owner stays "this session" — next turn in the same session takes
+        # the fast path and avoids any copying.
+        try:
+            await asyncio.to_thread(_sync_current_owner_back_sync)
+        except Exception:
+            logger.exception("Post-turn sync-back failed")
 
     if not got_answer and last_tool_text:
         evt = {"text": last_tool_text}
