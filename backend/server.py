@@ -242,7 +242,7 @@ _AGENTS: dict[str, dict] = {
     },
 }
 
-_DEFAULT_TASK_AGENT = "agent-GPT-full"
+_DEFAULT_TASK_AGENT = "agent-gpt5.4-full"
 _DEFAULT_CHAT_AGENT = "agent-conversational"
 
 
@@ -259,7 +259,13 @@ def _resolve_agent(model: str | None, is_task: bool = True) -> dict:
         for agent in _AGENTS.values():
             if agent["model"] == model and (bool(agent["skills"]) == is_task):
                 return {**agent, "model": AGENT_MODEL}
-    base = _AGENTS[_DEFAULT_TASK_AGENT if is_task else _DEFAULT_CHAT_AGENT]
+    default_id = _DEFAULT_TASK_AGENT if is_task else _DEFAULT_CHAT_AGENT
+    base = _AGENTS.get(default_id)
+    if base is None:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Default agent '{default_id}' is not registered.",
+        )
     return {**base, "model": AGENT_MODEL}
 
 

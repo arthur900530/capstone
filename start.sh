@@ -133,20 +133,22 @@ step "npm         $(npm --version 2>&1)"
 command -v git >/dev/null 2>&1 || die "git not found."
 step "git         $(git --version 2>&1 | cut -d' ' -f3)"
 
-PYTHON_API="python3"
-PYTHON_BENCH="python3"
-if command -v python3.12 >/dev/null 2>&1; then
-  PYTHON_BENCH="python3.12"
-elif command -v python3.13 >/dev/null 2>&1; then
-  PYTHON_BENCH="python3.13"
-fi
+PYTHON_API=""
+PYTHON_BENCH=""
+for candidate in python3.12 python3.13 python3; do
+  if command -v "$candidate" >/dev/null 2>&1 \
+    && "$candidate" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 12) else 1)' 2>/dev/null; then
+    PYTHON_API="$candidate"
+    PYTHON_BENCH="$candidate"
+    break
+  fi
+done
 
-bench_meets_312() {
-  "$PYTHON_BENCH" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 12) else 1)'
-}
+[[ -n "$PYTHON_API" ]] || die "backend needs Python >= 3.12 because openhands-sdk requires it."
+step "Backend py  $($PYTHON_API --version 2>&1 | cut -d' ' -f2)"
 
-if [[ "${SKIP_SKILLSBENCH:-0}" != "1" ]]; then
-  bench_meets_312 || die "skillsbench needs Python >= 3.12. Set SKIP_SKILLSBENCH=1 to skip."
+if [[ "${SKIP_SKILLSBENCH:-0}" != "1" && -z "$PYTHON_BENCH" ]]; then
+  die "skillsbench needs Python >= 3.12. Set SKIP_SKILLSBENCH=1 to skip."
 fi
 
 [[ -d "$FRONTEND_DIR" ]] || die "Missing frontend directory"
@@ -160,7 +162,12 @@ header "Frontend"
 
 if [[ ! -d "$FRONTEND_DIR/node_modules" ]]; then
   info "First run — installing npm dependencies..."
-  (cd "$FRONTEND_DIR" && npm install --silent 2>&1 | grep -E "added|up to date" | head -1 | sed "s/^/       /")
+  if npm_output="$(cd "$FRONTEND_DIR" && npm install --silent 2>&1)"; then
+    printf '%s\n' "$npm_output" | grep -E "added|up to date" | head -1 | sed "s/^/       /" || true
+  else
+    printf '%s\n' "$npm_output" >&2
+    die "npm install failed"
+  fi
   step "Dependencies installed"
 else
   step "Dependencies ready"
@@ -169,6 +176,12 @@ fi
 # ── Backend virtualenv ────────────────────────────────────────────────────────
 
 header "Backend"
+
+if [[ -d "$BACKEND_DIR/.venv" ]] \
+  && ! "$BACKEND_DIR/.venv/bin/python" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 12) else 1)' 2>/dev/null; then
+  info "Recreating backend virtual environment with $($PYTHON_API --version 2>&1)..."
+  rm -rf "$BACKEND_DIR/.venv"
+fi
 
 if [[ ! -d "$BACKEND_DIR/.venv" ]]; then
   info "Creating virtual environment..."
