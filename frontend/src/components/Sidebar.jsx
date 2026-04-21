@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import * as Icons from "lucide-react";
 import {
-  Plus,
+  Home,
   ChevronDown,
   ChevronRight,
   Trash2,
@@ -153,11 +153,11 @@ export default function Sidebar({
         {/* Primary action */}
         <div className="p-4">
           <button
-            onClick={() => nav("/new")}
+            onClick={() => nav("/")}
             className="flex w-full items-center gap-3 rounded-xl bg-accent-teal px-4 py-3 text-sm font-medium text-workspace transition-colors hover:bg-accent-teal/90"
           >
-            <Plus size={18} />
-            New Employee
+            <Home size={18} />
+            Home
           </button>
         </div>
 
