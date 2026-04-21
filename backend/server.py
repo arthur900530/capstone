@@ -69,17 +69,20 @@ else:
 
 from contextlib import asynccontextmanager
 
+from config import AGENT_MODEL
 from db.engine import engine
 from db.seed import seed_from_filesystem
 from routers.skills import router as skills_router
 from routers.marketplace import router as marketplace_router
 from routers.submissions import router as submissions_router
+from routers.employees import router as employees_router
 
 
 @asynccontextmanager
 async def lifespan(application):
     """Start DB engine and seed skills on first boot. Falls back to in-memory if no DB."""
     from routers.skills import set_db_available
+    from routers.employees import set_db_available as set_emp_db
     try:
         # Run Alembic migrations programmatically
         from alembic.config import Config
@@ -89,9 +92,11 @@ async def lifespan(application):
         # Seed filesystem skills into DB if needed
         await seed_from_filesystem()
         set_db_available(True)
+        set_emp_db(True)
         logger.info("Database initialized and seeded.")
     except Exception as exc:
         set_db_available(False)
+        set_emp_db(False)
         logger.warning("DB init skipped — falling back to in-memory skills: %s", exc)
     yield
     try:
@@ -100,7 +105,7 @@ async def lifespan(application):
         pass
 
 
-app = FastAPI(title="Skill Marketplace Agent API", lifespan=lifespan)
+app = FastAPI(title="Digital Employee Platform API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -113,6 +118,7 @@ app.add_middleware(
 app.include_router(skills_router)
 app.include_router(marketplace_router)
 app.include_router(submissions_router)
+app.include_router(employees_router)
 
 
 # ---------------------------------------------------------------------------
@@ -158,12 +164,20 @@ def _now_iso() -> str:
 
 
 def _resolve_agent(model: str | None, is_task: bool = True) -> dict:
-    """Pick the best matching agent for a given model string and query type."""
+    """Pick the best matching agent profile and stamp it with the REAL model
+    that the runtime will actually call.
+
+    The `_AGENTS` registry carries historical/display model strings, but the
+    reflexion runtime always uses ``config.AGENT_MODEL``. To keep the UI
+    honest we clone the selected profile and overwrite its ``model`` field
+    with ``AGENT_MODEL`` before returning.
+    """
     if model:
         for agent in _AGENTS.values():
             if agent["model"] == model and (bool(agent["skills"]) == is_task):
-                return agent
-    return _AGENTS[_DEFAULT_TASK_AGENT if is_task else _DEFAULT_CHAT_AGENT]
+                return {**agent, "model": AGENT_MODEL}
+    base = _AGENTS[_DEFAULT_TASK_AGENT if is_task else _DEFAULT_CHAT_AGENT]
+    return {**base, "model": AGENT_MODEL}
 
 
 _SKILLS_DIR = os.path.join(os.path.dirname(__file__), "skills")
@@ -677,13 +691,30 @@ def _map_event_to_sse(event: Any, session_id: str) -> dict | None:
             return _sse("error", {"message": getattr(event, "error", str(event))})
 
         if isinstance(event, ConversationErrorEvent):
-            msg = getattr(event, "message", None) or getattr(event, "error", None) or str(event)
-            return _sse("error", {"message": msg})
+            code = getattr(event, "code", None) or "ConversationError"
+            detail = getattr(event, "detail", None) or getattr(event, "message", None) or str(event)
+            logger.error("ConversationErrorEvent: code=%s detail=%s", code, detail)
+            return _sse("error", {"message": f"{code}: {detail}"})
 
     except Exception:
         logger.exception("Failed to map event to SSE: %s", type(event).__name__)
 
     return None
+
+
+def _validate_mount_dir(mount_dir: str | None) -> str | None:
+    """Reject mount_dir paths that escape the user's home or /tmp."""
+    if not mount_dir:
+        return None
+    resolved = os.path.realpath(mount_dir)
+    home = os.path.expanduser("~")
+    allowed_prefixes = (home + os.sep, tempfile.gettempdir() + os.sep)
+    if not resolved.startswith(allowed_prefixes):
+        raise HTTPException(
+            status_code=400,
+            detail="mount_dir must be under your home directory or /tmp",
+        )
+    return resolved
 
 
 def _resolve_workspace(session_id: str, mount_dir: str | None) -> tuple[str | None, str | None]:
@@ -695,6 +726,7 @@ def _resolve_workspace(session_id: str, mount_dir: str | None) -> tuple[str | No
 
     Returns (effective_mount_dir, staging_dir_to_cleanup_or_None).
     """
+    mount_dir = _validate_mount_dir(mount_dir)
     staging = _upload_dirs.pop(session_id, None)
 
     if staging and mount_dir:
@@ -790,7 +822,9 @@ def _materialize_skill_package(skills_root: str, skill_id: str) -> None:
         for rel_path, content in db_data.get("files", {}).items():
             if rel_path == "SKILL.md" or rel_path.endswith("/SKILL.md"):
                 continue
-            dest = os.path.join(pkg, rel_path)
+            dest = os.path.realpath(os.path.join(pkg, rel_path))
+            if not dest.startswith(os.path.realpath(pkg) + os.sep):
+                continue  # skip path traversal attempts
             os.makedirs(os.path.dirname(dest), exist_ok=True)
             with open(dest, "w", encoding="utf-8") as f:
                 f.write(content or "")
@@ -804,18 +838,24 @@ def _materialize_skill_package(skills_root: str, skill_id: str) -> None:
     with open(os.path.join(pkg, "SKILL.md"), "w", encoding="utf-8") as f:
         f.write(definition)
     by_name = _FILE_CONTENTS.get(skill_id, {})
+    pkg_real = os.path.realpath(pkg)
     for meta in skill.get("files") or []:
         rel = meta["name"].replace("\\", "/")
         if rel == "SKILL.md" or rel.endswith("/SKILL.md"):
             continue
-        dest = os.path.join(pkg, rel)
+        dest = os.path.realpath(os.path.join(pkg, rel))
+        if not dest.startswith(pkg_real + os.sep):
+            continue  # skip path traversal attempts
         dest_parent = os.path.dirname(dest)
         if dest_parent:
             os.makedirs(dest_parent, exist_ok=True)
         if rel in by_name:
             text = by_name[rel]
         else:
-            disk_path = os.path.join(_SKILLS_DIR, skill_id, rel)
+            skill_dir_real = os.path.realpath(os.path.join(_SKILLS_DIR, skill_id))
+            disk_path = os.path.realpath(os.path.join(_SKILLS_DIR, skill_id, rel))
+            if not disk_path.startswith(skill_dir_real + os.sep):
+                continue
             with open(disk_path, encoding="utf-8") as f:
                 text = f.read()
         with open(dest, "w", encoding="utf-8") as f:
@@ -1146,13 +1186,13 @@ async def upload_files(
     saved: list[dict] = []
 
     for upload in files:
-        dest = os.path.join(staging, upload.filename)
-        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        safe_name = os.path.basename(upload.filename) or f"upload_{uuid.uuid4().hex}"
+        dest = os.path.join(staging, safe_name)
         content = await upload.read()
         with open(dest, "wb") as f:
             f.write(content)
         saved.append({
-            "name": upload.filename,
+            "name": safe_name,
             "size": len(content),
             "type": upload.content_type,
         })
@@ -1240,7 +1280,9 @@ async def delete_chat(chat_id: str):
 
 @app.get("/api/agents")
 async def list_agents():
-    return list(_AGENTS.values())
+    # Stamp the real model onto every profile so the UI's agent list matches
+    # what the runtime will actually call (see _resolve_agent).
+    return [{**agent, "model": AGENT_MODEL} for agent in _AGENTS.values()]
 
 
 @app.get("/api/evaluations")

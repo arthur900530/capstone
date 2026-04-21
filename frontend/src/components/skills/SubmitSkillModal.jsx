@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Loader2, AlertCircle, X, Send, CheckCircle } from "lucide-react";
 import { createSubmission } from "../../services/api";
 
-export default function SubmitSkillModal({ open, onClose, skill, onSubmitted }) {
+export default function SubmitSkillModal({ open, onClose, skill, version, onSubmitted }) {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
   const [success, setSuccess] = useState(false);
@@ -58,7 +58,10 @@ export default function SubmitSkillModal({ open, onClose, skill, onSubmitted }) 
             <>
               <div className="rounded-lg border border-border/40 bg-charcoal/50 p-3">
                 <p className="text-xs font-medium text-text-secondary">Submitting:</p>
-                <p className="mt-1 text-sm font-medium text-text-primary">{skill.name}</p>
+                <p className="mt-1 text-sm font-medium text-text-primary">
+                  {skill.name}
+                  {version && <span className="ml-1.5 text-xs text-text-muted">v{version}</span>}
+                </p>
                 {skill.description && (
                   <p className="mt-1 text-xs text-text-muted">{skill.description}</p>
                 )}

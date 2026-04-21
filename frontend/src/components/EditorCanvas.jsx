@@ -82,6 +82,11 @@ const AUTO_OPEN_IGNORED_SEGMENTS = new Set([
 const AUTO_OPEN_IGNORED_BASENAME_PATTERNS = [
   /^event-\d{5}-[0-9a-fA-F-]{8,}\.json$/,
 ];
+// Any path segment (directory or file) containing one of these tokens is
+// treated as agent-internal and will NOT auto-open in the canvas. Matching is
+// case-insensitive. Use this for scratch / staging directories such as
+// `tmp_tsmc`, `tmp_scratch`, `.../tmp/.../foo.py`, etc.
+const AUTO_OPEN_IGNORED_SEGMENT_SUBSTRINGS = ["tmp"];
 
 function basenameOf(path) {
   if (!path) return "";
@@ -97,6 +102,15 @@ function isAgentInternalPath(path) {
   // Match a segment anywhere in the directory portion of the path.
   for (let i = 0; i < parts.length - 1; i++) {
     if (AUTO_OPEN_IGNORED_SEGMENTS.has(parts[i])) return true;
+  }
+  // Substring match against every segment (including the basename) so names
+  // like `tmp_tsmc/report.md` or `some/tmp/file.py` are caught too.
+  for (const part of parts) {
+    if (!part) continue;
+    const lower = part.toLowerCase();
+    if (AUTO_OPEN_IGNORED_SEGMENT_SUBSTRINGS.some((tok) => lower.includes(tok))) {
+      return true;
+    }
   }
   return false;
 }
