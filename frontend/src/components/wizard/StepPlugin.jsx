@@ -27,8 +27,6 @@ export default function StepPlugin({
   const [skillViewMode, setSkillViewMode] = useState("list");
   const [newSkillInput, setNewSkillInput] = useState("");
 
-  const selectedPlugins = PLUGINS.filter((p) => selectedPluginIds.includes(p.id));
-
   const handlePluginToggle = (plugin) => {
     const alreadySelected = selectedPluginIds.includes(plugin.id);
     let nextIds;
@@ -75,10 +73,10 @@ export default function StepPlugin({
   return (
     <div className="mx-auto max-w-3xl">
       <h2 className="mb-2 text-xl font-semibold text-text-primary">
-        Choose plugins
+        Choose plugins <span className="text-sm font-normal text-text-muted">(optional)</span>
       </h2>
       <p className="mb-6 text-sm text-text-muted">
-        Select one or more plugins. Each bundles skills tailored to a role.
+        Select plugins to bundle skills tailored to a role, or skip this step to auto select skills.
       </p>
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
@@ -318,10 +316,9 @@ export default function StepPlugin({
         </button>
         <button
           onClick={onNext}
-          disabled={!hasSelection}
-          className="rounded-lg bg-accent-teal px-6 py-2.5 text-sm font-medium text-workspace transition-colors hover:bg-accent-teal/90 disabled:opacity-40 disabled:cursor-not-allowed"
+          className="rounded-lg bg-accent-teal px-6 py-2.5 text-sm font-medium text-workspace transition-colors hover:bg-accent-teal/90"
         >
-          Next
+          {hasSelection ? "Next" : "Auto Select"}
         </button>
       </div>
     </div>
