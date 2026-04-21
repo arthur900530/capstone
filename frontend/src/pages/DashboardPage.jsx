@@ -13,14 +13,25 @@ export default function DashboardPage() {
     <div className="flex-1 overflow-y-auto px-6 py-8">
       <div className="mx-auto max-w-5xl">
         {/* Header */}
-        <div className="mb-8 flex items-center gap-3">
-          <h1 className="text-2xl font-bold text-text-primary">
-            My Digital Employees
-          </h1>
+        <div className="mb-8 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <h1 className="text-2xl font-bold text-text-primary">
+              My Digital Employees
+            </h1>
+            {hasEmployees && (
+              <span className="rounded-full bg-accent-teal/15 px-2.5 py-0.5 text-xs font-semibold text-accent-teal">
+                {employees.length}
+              </span>
+            )}
+          </div>
           {hasEmployees && (
-            <span className="rounded-full bg-accent-teal/15 px-2.5 py-0.5 text-xs font-semibold text-accent-teal">
-              {employees.length}
-            </span>
+            <button
+              onClick={() => navigate("/new")}
+              className="flex items-center gap-2 rounded-lg bg-accent-teal px-4 py-2.5 text-sm font-medium text-workspace transition-colors hover:bg-accent-teal/90"
+            >
+              <Plus size={16} />
+              Create New Employee
+            </button>
           )}
         </div>
 

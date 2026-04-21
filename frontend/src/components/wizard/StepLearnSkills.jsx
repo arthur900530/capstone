@@ -16,7 +16,7 @@ export default function StepLearnSkills({ skillIds, onSkillIdsChange, onBack, on
   return (
     <div className="mx-auto max-w-3xl">
       <h2 className="mb-2 text-xl font-semibold text-text-primary">
-        Learn Skills
+         Skills
       </h2>
       <p className="mb-4 text-sm text-text-muted">
         Browse the marketplace to discover skills, or create your own. Selected
@@ -52,6 +52,7 @@ export default function StepLearnSkills({ skillIds, onSkillIdsChange, onBack, on
         selectedSkillIds={skillIds}
         onToggleSkill={toggleSkill}
         onSkillsChanged={refreshSkills}
+        defaultSubTab="create"
       />
 
       <div className="mt-8 flex justify-between">

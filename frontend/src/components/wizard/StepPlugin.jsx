@@ -1,15 +1,9 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { ChevronDown, Plus, X, List, Share2 } from "lucide-react";
 import PLUGINS from "../../data/plugins";
 import PluginCard from "../PluginCard";
 import SkillGraph from "./SkillGraph";
-
-const MODEL_OPTIONS = [
-  { value: "openai/gpt-5.1", label: "GPT-5.1" },
-  { value: "openai/gpt-4o", label: "GPT-4o" },
-  { value: "anthropic/claude-sonnet-4-5-20250929", label: "Claude Sonnet" },
-  { value: "anthropic/claude-haiku-3-5-20241022", label: "Claude Haiku" },
-];
+import { useApp } from "../../context/AppContext";
 
 export default function StepPlugin({
   selectedPluginIds,
@@ -26,6 +20,15 @@ export default function StepPlugin({
   const [showSkillEditor, setShowSkillEditor] = useState(false);
   const [skillViewMode, setSkillViewMode] = useState("list");
   const [newSkillInput, setNewSkillInput] = useState("");
+
+  const { agents } = useApp();
+  const availableModels = useMemo(
+    () =>
+      Array.from(
+        new Set((agents ?? []).map((a) => a?.model).filter(Boolean)),
+      ),
+    [agents],
+  );
 
   const handlePluginToggle = (plugin) => {
     const alreadySelected = selectedPluginIds.includes(plugin.id);
@@ -241,13 +244,23 @@ export default function StepPlugin({
                 onChange={(e) =>
                   onConfigChange({ ...config, model: e.target.value })
                 }
-                className="w-full rounded-lg border border-border/40 bg-surface px-3 py-2 text-sm text-text-primary focus:border-accent-teal/50 focus:outline-none"
+                disabled={availableModels.length === 0}
+                className="w-full rounded-lg border border-border/40 bg-surface px-3 py-2 text-sm text-text-primary focus:border-accent-teal/50 focus:outline-none disabled:opacity-60"
               >
-                {MODEL_OPTIONS.map((opt) => (
-                  <option key={opt.value} value={opt.value}>
-                    {opt.label}
-                  </option>
-                ))}
+                {availableModels.length === 0 ? (
+                  <option value="">No models available</option>
+                ) : (
+                  <>
+                    {!availableModels.includes(config.model) && config.model && (
+                      <option value={config.model}>{config.model}</option>
+                    )}
+                    {availableModels.map((m) => (
+                      <option key={m} value={m}>
+                        {m}
+                      </option>
+                    ))}
+                  </>
+                )}
               </select>
             </div>
 

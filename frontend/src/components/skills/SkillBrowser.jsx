@@ -10,7 +10,7 @@ import CreateSkillModal from "./CreateSkillModal";
 import TrainSkillModal from "./TrainSkillModal";
 import SubmitSkillModal from "./SubmitSkillModal";
 
-export default function SkillBrowser({ selectedSkillIds, onToggleSkill, onSkillsChanged }) {
+export default function SkillBrowser({ selectedSkillIds, onToggleSkill, onSkillsChanged, defaultSubTab = "browse" }) {
   const [skills, setSkills] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -18,7 +18,7 @@ export default function SkillBrowser({ selectedSkillIds, onToggleSkill, onSkills
   const [search, setSearch] = useState("");
   const [viewMode, setViewMode] = useState("grid");
   const [typeFilter, setTypeFilter] = useState("all");
-  const [subTab, setSubTab] = useState("browse");
+  const [subTab, setSubTab] = useState(defaultSubTab);
   const [showCreate, setShowCreate] = useState(false);
   const [showTrain, setShowTrain] = useState(false);
   const [showSubmit, setShowSubmit] = useState(null);
@@ -93,8 +93,8 @@ export default function SkillBrowser({ selectedSkillIds, onToggleSkill, onSkills
       {/* Sub-tabs */}
       <div className="flex items-center gap-1">
         {[
-          { id: "browse", label: "Browse", icon: Store },
           { id: "create", label: "Create", icon: UploadIcon },
+          { id: "browse", label: "Browse", icon: Store },
         ].map(({ id, label, icon: TabIcon }) => (
           <button
             key={id}
