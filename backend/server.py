@@ -209,46 +209,41 @@ app.include_router(submissions_router)
 app.include_router(employees_router)
 
 
-# ---------------------------------------------------------------------------
-# In-memory stores (Have to change)
-# ---------------------------------------------------------------------------
-
-_AGENTS: dict[str, dict] = {
-    "agent-claude-full": {
-        "id": "agent-claude-full",
-        "name": "Equity Research Analyst",
-        "model": "anthropic/claude-sonnet-4-5-20250929",
-        "skills": ["web_search", "edgar_search", "parse_html", "retrieve_info"],
-    },
-    "agent-gpt4o-web": {
-        "id": "agent-gpt4o-web",
-        "name": "Market Intelligence Associate",
-        "model": "openai/gpt-4o",
-        "skills": ["web_search", "parse_html", "retrieve_info"],
-    },
-    "agent-claude-lite": {
-        "id": "agent-claude-lite",
-        "name": "Portfolio Risk Analyst",
-        "model": "anthropic/claude-sonnet-4-5-20250929",
-        "skills": ["web_search", "edgar_search", "parse_html"],
-    },
-    "agent-conversational": {
-        "id": "agent-conversational",
-        "name": "Financial Advisor Assistant",
-        "model": "anthropic/claude-sonnet-4-5-20250929",
-        "skills": [],
-    },
-}
-
-_DEFAULT_TASK_AGENT = "agent-claude-full"
-_DEFAULT_CHAT_AGENT = "agent-conversational"
-
 _chats: dict[str, dict] = {}
 _upload_dirs: dict[str, str] = {}
 
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+# Registry of agent profiles surfaced by /api/agents and consumed by
+# _resolve_agent. The ``model`` field here is a historical/display value;
+# the reflexion runtime always calls ``config.AGENT_MODEL``, and callers
+# stamp that real model onto the returned profile (see _resolve_agent).
+_AGENTS: dict[str, dict] = {
+    "agent-gpt5.4-full": {
+        "id": "agent-gpt5.4-full",
+        "name": "Equity Research Analyst",
+        "model": "openai/gpt-5.4",
+        "skills": ["web_search", "edgar_search", "parse_html", "retrieve_info"],
+    },
+    "agent-gpt5.4-web": {
+        "id": "agent-gpt5.4-web",
+        "name": "Market Intelligence Associate",
+        "model": "openai/gpt-5.4",
+        "skills": ["web_search", "parse_html", "retrieve_info"],
+    },
+    "agent-conversational": {
+        "id": "agent-conversational",
+        "name": "Financial Advisor Assistant",
+        "model": "openai/gpt-5.4",
+        "skills": [],
+    },
+}
+
+_DEFAULT_TASK_AGENT = "agent-GPT-full"
+_DEFAULT_CHAT_AGENT = "agent-conversational"
 
 
 def _resolve_agent(model: str | None, is_task: bool = True) -> dict:
@@ -712,6 +707,15 @@ def _map_event_to_sse(event: Any, session_id: str) -> dict | None:
                 _turn_counter.setdefault(session_id, 0)
                 _turn_counter[session_id] += 1
 
+                # For terminal/bash actions, predict which files this command
+                # will write so the matching ObservationEvent can read them
+                # off the workspace and emit file_edit payloads.
+                if tool_name.lower() in _TERMINAL_TOOL_NAMES:
+                    predicted = _extract_bash_output_paths(
+                        str(args_dict.get("command", ""))
+                    )
+                    _pending_bash_writes.setdefault(session_id, []).append(predicted)
+
                 # Emit a richer event for file_editor tool calls
                 if tool_name.lower() in ("file_editor", "fileeditortool"):
                     raw_path = args_dict.get("path", "")
@@ -1158,12 +1162,17 @@ def _resolve_workspace_for_runtime(
 
 
 # ---------------------------------------------------------------------------
-# Workspace-watcher helpers (auto-detect files created by terminal tools)
+# Terminal-write detection (auto-open canvas for files dropped by bash)
 # ---------------------------------------------------------------------------
+#
+# Strategy: instead of polling the workspace, we statically parse each
+# terminal tool invocation, predict which paths the command will write, and
+# read+emit those files when the matching observation event comes back.
+# This mirrors how file_editor surfaces its writes — purely event-driven.
 
 # Files we know how to render in the canvas. Mirrors the frontend allowlist
-# in EditorCanvas.jsx (`isCanvasPreviewable`). Anything outside this set is
-# tracked in the workspace tree but not auto-opened.
+# in EditorCanvas.jsx (`isCanvasPreviewable`). Files outside this set still
+# show up in the workspace tree, just don't auto-open.
 _PREVIEWABLE_EXTS: set[str] = {
     ".md", ".markdown", ".mdown", ".mkd",
     ".txt", ".log", ".csv", ".tsv",
@@ -1177,29 +1186,20 @@ _PREVIEWABLE_EXTS: set[str] = {
     ".c", ".cc", ".cpp", ".h", ".hpp", ".rb", ".lua", ".r", ".php", ".pl",
 }
 
-# Files written by agent-internal tooling (task tracker, reflexion memory,
-# OpenHands conversation persistence, …) that should never auto-open the
-# canvas. They still show up in the workspace tree so the user can inspect
-# them on demand. Match by basename so the rule applies regardless of the
-# persistence directory's location.
+# Agent-internal artifacts that should never auto-open the canvas even if
+# bash happens to create one (TASKS.json, reflexion memory, OpenHands
+# event journals, …). They remain visible in the workspace tree.
 _AUTO_OPEN_IGNORED_BASENAMES: set[str] = {
     "TASKS.json",
     "TASKS.md",
     "reflexion_memory.json",
-    "base_state.json",  # OpenHands conversation root state
+    "base_state.json",
 }
-
-# Substring/segment matches: skip any path that contains one of these path
-# segments (e.g. anything inside an OpenHands "subagents/" persistence dir
-# or the per-conversation "events/" log directory).
 _AUTO_OPEN_IGNORED_SEGMENTS: tuple[str, ...] = (
     "subagents",
     "events",
     "conversations",
 )
-
-# Regex matches against the basename — covers OpenHands per-event journal
-# files (event-00001-<uuid>.json, event-00002-<uuid>.json, …).
 _AUTO_OPEN_IGNORED_BASENAME_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"^event-\d{5}-[0-9a-fA-F\-]{8,}\.json$"),
 )
@@ -1215,55 +1215,87 @@ def _should_skip_auto_open(rel_path: str) -> bool:
     return any(seg in _AUTO_OPEN_IGNORED_SEGMENTS for seg in parts[:-1])
 
 
-# Tracks paths we've already announced as "create" per session, so the snapshot
-# diff doesn't re-emit a file that the file_editor tool already reported.
-_announced_paths: dict[str, set[str]] = {}
+# Per-session FIFO of [paths] predicted by each pending terminal action.
+# Pushed when an ActionEvent for the terminal tool is observed, popped when
+# the matching ObservationEvent comes back so we can read the actual files.
+_pending_bash_writes: dict[str, list[list[str]]] = {}
+
+# Tools whose action/observation we treat as "bash-like".
+_TERMINAL_TOOL_NAMES: set[str] = {
+    "terminal", "bash", "execute_bash", "shell", "executebash",
+}
+
+# Path char class: anything that isn't whitespace, quoting, redirection or
+# subshell punctuation. Covers most realistic POSIX paths.
+_PATH_CHARS = r"[^\s'\"`;&|<>()]+"
+
+# >, >>, &>, &>>, 1>, 2>, 1>>, 2>> followed by a (optionally quoted) path.
+_REDIRECT_RE = re.compile(rf"(?:[12]?&?>>?|&>>?)\s*(['\"]?)({_PATH_CHARS})\1")
+# `tee [-a] file...`
+_TEE_RE = re.compile(rf"\btee\s+(?:-a\s+)?(['\"]?)({_PATH_CHARS})\1")
+# `touch f1 f2 ...` — capture the run of args.
+_TOUCH_RE = re.compile(rf"\btouch\s+((?:{_PATH_CHARS}\s*)+)")
+# `cp/mv/install [-flags] src dst` — last arg is the destination.
+_CPMV_RE = re.compile(
+    rf"\b(?:cp|mv|install)\s+(?:-[A-Za-z]+\s+)*{_PATH_CHARS}\s+({_PATH_CHARS})"
+)
+# `pandoc … -o file`
+_PANDOC_RE = re.compile(rf"\bpandoc\b[^;&|]*?-o\s+(['\"]?)({_PATH_CHARS})\1")
 
 
-def _snapshot_files(root: str) -> dict[str, float]:
-    """Return {relative_path: mtime} for non-hidden files under ``root``."""
-    snap: dict[str, float] = {}
-    if not root or not os.path.isdir(root):
-        return snap
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if not d.startswith(".")]
-        for name in filenames:
-            if name.startswith("."):
-                continue
-            full = os.path.join(dirpath, name)
-            rel = os.path.relpath(full, root)
-            try:
-                snap[rel] = os.path.getmtime(full)
-            except OSError:
-                continue
-    return snap
+def _extract_bash_output_paths(command: str) -> list[str]:
+    """Best-effort: return workspace-relative paths a shell command will write."""
+    if not command:
+        return []
+    # Strip $(…) and `…` subshells so paths inside them don't get picked up
+    # as outputs of the parent command.
+    cleaned = re.sub(r"\$\([^()]*\)|`[^`]*`", "", command)
 
+    raw_paths: list[str] = []
+    for rx in (_REDIRECT_RE, _TEE_RE, _PANDOC_RE):
+        for m in rx.finditer(cleaned):
+            raw_paths.append(m.group(2))
+    for m in _TOUCH_RE.finditer(cleaned):
+        raw_paths.extend(p.strip("'\"") for p in m.group(1).split())
+    for m in _CPMV_RE.finditer(cleaned):
+        raw_paths.append(m.group(1))
 
-def _build_synthetic_creates(
-    root: str,
-    prev: dict[str, float],
-    curr: dict[str, float],
-    session_id: str,
-) -> list[dict]:
-    """Return file_edit-style payloads for newly created previewable files."""
-    seen = _announced_paths.setdefault(session_id, set())
-    payloads: list[dict] = []
-
-    for rel, mtime in curr.items():
-        if rel in seen:
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in raw_paths:
+        p = raw.strip().strip("'\"")
+        if not p or p in {"/dev/null", "/dev/stderr", "/dev/stdout"}:
             continue
-        if rel in prev:
-            continue  # only brand-new files; modifications come via file_editor
+        # Normalize to workspace-relative paths; the agent runs with cwd at
+        # /workspace inside the container, which == host_dir on the host.
+        if p.startswith("/workspace/"):
+            p = p[len("/workspace/"):]
+        elif p.startswith("/"):
+            continue  # absolute path outside the workspace, ignore
+        p = p.lstrip("./")
+        if not p or p in seen:
+            continue
+        seen.add(p)
+        out.append(p)
+    return out
+
+
+def _build_terminal_file_edits(session_id: str, host_dir: str) -> list[dict]:
+    """Pop the next pending bash-write batch and emit file_edit payloads."""
+    fifo = _pending_bash_writes.get(session_id)
+    if not fifo:
+        return []
+    paths = fifo.pop(0)
+    payloads: list[dict] = []
+    for rel in paths:
         if _should_skip_auto_open(rel):
-            seen.add(rel)  # don't re-evaluate next time either
             continue
         ext = os.path.splitext(rel)[1].lower()
         if ext not in _PREVIEWABLE_EXTS:
             continue
-
-        full = os.path.join(root, rel)
-        # Read text content for text files; leave None for binaries (PDF/image).
-        # Reuses the same heuristic as the /api/workspace/file endpoint.
+        full = os.path.join(host_dir, rel)
+        if not os.path.isfile(full):
+            continue  # command may have failed, or path didn't resolve
         file_text: str | None = None
         if _is_text_file(full):
             try:
@@ -1271,7 +1303,6 @@ def _build_synthetic_creates(
                     file_text = f.read(500_000)
             except OSError:
                 file_text = None
-
         _turn_counter.setdefault(session_id, 0)
         _turn_counter[session_id] += 1
         payloads.append({
@@ -1283,8 +1314,6 @@ def _build_synthetic_creates(
             "new_str": None,
             "insert_line": None,
         })
-        seen.add(rel)
-
     return payloads
 
 
@@ -1336,6 +1365,20 @@ async def _stream_real_task(
         if mapped:
             loop.call_soon_threadsafe(queue.put_nowait, mapped)
 
+        # When a terminal/bash observation comes back, read the predicted
+        # output files off the workspace and surface them as file_edit
+        # events so the canvas auto-opens just like file_editor writes.
+        try:
+            if isinstance(event, ObservationEvent):
+                obs_tool = (getattr(event, "tool_name", None) or "").lower()
+                if obs_tool in _TERMINAL_TOOL_NAMES:
+                    for payload in _build_terminal_file_edits(session_id, host_dir):
+                        loop.call_soon_threadsafe(
+                            queue.put_nowait, _sse("file_edit", payload)
+                        )
+        except Exception:
+            logger.exception("Failed to emit terminal-driven file_edit events")
+
     def _run_agent():
         error = None
         try:
@@ -1381,10 +1424,7 @@ async def _stream_real_task(
             yield _sse("done", {"message": "Complete"})
             return
 
-        # Baseline snapshot: taken from the shared host dir AFTER priming so
-        # files we just copied in aren't reported as newly-created by the agent.
-        prev_snapshot = _snapshot_files(host_dir)
-        _announced_paths[session_id] = set()
+        _pending_bash_writes[session_id] = []
 
         loop.run_in_executor(None, _run_agent)
 
@@ -1398,27 +1438,13 @@ async def _stream_real_task(
             event_type = item["event"]
             data = json.loads(item["data"])
             _append_event(session_id, event_type, data)
-            yield item
 
-            # Remember paths the file_editor explicitly announced, so the
-            # post-tool snapshot diff doesn't duplicate them.
-            if event_type == "file_edit" and data.get("path"):
-                _announced_paths.setdefault(session_id, set()).add(data["path"])
+            yield item
 
             if event_type == "answer":
                 got_answer = True
             elif event_type == "tool_result":
                 last_tool_text = data.get("text")
-                # Detect new files dropped on disk by terminal commands, scripts,
-                # pandoc, etc. — anything the file_editor tool didn't surface.
-                curr_snapshot = _snapshot_files(host_dir)
-                synthetic = _build_synthetic_creates(
-                    host_dir, prev_snapshot, curr_snapshot, session_id,
-                )
-                for payload in synthetic:
-                    yield _sse("file_edit", payload)
-                    _append_event(session_id, "file_edit", payload)
-                prev_snapshot = curr_snapshot
 
         # Flush this turn's changes back to the user's mount_dir (if any).
         # The owner stays "this session" — next turn in the same session takes
@@ -1434,7 +1460,7 @@ async def _stream_real_task(
         _append_event(session_id, "answer", evt)
 
     _turn_counter.pop(session_id, None)
-    _announced_paths.pop(session_id, None)
+    _pending_bash_writes.pop(session_id, None)
     yield _sse("done", {"message": "Complete"})
 
 
@@ -2019,14 +2045,33 @@ async def workspace_tree(path: str):
     return {"root": path, "tree": tree}
 
 
-@app.get("/api/workspace/file")
-async def workspace_file(root: str, path: str):
-    """Return text content of a file inside a workspace root."""
+def _resolve_workspace_path(root: str, path: str) -> str:
+    """Resolve ``path`` under ``root``; fall back to the shared host_dir.
+
+    During an agent turn the agent writes into the shared DockerWorkspace
+    bind-mount (``_SHARED_WS["host_dir"]``). Sync-back to the user's
+    ``mount_dir`` only runs after the turn finishes, so files (especially
+    binaries like PDFs/images that we can't embed in SSE) are temporarily
+    invisible under ``root``. Treating the shared dir as a fallback makes
+    those files reachable immediately.
+    """
     if not root or not os.path.isdir(root):
         raise HTTPException(status_code=400, detail="Invalid root directory")
     full_path = _safe_resolve(root, path)
-    if not os.path.isfile(full_path):
-        raise HTTPException(status_code=404, detail="File not found")
+    if os.path.isfile(full_path):
+        return full_path
+    shared = _SHARED_WS.get("host_dir")
+    if shared and os.path.isdir(shared):
+        fallback = _safe_resolve(shared, path)
+        if os.path.isfile(fallback):
+            return fallback
+    raise HTTPException(status_code=404, detail="File not found")
+
+
+@app.get("/api/workspace/file")
+async def workspace_file(root: str, path: str):
+    """Return text content of a file inside a workspace root."""
+    full_path = _resolve_workspace_path(root, path)
     if not _is_text_file(full_path):
         raise HTTPException(status_code=415, detail="Binary file — cannot display")
     try:
@@ -2040,11 +2085,7 @@ async def workspace_file(root: str, path: str):
 @app.get("/api/workspace/raw")
 async def workspace_raw(root: str, path: str):
     """Stream a file's bytes as-is (used for PDFs, images, etc.)."""
-    if not root or not os.path.isdir(root):
-        raise HTTPException(status_code=400, detail="Invalid root directory")
-    full_path = _safe_resolve(root, path)
-    if not os.path.isfile(full_path):
-        raise HTTPException(status_code=404, detail="File not found")
+    full_path = _resolve_workspace_path(root, path)
 
     media_type, _ = mimetypes.guess_type(full_path)
     if media_type is None:

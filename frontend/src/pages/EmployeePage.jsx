@@ -6,6 +6,7 @@ import * as Icons from "lucide-react";
 import EmployeeChat from "../components/employee/EmployeeChat";
 import DesktopSimulator from "../components/desktop/DesktopSimulator";
 import EmployeeConsole from "../components/employee/EmployeeConsole";
+import ChatView from "../components/ChatView";
 
 const IS_DEMO = import.meta.env.VITE_DEMO === "true";
 import EmployeeReportCard from "../components/employee/EmployeeReportCard";
@@ -73,8 +74,8 @@ export default function EmployeePage() {
   };
 
   return (
-    <div className="flex flex-1 flex-col">
-      <div className="border-b border-border/30 px-6 py-4">
+    <div className="flex flex-1 flex-col min-h-0 overflow-hidden">
+      <div className="shrink-0 border-b border-border/30 px-6 py-4">
         <div className="mx-auto flex max-w-5xl items-center justify-between">
           <div className="flex items-center gap-4">
             <button
@@ -107,7 +108,7 @@ export default function EmployeePage() {
         </div>
       </div>
 
-      <div className="border-b border-border/20 px-6">
+      <div className="shrink-0 border-b border-border/20 px-6">
         <div className="mx-auto flex max-w-5xl gap-1">
           {TABS.map(({ id, label, icon: Icon }) => (
             <button
@@ -126,9 +127,7 @@ export default function EmployeePage() {
         </div>
       </div>
 
-      {activeTab === "chat" && !IS_DEMO && (
-        <EmployeeChat key={id} employee={employee} />
-      )}
+      {activeTab === "chat" && !IS_DEMO && <ChatView />}
       {activeTab === "chat" && IS_DEMO && (
         <div className="flex flex-1 overflow-hidden">
           <div className="flex min-w-0 flex-1 flex-col border-r border-border/20 lg:max-w-[50%]">

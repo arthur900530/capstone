@@ -24,7 +24,7 @@ class EmployeeCreate(BaseModel):
     task: str = ""
     pluginIds: list[str] = []
     skillIds: list[str] = []
-    model: str = "openai/gpt-4o"
+    model: str = ""
     useReflexion: bool = False
     maxTrials: int = 3
     confidenceThreshold: float = 0.7
