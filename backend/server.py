@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import csv
 import os
+import sys
 import asyncio
 import json
 import logging
@@ -2117,6 +2118,142 @@ async def workspace_raw(root: str, path: str):
 
     headers = {"Content-Disposition": f'inline; filename="{os.path.basename(full_path)}"'}
     return FileResponse(full_path, media_type=media_type, headers=headers)
+
+
+async def _run_native_picker(*args: str) -> tuple[int, str, str]:
+    """Run a subprocess and capture stdout/stderr as text."""
+    proc = await asyncio.create_subprocess_exec(
+        *args,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout_b, stderr_b = await proc.communicate()
+    return (
+        proc.returncode if proc.returncode is not None else 0,
+        stdout_b.decode("utf-8", "replace"),
+        stderr_b.decode("utf-8", "replace"),
+    )
+
+
+@app.post("/api/workspace/pick-directory")
+async def pick_workspace_directory():
+    """Open the host OS's native folder picker and return the selected path.
+
+    Intended for local dev setups where the backend runs on the same machine
+    as the user. For remote/headless deployments this returns a 501 and the
+    frontend should fall back to typing a path manually.
+    """
+    plat = sys.platform
+
+    try:
+        if plat == "darwin":
+            script = (
+                'try\n'
+                '    tell application "System Events" to activate\n'
+                '    set theFolder to choose folder with prompt '
+                '"Select workspace folder"\n'
+                '    POSIX path of theFolder\n'
+                'on error number -128\n'
+                '    return ""\n'
+                'end try'
+            )
+            code, out, err = await _run_native_picker("osascript", "-e", script)
+            if code != 0:
+                raise HTTPException(
+                    status_code=500,
+                    detail=err.strip() or "osascript failed",
+                )
+            path = out.strip().rstrip("/")
+            return {
+                "path": path or None,
+                "cancelled": not path,
+                "platform": "macOS",
+            }
+
+        if plat.startswith("linux"):
+            if shutil.which("zenity"):
+                code, out, err = await _run_native_picker(
+                    "zenity",
+                    "--file-selection",
+                    "--directory",
+                    "--title=Select workspace folder",
+                )
+                if code == 1:
+                    return {"path": None, "cancelled": True, "platform": "Linux"}
+                if code != 0:
+                    raise HTTPException(
+                        status_code=500,
+                        detail=err.strip() or "zenity failed",
+                    )
+                return {
+                    "path": out.strip() or None,
+                    "cancelled": False,
+                    "platform": "Linux",
+                }
+            if shutil.which("kdialog"):
+                code, out, err = await _run_native_picker(
+                    "kdialog",
+                    "--getexistingdirectory",
+                    os.path.expanduser("~"),
+                    "--title",
+                    "Select workspace folder",
+                )
+                if code != 0:
+                    return {"path": None, "cancelled": True, "platform": "Linux"}
+                return {
+                    "path": out.strip() or None,
+                    "cancelled": False,
+                    "platform": "Linux",
+                }
+            raise HTTPException(
+                status_code=501,
+                detail="No native folder picker available on this host "
+                "(install 'zenity' or 'kdialog')",
+            )
+
+        if plat in ("win32", "cygwin"):
+            ps_script = (
+                "Add-Type -AssemblyName System.Windows.Forms | Out-Null; "
+                "$f = New-Object System.Windows.Forms.FolderBrowserDialog; "
+                "$f.Description = 'Select workspace folder'; "
+                "$f.ShowNewFolderButton = $true; "
+                "if ($f.ShowDialog() -eq "
+                "[System.Windows.Forms.DialogResult]::OK) "
+                "{ Write-Output $f.SelectedPath }"
+            )
+            code, out, err = await _run_native_picker(
+                "powershell",
+                "-NoProfile",
+                "-STA",
+                "-Command",
+                ps_script,
+            )
+            if code != 0:
+                raise HTTPException(
+                    status_code=500,
+                    detail=err.strip() or "powershell failed",
+                )
+            path = out.strip()
+            return {
+                "path": path or None,
+                "cancelled": not path,
+                "platform": "Windows",
+            }
+
+        raise HTTPException(
+            status_code=501,
+            detail=f"Unsupported platform for native folder picker: {plat}",
+        )
+    except HTTPException:
+        raise
+    except FileNotFoundError as e:
+        raise HTTPException(
+            status_code=501,
+            detail=f"Native folder picker binary not found: {e}",
+        ) from e
+    except Exception as e:  # noqa: BLE001
+        logger.exception("Native folder picker failed")
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @app.get("/api/health")

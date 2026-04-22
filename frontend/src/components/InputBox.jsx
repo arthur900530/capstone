@@ -10,7 +10,7 @@ import {
   Check,
   FolderOpen,
 } from "lucide-react";
-import { fetchAgents } from "../services/api";
+import { fetchAgents, pickWorkspaceDirectory } from "../services/api";
 
 export default function InputBox({
   onSubmit,
@@ -37,6 +37,8 @@ export default function InputBox({
   const [showSkillPicker, setShowSkillPicker] = useState(false);
   const [showWorkspacePicker, setShowWorkspacePicker] = useState(false);
   const [workspaceInput, setWorkspaceInput] = useState("");
+  const [workspacePickerLoading, setWorkspacePickerLoading] = useState(false);
+  const [workspacePickerError, setWorkspacePickerError] = useState("");
   const [pendingSubmit, setPendingSubmit] = useState(null);
   const fileInputRef = useRef(null);
   const modelRef = useRef(null);
@@ -103,6 +105,27 @@ export default function InputBox({
 
   const removeFile = (index) => {
     onFilesChange?.(files.filter((_, i) => i !== index));
+  };
+
+  const handleBrowseNative = async () => {
+    if (workspacePickerLoading) return;
+    setWorkspacePickerLoading(true);
+    setWorkspacePickerError("");
+    try {
+      const result = await pickWorkspaceDirectory();
+      if (result?.cancelled) return;
+      if (result?.path) {
+        onMountDirChange?.(result.path);
+        setWorkspaceInput(result.path);
+        setShowWorkspacePicker(false);
+      }
+    } catch (err) {
+      setWorkspacePickerError(
+        err?.message || "Could not open native folder picker"
+      );
+    } finally {
+      setWorkspacePickerLoading(false);
+    }
   };
 
   const handleSubmit = () => {
@@ -318,9 +341,48 @@ export default function InputBox({
                   </div>
                   <div className="p-3">
                     <p className="mb-2 text-[11px] text-text-muted">
-                      Absolute path to mount into the agent container
+                      Folder to mount into the agent container
                     </p>
-                    <div className="flex gap-2">
+
+                    <button
+                      onClick={handleBrowseNative}
+                      disabled={workspacePickerLoading}
+                      className="flex w-full items-center justify-center gap-2 rounded-lg bg-accent-teal px-3 py-2 text-xs font-medium text-white transition-colors hover:bg-accent-teal/90 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {workspacePickerLoading ? (
+                        <Loader2 size={13} className="animate-spin" />
+                      ) : (
+                        <FolderOpen size={13} />
+                      )}
+                      {workspacePickerLoading ? "Waiting for dialog…" : "Browse…"}
+                    </button>
+
+                    {workspacePickerError && (
+                      <p className="mt-2 text-[11px] text-red-400">
+                        {workspacePickerError}
+                      </p>
+                    )}
+
+                    {mountDir && (
+                      <div className="mt-3 rounded-lg border border-border/60 bg-surface px-2.5 py-2">
+                        <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-text-muted">
+                          Current
+                        </div>
+                        <div className="mt-0.5 break-all text-[11px] text-text-primary">
+                          {mountDir}
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="mt-3 flex items-center gap-2">
+                      <div className="h-px flex-1 bg-border/60" />
+                      <span className="text-[10px] uppercase tracking-[0.14em] text-text-muted">
+                        or type a path
+                      </span>
+                      <div className="h-px flex-1 bg-border/60" />
+                    </div>
+
+                    <div className="mt-2 flex gap-2">
                       <input
                         type="text"
                         value={workspaceInput}
@@ -333,18 +395,18 @@ export default function InputBox({
                         }}
                         placeholder="/path/to/project"
                         className="flex-1 rounded-lg border border-border bg-surface px-3 py-1.5 text-xs text-text-primary placeholder-text-muted outline-none focus:border-accent-teal/50"
-                        autoFocus
                       />
                       <button
                         onClick={() => {
                           onMountDirChange?.(workspaceInput.trim());
                           setShowWorkspacePicker(false);
                         }}
-                        className="rounded-lg bg-accent-teal px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-accent-teal/90"
+                        className="rounded-lg border border-border bg-surface px-3 py-1.5 text-xs font-medium text-text-secondary transition-colors hover:bg-surface-hover hover:text-text-primary"
                       >
                         Set
                       </button>
                     </div>
+
                     {mountDir && (
                       <button
                         onClick={() => {
