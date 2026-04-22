@@ -101,14 +101,19 @@ def build_workspace(mount_host_dir: str | None = None) -> DockerWorkspace:
     """
     if mount_host_dir:
         abs_mount = str(Path(mount_host_dir).resolve())
+        Path(abs_mount, "conversations").mkdir(parents=True, exist_ok=True)
+        Path(abs_mount, "bash_events").mkdir(parents=True, exist_ok=True)
         volumes = [f"{abs_mount}:/workspace:rw"]
     else:
         volumes = []
+    os.environ.setdefault("OH_CONVERSATIONS_PATH", "/workspace/conversations")
+    os.environ.setdefault("OH_BASH_EVENTS_DIR", "/workspace/bash_events")
     return DockerWorkspace(
         server_image="ghcr.io/openhands/agent-server:latest-python",
         host_port=_find_port(),
         platform=_detect_platform(),
         volumes=volumes,
+        forward_env=["OH_CONVERSATIONS_PATH", "OH_BASH_EVENTS_DIR"],
     )
 
 
@@ -166,6 +171,14 @@ def runtime(
     Run one agent conversation against a DockerWorkspace.
     """
     callbacks = [event_callback] if event_callback else []
+    if repo_dir:
+        Path(repo_dir, "conversations").mkdir(parents=True, exist_ok=True)
+        Path(repo_dir, "workspace", "conversations").mkdir(parents=True, exist_ok=True)
+    if workspace is not None and hasattr(workspace, "execute_command"):
+        try:
+            workspace.execute_command("mkdir -p /workspace/conversations /workspace/bash_events")
+        except Exception:
+            logger.debug("Failed to pre-create OpenHands server directories", exc_info=True)
 
     llm = LLM(model=model, api_key=SecretStr(api_key), base_url=base_url, service_id="agent")
     skills = load_project_skills(work_dir=repo_dir)
@@ -187,18 +200,16 @@ def runtime(
 
     def _run(ws):
         if use_rx:
-            _run_with_reflexion(llm, agent_context, instruction, ws, callbacks=callbacks)
-        else:
-            agent = _create_agent(llm, agent_context)
-            _run_without_reflexion(agent, instruction, ws, callbacks=callbacks)
+            return _run_with_reflexion(llm, agent_context, instruction, ws, callbacks=callbacks)
+        agent = _create_agent(llm, agent_context)
+        return _run_without_reflexion(agent, instruction, ws, callbacks=callbacks)
 
     if workspace is not None:
-        _run(workspace)
-        return
+        return _run(workspace)
 
     # CLI fallback: no injected workspace, so own the lifecycle here.
     with build_workspace(mount_host_dir=mount_dir) as owned_ws:
-        _run(owned_ws)
+        return _run(owned_ws)
 
 
 def _extract_trajectory_text(obj) -> str:
@@ -367,11 +378,131 @@ def _serialize_trajectory(events) -> str:
     return "\n".join(lines)
 
 
+def _event_to_dict(event) -> dict:
+    if isinstance(event, dict):
+        return event
+    if hasattr(event, "model_dump"):
+        try:
+            return event.model_dump(mode="json")
+        except TypeError:
+            return event.model_dump()
+    return {}
+
+
+def _extract_json_text(obj) -> str:
+    if obj is None:
+        return ""
+    if isinstance(obj, str):
+        return obj.strip()
+    if isinstance(obj, list):
+        return "\n".join(filter(None, (_extract_json_text(item) for item in obj))).strip()
+    if isinstance(obj, dict):
+        if obj.get("type") in {"text", "output_text", "input_text"} and isinstance(obj.get("text"), str):
+            return obj["text"].strip()
+        for key in ("text", "content", "extended_content", "llm_message", "message", "value"):
+            text = _extract_json_text(obj.get(key))
+            if text:
+                return text
+        return "\n".join(
+            filter(None, (_extract_json_text(value) for value in obj.values()))
+        ).strip()
+    text = getattr(obj, "text", None)
+    if isinstance(text, str):
+        return text.strip()
+    content = getattr(obj, "content", None)
+    if content is not None:
+        return _extract_json_text(content)
+    return ""
+
+
+def _raw_event_role(event: dict) -> str:
+    for key in ("role", "source", "sender"):
+        value = event.get(key)
+        if isinstance(value, str):
+            return value.lower()
+        if isinstance(value, dict):
+            nested = value.get("role") or value.get("value") or value.get("name")
+            if isinstance(nested, str):
+                return nested.lower()
+    message = event.get("message")
+    if isinstance(message, dict) and isinstance(message.get("role"), str):
+        return message["role"].lower()
+    return ""
+
+
+def _extract_final_answer_from_events(events) -> str:
+    for raw in reversed(list(events or [])):
+        event = _event_to_dict(raw)
+        role = _raw_event_role(event)
+        if role in {"user", "system"}:
+            continue
+        if role and role not in {"assistant", "agent"}:
+            continue
+
+        event_type = str(event.get("type") or event.get("kind") or event.get("event_type") or "").lower()
+        if event_type and "message" not in event_type and role not in {"assistant", "agent"}:
+            continue
+
+        for key in ("extended_content", "llm_message", "content", "message", "data", "payload"):
+            text = _extract_json_text(event.get(key))
+            if text:
+                return text
+    return ""
+
+
+def _fetch_remote_event_items(conversation) -> list[dict]:
+    client = getattr(conversation, "_client", None)
+    conversation_id = getattr(conversation, "_id", None) or getattr(conversation, "id", None)
+    base_path = getattr(conversation, "_conversation_action_base_path", "/api/conversations")
+    if not client or not conversation_id:
+        return []
+
+    items: list[dict] = []
+    page_id = None
+    while True:
+        params = {"limit": 100}
+        if page_id:
+            params["page_id"] = page_id
+        response = client.get(
+            f"{base_path}/{conversation_id}/events/search",
+            params=params,
+        )
+        response.raise_for_status()
+        data = response.json()
+        page_items = data.get("items", data if isinstance(data, list) else [])
+        items.extend(page_items)
+        page_id = data.get("next_page_id") if isinstance(data, dict) else None
+        if not page_id:
+            break
+    return items
+
+
+def _extract_final_answer(conversation) -> str:
+    try:
+        events_state = getattr(getattr(conversation, "state", None), "events", None)
+        if hasattr(events_state, "reconcile"):
+            events_state.reconcile()
+    except Exception:
+        logger.debug("OpenHands event reconciliation failed", exc_info=True)
+
+    try:
+        raw_events = _fetch_remote_event_items(conversation)
+        answer = _extract_final_answer_from_events(raw_events)
+        if answer:
+            return answer
+    except Exception:
+        logger.debug("OpenHands raw event fetch failed", exc_info=True)
+
+    events = getattr(getattr(conversation, "state", None), "events", [])
+    return _extract_final_answer_from_events(events)
+
+
 def _run_without_reflexion(agent, instruction, workspace, callbacks=None):
     """Single attempt, optionally streaming events via callbacks."""
     conversation = Conversation(agent=agent, workspace=workspace, callbacks=callbacks or [])
     conversation.send_message(instruction)
     conversation.run()
+    return _extract_final_answer(conversation)
 
 
 def _format_numbered_reflections(reflections: list[str]) -> str:
@@ -418,6 +549,7 @@ def _run_with_reflexion(llm, agent_context, instruction, workspace, callbacks=No
 
     # In-session ordered reflections — the primary prompt-injection mechanism.
     session_reflections: list[str] = []
+    final_answer = ""
 
     # Also pull any *cross-session* reflections from persistent memory.
     cross_session_context = memory.format_for_prompt(instruction)
@@ -494,6 +626,7 @@ def _run_with_reflexion(llm, agent_context, instruction, workspace, callbacks=No
         )
         conversation.send_message(full_instruction)
         conversation.run()
+        final_answer = _extract_final_answer(conversation)
         logger.info(
             "[reflexion] Trial %d finished: %d steps used of %d max (task=%s)",
             attempt, step_counter["n"], MAX_ITERATIONS_PER_TRIAL, task_id,
@@ -562,6 +695,8 @@ def _run_with_reflexion(llm, agent_context, instruction, workspace, callbacks=No
             reflection=reflection,
             score=evaluation.score,
         )
+
+    return final_answer
 
 
 def main():

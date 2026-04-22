@@ -278,7 +278,7 @@ fi
 # Start backend (logs go to backend/server.log so errors are inspectable)
 BACKEND_LOG="$BACKEND_DIR/server.log"
 : > "$BACKEND_LOG"
-(cd "$BACKEND_DIR" && PYTHONPATH=. .venv/bin/uvicorn server:app --reload --host 127.0.0.1 --port 8000 >>"$BACKEND_LOG" 2>&1) &
+(cd "$BACKEND_DIR" && PYTHONPATH=. .venv/bin/uvicorn server:app --host 127.0.0.1 --port 8000 >>"$BACKEND_LOG" 2>&1) &
 PIDS+=($!)
 
 info "Waiting for API..."

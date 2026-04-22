@@ -780,6 +780,11 @@ def _map_event_to_sse(event: Any, session_id: str) -> dict | None:
             text = _extract_text(getattr(event, "extended_content", None))
             if not text:
                 text = getattr(event, "reasoning_content", None) or ""
+            if not text:
+                text = _extract_text(getattr(event, "content", None))
+            if not text:
+                message = getattr(event, "message", None)
+                text = _extract_text(getattr(message, "content", None))
             if text:
                 return _sse("answer", {"text": text})
             return None
@@ -1365,10 +1370,13 @@ async def _stream_real_task(
     host_dir = _SHARED_WS["host_dir"]
 
     _turn_counter[session_id] = 0
+    answer_emitted = {"value": False}
 
     def _callback(event):
         mapped = _map_event_to_sse(event, session_id)
         if mapped:
+            if mapped.get("event") == "answer":
+                answer_emitted["value"] = True
             loop.call_soon_threadsafe(queue.put_nowait, mapped)
 
         # When a terminal/bash observation comes back, read the predicted
@@ -1388,7 +1396,7 @@ async def _stream_real_task(
     def _run_agent():
         error = None
         try:
-            _agent_runtime(
+            final_answer = _agent_runtime(
                 repo_dir=host_dir,
                 instruction=question,
                 mount_dir=host_dir,
@@ -1396,6 +1404,12 @@ async def _stream_real_task(
                 use_reflexion=use_reflexion,
                 workspace=_SHARED_WS["workspace"],
             )
+            if final_answer and not answer_emitted["value"]:
+                answer_emitted["value"] = True
+                loop.call_soon_threadsafe(
+                    queue.put_nowait,
+                    _sse("answer", {"text": final_answer}),
+                )
         except Exception as exc:
             error = str(exc)
             logger.exception("Agent runtime failed")
