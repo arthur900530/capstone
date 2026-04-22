@@ -14,6 +14,13 @@ API_KEY = "PASTE-YOUR-KEY-HERE"
 AGENT_MODEL = "openrouter/minimax/minimax-m2.7"
 SKILL_MODEL = "google/gemini-2.5-flash"
 
+# Optional: skill training can use OpenRouter even when the main agent uses
+# OpenAI directly. If unset, skill training falls back to the legacy
+# BASE_URL/API_KEY only when BASE_URL points to OpenRouter.
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+OPENROUTER_API_KEY = "PASTE-YOUR-OPENROUTER-KEY-HERE"
+OPENROUTER_SKILL_MODEL = "google/gemini-2.5-flash"
+
 # PostgreSQL — used by the skill marketplace.
 # Local dev default: postgresql+asyncpg://postgres:postgres@localhost:5432/skillmarket
 DATABASE_URL = "postgresql+asyncpg://postgres:postgres@localhost:5432/skillmarket"
