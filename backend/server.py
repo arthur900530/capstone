@@ -1011,6 +1011,7 @@ def _sync_current_owner_back_sync() -> None:
     Called after each turn so the user sees their files on disk without
     having to wait for session eviction. Caller must hold the lock.
     """
+    logger.info("Syncing current owner back to sync target")
     owner = _SHARED_WS.get("current_owner")
     if not owner:
         return
@@ -1020,6 +1021,10 @@ def _sync_current_owner_back_sync() -> None:
         return
     try:
         _sync_dir_contents_for_export(host_dir, sync_target)
+        logger.info(
+            "Synced shared workspace back to mount_dir=%s (session=%s)",
+            sync_target, owner.get("session_id"),
+        )
     except Exception:
         logger.exception(
             "Post-turn sync-back failed for session=%s → %s",
@@ -1438,62 +1443,76 @@ async def _stream_real_task(
     yield _sse("status", {"message": f"Agent starting work — model: {agent_info.get('model', 'unknown')}"})
 
     lock: asyncio.Lock = _SHARED_WS["lock"]
-    async with lock:
-        # Prime /workspace: fast path if the same session/mount is continuing,
-        # full swap otherwise (sync out previous owner, wipe, copy in).
-        try:
-            await asyncio.to_thread(
-                _prime_shared_workspace_sync,
-                session_id,
-                effective_mount,
-                sync_target,
-                cleanup_dirs,
-                owner_key,
-            )
-        except Exception as exc:
-            logger.exception("Failed to prime shared workspace")
-            yield _sse("error", {"message": f"workspace prime failed: {exc}"})
-            yield _sse("done", {"message": "Complete"})
-            return
+    got_answer = False
+    last_tool_text: str | None = None
+    try:
+        async with lock:
+            # Prime /workspace: fast path if the same session/mount is continuing,
+            # full swap otherwise (sync out previous owner, wipe, copy in).
+            try:
+                await asyncio.to_thread(
+                    _prime_shared_workspace_sync,
+                    session_id,
+                    effective_mount,
+                    sync_target,
+                    cleanup_dirs,
+                    owner_key,
+                )
+            except Exception as exc:
+                logger.exception("Failed to prime shared workspace")
+                yield _sse("error", {"message": f"workspace prime failed: {exc}"})
+                yield _sse("done", {"message": "Complete"})
+                return
 
-        _pending_bash_writes[session_id] = []
+            _pending_bash_writes[session_id] = []
 
-        loop.run_in_executor(None, _run_agent)
+            loop.run_in_executor(None, _run_agent)
 
-        got_answer = False
-        last_tool_text: str | None = None
+            try:
+                while True:
+                    item = await queue.get()
+                    if item is None:
+                        break
+                    event_type = item["event"]
+                    data = json.loads(item["data"])
+                    _append_event(session_id, event_type, data)
 
-        while True:
-            item = await queue.get()
-            if item is None:
-                break
-            event_type = item["event"]
-            data = json.loads(item["data"])
-            _append_event(session_id, event_type, data)
+                    yield item
 
-            yield item
+                    if event_type == "answer":
+                        got_answer = True
+                    elif event_type == "tool_result":
+                        last_tool_text = data.get("text")
+            finally:
+                # Always flush this turn's changes back to the user's mount_dir,
+                # even if the SSE client disconnected mid-stream (which raises
+                # GeneratorExit/CancelledError at `yield item` and would
+                # otherwise skip the sync). asyncio.shield prevents the copy
+                # from being interrupted mid-way so the user's files on disk
+                # always reflect the latest workspace state.
+                try:
+                    await asyncio.shield(
+                        asyncio.to_thread(_sync_current_owner_back_sync)
+                    )
+                except asyncio.CancelledError:
+                    logger.warning(
+                        "Post-turn sync-back await cancelled; thread continues "
+                        "in background (session=%s)",
+                        session_id,
+                    )
+                    raise
+                except Exception:
+                    logger.exception("Post-turn sync-back failed")
 
-            if event_type == "answer":
-                got_answer = True
-            elif event_type == "tool_result":
-                last_tool_text = data.get("text")
+        if not got_answer and last_tool_text:
+            evt = {"text": last_tool_text}
+            yield _sse("answer", evt)
+            _append_event(session_id, "answer", evt)
 
-        # Flush this turn's changes back to the user's mount_dir (if any).
-        # The owner stays "this session" — next turn in the same session takes
-        # the fast path and avoids any copying.
-        try:
-            await asyncio.to_thread(_sync_current_owner_back_sync)
-        except Exception:
-            logger.exception("Post-turn sync-back failed")
-
-    if not got_answer and last_tool_text:
-        evt = {"text": last_tool_text}
-        yield _sse("answer", evt)
-        _append_event(session_id, "answer", evt)
-
-    _turn_counter.pop(session_id, None)
-    _pending_bash_writes.pop(session_id, None)
-    yield _sse("done", {"message": "Complete"})
+        yield _sse("done", {"message": "Complete"})
+    finally:
+        _turn_counter.pop(session_id, None)
+        _pending_bash_writes.pop(session_id, None)
 
 
 # ---------------------------------------------------------------------------
