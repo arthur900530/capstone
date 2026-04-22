@@ -5,6 +5,13 @@ the Reflexion pipeline against a real LLM and a real local workspace.  It
 captures the exact hurdles we hit during the first successful runs so future
 engineers do not have to rediscover them.
 
+For the live browser work, note one important runtime detail: in the current
+`browser-use` / OpenHands stack, Docker-safe Chromium flags like `--no-sandbox`
+are built into the browser profile, while custom CDP flags must be passed via
+the browser tool's explicit `args` config (for example
+`--remote-debugging-port=9222`) rather than a `CHROME_DOCKER_ARGS` environment
+override.
+
 ---
 
 ## 1. Terminology

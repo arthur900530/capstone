@@ -5,6 +5,7 @@ A React-based chat interface for a multi-trial self-evolving AI system that answ
 ## Features
 
 - **Streaming Chat** — Real-time Server-Sent Events (SSE) streaming that surfaces each step of the agent's reasoning: tool calls, intermediate results, self-evaluation, reflection, and final answers.
+- **Live Browser View** — Optional real-time browser rendering over WebSocket so you can watch the agent's Chromium session as it navigates and interacts with pages.
 - **Multi-Agent Support** — Connects to multiple specialized agents (Equity Research Analyst, Market Intelligence Associate, Portfolio Risk Analyst, Financial Advisor Assistant) and routes queries automatically.
 - **Chat History** — Sidebar with full conversation history, rename, and delete support.
 - **Evaluation Dashboard** — View benchmark results for each agent including task/step success rates, latency percentiles, hallucination rates, and per-category breakdowns.
@@ -150,6 +151,23 @@ npm run dev
 
 The frontend dev server starts at **http://localhost:5173** and proxies `/api` requests to the backend.
 
+### Live Browser Flags
+
+The realtime browser panel is enabled by default. You can tune it with these environment variables:
+
+```env
+ENABLE_BROWSER_LIVE=true
+BROWSER_LIVE_QUALITY=60
+BROWSER_LIVE_MAX_W=1280
+BROWSER_LIVE_MAX_H=800
+VITE_LIVE_BROWSER=true
+```
+
+- `ENABLE_BROWSER_LIVE` toggles the backend WebSocket stream at `/ws/browser/:sessionId`.
+- `BROWSER_LIVE_QUALITY` controls JPEG quality from `1` to `100`.
+- `BROWSER_LIVE_MAX_W` / `BROWSER_LIVE_MAX_H` cap the streamed frame size.
+- `VITE_LIVE_BROWSER` controls whether the employee page renders the browser panel.
+
 ## Available Scripts
 
 Run these from the `frontend/` directory:
@@ -168,6 +186,7 @@ The frontend communicates with the backend through these endpoints:
 | Method   | Endpoint           | Description                                            |
 | -------- | ------------------ | ------------------------------------------------------ |
 | `POST`   | `/api/chat`        | Send a question; returns an SSE stream of agent events |
+| `WS`     | `/ws/browser/:id`  | Stream live browser frames and navigation metadata     |
 | `GET`    | `/api/chats`       | List all chat sessions                                 |
 | `GET`    | `/api/chats/:id`   | Retrieve a full chat with messages                     |
 | `PATCH`  | `/api/chats/:id`   | Rename a chat                                          |

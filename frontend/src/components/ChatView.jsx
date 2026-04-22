@@ -1,12 +1,24 @@
 import { useMemo, useState } from "react";
-import { Bot, BarChart3, Database } from "lucide-react";
+import { Bot, BarChart3, Database, Globe, GlobeLock } from "lucide-react";
 import ChatMessage from "./ChatMessage";
 import InputBox from "./InputBox";
 import UploadedDataPanel from "./DataContext";
 import WelcomeHeader from "./WelcomeHeader";
+import BrowserLiveView from "./BrowserLiveView";
 import { useApp } from "../context/AppContext";
 
-function AgentBanner({ agent, onViewEval, files = [], onRemoveFile }) {
+const LIVE_BROWSER_ENABLED = import.meta.env.VITE_LIVE_BROWSER !== "false";
+const IS_DEMO = import.meta.env.VITE_DEMO === "true";
+
+function AgentBanner({
+  agent,
+  onViewEval,
+  files = [],
+  onRemoveFile,
+  showBrowserToggle = false,
+  browserVisible = false,
+  onToggleBrowser,
+}) {
   const [showData, setShowData] = useState(false);
 
   if (!agent) return null;
@@ -36,6 +48,22 @@ function AgentBanner({ agent, onViewEval, files = [], onRemoveFile }) {
               <span className="rounded-full bg-accent-teal/15 px-1.5 py-0.5 text-[10px] font-semibold text-accent-teal">
                 {files.length}
               </span>
+            </button>
+          )}
+          {showBrowserToggle && (
+            <button
+              onClick={onToggleBrowser}
+              className={`flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
+                browserVisible
+                  ? "bg-cyan-500/20 text-cyan-300 hover:bg-cyan-500/30"
+                  : "bg-surface-hover text-text-secondary hover:text-text-primary"
+              }`}
+              title={
+                browserVisible ? "Hide live browser" : "Show live browser"
+              }
+            >
+              {browserVisible ? <Globe size={13} /> : <GlobeLock size={13} />}
+              Live Browser
             </button>
           )}
           {onViewEval && (
@@ -69,7 +97,7 @@ function AgentDivider({ agent, sentinelRef }) {
   );
 }
 
-export default function ChatView({ showWelcome = true }) {
+export default function ChatView({ showWelcome = true, embedded = false }) {
   const {
     messages,
     isStreaming,
@@ -89,6 +117,8 @@ export default function ChatView({ showWelcome = true }) {
     mountDir,
     setMountDir,
     agents,
+    browserLive,
+    setBrowserLive,
     handleSubmit,
     handleViewEval,
     scrollContainerRef,
@@ -97,6 +127,18 @@ export default function ChatView({ showWelcome = true }) {
     registerSentinel,
     handleCanvasSelectFile,
   } = useApp();
+
+  const liveBrowserAvailable = LIVE_BROWSER_ENABLED && !IS_DEMO;
+
+  const toggleBrowserVisible = () => {
+    if (!setBrowserLive) return;
+    setBrowserLive((prev) => ({ ...prev, visible: !prev?.visible }));
+  };
+
+  // When `embedded` is true, the parent (e.g. EmployeePage) manages its own
+  // split layout and renders BrowserLiveView itself, so we must not double it.
+  const showBrowserPanel =
+    !embedded && liveBrowserAvailable && browserLive?.visible;
 
   const hasMessages = messages.length > 0;
 
@@ -122,6 +164,9 @@ export default function ChatView({ showWelcome = true }) {
           onRemoveFile={(i) =>
             setChatFiles((prev) => prev.filter((_, idx) => idx !== i))
           }
+          showBrowserToggle={liveBrowserAvailable}
+          browserVisible={Boolean(browserLive?.visible)}
+          onToggleBrowser={toggleBrowserVisible}
         />
         <div className="px-4 pt-4 pb-4">
           <div className="mx-auto max-w-2xl space-y-3">
@@ -194,6 +239,19 @@ export default function ChatView({ showWelcome = true }) {
       </footer>
     </>
   );
+
+  if (showBrowserPanel) {
+    return (
+      <div className="flex flex-1 overflow-hidden">
+        <div className="flex min-w-0 flex-1 flex-col border-r border-border/20 transition-all duration-300 lg:max-w-[50%]">
+          {chatColumn}
+        </div>
+        <div className="hidden flex-1 flex-col lg:flex">
+          <BrowserLiveView sessionId={sessionId || browserLive?.sessionId} />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-1 flex-col overflow-hidden">

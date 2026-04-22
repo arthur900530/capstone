@@ -41,10 +41,15 @@ dotenv.load_dotenv()
 
 logger = logging.getLogger(__name__)
 
+
+def _env_bool(name: str, default: str = "false") -> bool:
+    return os.getenv(name, default).strip().lower() in ("1", "true", "yes")
+
 # ---------------------------------------------------------------------------
 # Real-agent feature flag
 # ---------------------------------------------------------------------------
 REAL_AGENT_ENABLED = True
+ENABLE_BROWSER_LIVE = _env_bool("ENABLE_BROWSER_LIVE", "true")
 
 _agent_import_error: str | None = None
 if REAL_AGENT_ENABLED:
@@ -166,7 +171,6 @@ async def lifespan(application):
 
     yield
 
-    # Shut down: sync back the last owner's changes and tear down the container.
     if _SHARED_WS.get("workspace") is not None:
         try:
             await asyncio.to_thread(_evict_current_owner_sync)
@@ -192,6 +196,13 @@ def _start_shared_workspace(host_dir: str):
     """Synchronous helper: build the workspace and enter its context."""
     ws = _build_workspace(mount_host_dir=host_dir)
     return ws.__enter__()
+
+
+def _workspace_novnc_port() -> int | None:
+    workspace = _SHARED_WS.get("workspace")
+    if workspace is None:
+        return None
+    return getattr(workspace, "novnc_host_port", None)
 
 
 app = FastAPI(title="Digital Employee Platform API", lifespan=lifespan)
@@ -1565,6 +1576,40 @@ async def chat(req: ChatRequest):
         )
 
     return EventSourceResponse(gen)
+
+
+@app.get("/api/browser/live")
+async def browser_live_info(session_id: str | None = None):
+    """Return connection info for the agent's live browser view.
+
+    The agent-server container runs Chromium inside Xvfb and serves a
+    noVNC client on a bundled HTTP port (container ``8002``). We publish
+    that port onto the host and let the frontend iframe it directly;
+    ``session_id`` is accepted for API symmetry but the same browser
+    is shared for all sessions on the shared workspace.
+    """
+    if not ENABLE_BROWSER_LIVE:
+        raise HTTPException(status_code=503, detail="Live browser is disabled.")
+
+    novnc_port = _workspace_novnc_port()
+    if novnc_port is None:
+        raise HTTPException(status_code=503, detail="Live browser is not ready yet.")
+
+    return {
+        "sessionId": session_id,
+        "port": novnc_port,
+        # ``vnc_lite.html`` (or ``vnc.html``) is shipped with noVNC and
+        # auto-connects to the websockify endpoint on the same origin.
+        # ``resize=scale`` makes the noVNC client scale the remote display
+        # to fit the iframe (preserving aspect ratio). Using ``remote``
+        # relies on the VM's RandR support and frequently leaves the view
+        # clipped when the iframe is smaller than the native VM resolution,
+        # which we don't want.
+        "url": (
+            f"http://127.0.0.1:{novnc_port}/vnc.html"
+            "?autoconnect=1&resize=scale&reconnect=1&show_dot=1"
+        ),
+    }
 
 
 @app.get("/api/chats")

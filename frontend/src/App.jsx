@@ -31,6 +31,8 @@ import {
   fetchWorkspaceFile,
 } from "./services/api";
 
+const LIVE_BROWSER_ENABLED = import.meta.env.VITE_LIVE_BROWSER !== "false";
+
 /* ── App (layout shell) ───────────────────────────────────────────────── */
 export default function App() {
   const navigate = useNavigate();
@@ -67,6 +69,13 @@ export default function App() {
   const [workspacePanelOpen, setWorkspacePanelOpen] = useState(true);
   const [treeRefreshTrigger, setTreeRefreshTrigger] = useState(0);
   const [canvasCollapsed, setCanvasCollapsed] = useState(false);
+  const [browserLive, setBrowserLive] = useState({
+    enabled: LIVE_BROWSER_ENABLED,
+    visible: false,
+    status: "idle",
+    sessionId: null,
+    lastAction: null,
+  });
 
   // Routes where the chat-style workspace (canvas + file tree) is meaningful.
   // We gate by route — not by an effect-driven `chatMounted` flag — so the
@@ -218,6 +227,10 @@ export default function App() {
           switch (eventType) {
             case "session":
               setSessionId(data.session_id);
+              setBrowserLive((prev) => ({
+                ...prev,
+                sessionId: data.session_id,
+              }));
               return;
             case "agent":
               setMessages((prev) => [
@@ -248,6 +261,19 @@ export default function App() {
                 tool: data.tool,
                 detail: data.detail,
               };
+              if (String(data.tool || "").startsWith("browser_")) {
+                setBrowserLive((prev) => ({
+                  ...prev,
+                  visible: true,
+                  status: "active",
+                  sessionId: sid,
+                  lastAction: {
+                    tool: data.tool,
+                    detail: data.detail,
+                    at: Date.now(),
+                  },
+                }));
+              }
               break;
             case "tool_result":
               msg = {
@@ -402,6 +428,13 @@ export default function App() {
     setEditEvents([]);
     setTreeRefreshTrigger(0);
     setCanvasCollapsed(false);
+    setBrowserLive({
+      enabled: LIVE_BROWSER_ENABLED,
+      visible: false,
+      status: "idle",
+      sessionId: null,
+      lastAction: null,
+    });
   };
 
   const handleSelectChat = async (chatId) => {
@@ -428,6 +461,16 @@ export default function App() {
       setMessages(restored);
       setChatFiles(chat.files ?? []);
       setStagedFiles([]);
+      const hasBrowserActivity = chat.messages.some(
+        (m) => m.type === "tool_call" && String(m.tool || "").startsWith("browser_"),
+      );
+      setBrowserLive((prev) => ({
+        ...prev,
+        visible: hasBrowserActivity,
+        sessionId: chatId,
+        status: hasBrowserActivity ? "active" : "idle",
+        lastAction: null,
+      }));
       if (agent) {
         visibleAgentRef.current = agent.id;
         setVisibleAgent(agent);
@@ -569,6 +612,8 @@ export default function App() {
     editEvents,
     canvasCollapsed,
     setCanvasCollapsed,
+    browserLive,
+    setBrowserLive,
     handleCanvasSelectFile,
     handleCanvasCloseFile,
     workspacePanelOpen,

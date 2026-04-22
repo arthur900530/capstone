@@ -7,8 +7,10 @@ import EmployeeChat from "../components/employee/EmployeeChat";
 import DesktopSimulator from "../components/desktop/DesktopSimulator";
 import EmployeeConsole from "../components/employee/EmployeeConsole";
 import ChatView from "../components/ChatView";
+import BrowserLiveView from "../components/BrowserLiveView";
 
 const IS_DEMO = import.meta.env.VITE_DEMO === "true";
+const LIVE_BROWSER_ENABLED = import.meta.env.VITE_LIVE_BROWSER !== "false";
 import EmployeeReportCard from "../components/employee/EmployeeReportCard";
 import EmployeeSkillsTab from "../components/employee/EmployeeSkillsTab";
 import PLUGINS from "../data/plugins";
@@ -25,7 +27,7 @@ const TABS = [
 export default function EmployeePage() {
   const { id } = useParams();
   const navigate = useNavigate();
-  const { refreshEmployees } = useApp();
+  const { refreshEmployees, browserLive, sessionId } = useApp();
   const [activeTab, setActiveTab] = useState("chat");
   const [employee, setEmployee] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -72,6 +74,9 @@ export default function EmployeePage() {
     await refreshEmployees();
     navigate("/");
   };
+
+  const showBrowserPanel =
+    LIVE_BROWSER_ENABLED && !IS_DEMO && activeTab === "chat" && browserLive?.visible;
 
   return (
     <div className="flex flex-1 flex-col min-h-0 overflow-hidden">
@@ -127,7 +132,22 @@ export default function EmployeePage() {
         </div>
       </div>
 
-      {activeTab === "chat" && !IS_DEMO && <ChatView />}
+      {activeTab === "chat" && !IS_DEMO && (
+        <div className="flex flex-1 overflow-hidden">
+          <div
+            className={`flex min-w-0 flex-1 flex-col transition-all duration-300 ${
+              showBrowserPanel ? "border-r border-border/20 lg:max-w-[50%]" : ""
+            }`}
+          >
+            <ChatView showWelcome={false} embedded />
+          </div>
+          {showBrowserPanel && (
+            <div className="hidden flex-1 flex-col lg:flex">
+              <BrowserLiveView sessionId={sessionId || browserLive?.sessionId} />
+            </div>
+          )}
+        </div>
+      )}
       {activeTab === "chat" && IS_DEMO && (
         <div className="flex flex-1 overflow-hidden">
           <div className="flex min-w-0 flex-1 flex-col border-r border-border/20 lg:max-w-[50%]">

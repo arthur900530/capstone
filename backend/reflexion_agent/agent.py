@@ -3,6 +3,7 @@ import json
 import os
 import platform
 import socket
+import threading
 import dotenv
 import logging
 import uuid
@@ -15,10 +16,14 @@ from openhands.sdk.context.skills import load_project_skills
 from openhands.sdk import AgentContext, LLM, Agent, Tool, Conversation, Message, TextContent
 from openhands.sdk.conversation.exceptions import ConversationRunError
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
+from openhands.sdk.utils.command import execute_command
+from openhands.sdk.workspace import RemoteWorkspace
+from openhands.tools.browser_use import BrowserToolSet
 from openhands.tools.file_editor import FileEditorTool
 from openhands.tools.task_tracker import TaskTrackerTool
 from openhands.tools.terminal import TerminalTool
 from openhands.workspace import DockerWorkspace
+from openhands.workspace.docker.workspace import check_port_available
 
 from reflexion_agent import evaluate_trajectory, generate_reflection, ReflexionMemory
 from config import BASE_URL, API_KEY, AGENT_MODEL
@@ -66,6 +71,14 @@ base_url = BASE_URL
 api_key = API_KEY
 model = AGENT_MODEL
 
+# The agent-server image ships with TigerVNC + noVNC on port 8002 and takes a
+# non-headless Chromium when ``OH_ENABLE_VNC=true``. We map that noVNC port
+# out so the frontend can iframe the live browser view.
+NOVNC_CONTAINER_PORT = 8002
+# VSCode is exposed on 8001 inside the container, noVNC on 8002.
+# ``extra_ports`` makes ``DockerWorkspace`` publish ``host_port+1`` → 8001
+# and ``host_port+2`` → 8002.
+
 
 def _detect_platform():
     m = platform.machine().lower()
@@ -92,6 +105,121 @@ def _find_port(start: int = 8010, end: int = 9010) -> int:
     raise RuntimeError(f"No free port available in range [{start}, {end})")
 
 
+class BrowserDockerWorkspace(DockerWorkspace):
+    """Docker workspace with VNC enabled so the agent's Chromium can be
+    iframed into the UI via the bundled noVNC web client."""
+
+    def _start_container(self, image: str, context) -> None:
+        self._image_name = image
+
+        if self.host_port is None:
+            self.host_port = _find_port()
+        else:
+            self.host_port = int(self.host_port)
+
+        if not check_port_available(self.host_port):
+            raise RuntimeError(f"Port {self.host_port} is not available")
+
+        # We always want VNC ports mapped so the live browser view works.
+        self.extra_ports = True
+
+        if not check_port_available(self.host_port + 1):
+            raise RuntimeError(
+                f"Port {self.host_port + 1} is not available for VSCode"
+            )
+        if not check_port_available(self.host_port + 2):
+            raise RuntimeError(
+                f"Port {self.host_port + 2} is not available for noVNC"
+            )
+
+        docker_ver = execute_command(["docker", "version"]).returncode
+        if docker_ver != 0:
+            raise RuntimeError(
+                "Docker is not available. Please install and start "
+                "Docker Desktop/daemon."
+            )
+
+        flags: list[str] = []
+        for key in self.forward_env:
+            if key in os.environ:
+                flags += ["-e", f"{key}={os.environ[key]}"]
+
+        # Force the agent-server's VNC/Xvfb stack on so Chromium runs
+        # non-headless against a virtual display, which noVNC then streams
+        # over WebSocket to the browser panel.
+        flags += ["-e", "OH_ENABLE_VNC=true"]
+
+        for volume in self.volumes:
+            flags += ["-v", volume]
+            logger.info("Adding volume mount: %s", volume)
+
+        flags += ["-p", f"{self.host_port}:8000"]
+        flags += [
+            "-p",
+            f"{self.host_port + 1}:8001",
+            "-p",
+            f"{self.host_port + 2}:{NOVNC_CONTAINER_PORT}",
+        ]
+
+        if self.enable_gpu:
+            flags += ["--gpus", "all"]
+
+        if self.network:
+            flags += ["--network", self.network]
+
+        run_cmd = [
+            "docker",
+            "run",
+            "-d",
+            "--platform",
+            self.platform,
+            "--rm",
+            "--ulimit",
+            "nofile=65536:65536",
+            "--name",
+            f"agent-server-{uuid.uuid4()}",
+            *flags,
+            image,
+            "--host",
+            "0.0.0.0",
+            "--port",
+            "8000",
+        ]
+        proc = execute_command(run_cmd)
+        if proc.returncode != 0:
+            raise RuntimeError(f"Failed to run docker container: {proc.stderr}")
+
+        self._container_id = proc.stdout.strip()
+        logger.info(
+            "Started browser-enabled container=%s api_port=%s novnc_port=%s",
+            self._container_id,
+            self.host_port,
+            self.host_port + 2,
+        )
+
+        if self.detach_logs:
+            self._logs_thread = threading.Thread(
+                target=self._stream_docker_logs,
+                daemon=True,
+            )
+            self._logs_thread.start()
+
+        if not self.host:
+            object.__setattr__(self, "host", f"http://127.0.0.1:{self.host_port}")
+        object.__setattr__(self, "api_key", None)
+
+        self._wait_for_health()
+        logger.info("Docker workspace is ready at %s", self.host)
+        RemoteWorkspace.model_post_init(self, context)
+
+    @property
+    def novnc_host_port(self) -> int | None:
+        """Host port that maps to the container's noVNC (8002)."""
+        if self.host_port is None:
+            return None
+        return int(self.host_port) + 2
+
+
 def build_workspace(mount_host_dir: str | None = None) -> DockerWorkspace:
     """Construct a DockerWorkspace with our standard image/platform settings.
 
@@ -108,7 +236,7 @@ def build_workspace(mount_host_dir: str | None = None) -> DockerWorkspace:
         volumes = []
     os.environ.setdefault("OH_CONVERSATIONS_PATH", "/workspace/conversations")
     os.environ.setdefault("OH_BASH_EVENTS_DIR", "/workspace/bash_events")
-    return DockerWorkspace(
+    return BrowserDockerWorkspace(
         server_image="ghcr.io/openhands/agent-server:latest-python",
         host_port=_find_port(),
         platform=_detect_platform(),
@@ -151,9 +279,13 @@ def _create_agent(llm, agent_context):
     return Agent(
         llm=llm,
         tools=[
-            Tool(name="terminal"),
-            Tool(name="file_editor"),
-            Tool(name="task_tracker"),
+            Tool(name=TerminalTool.name),
+            Tool(name=FileEditorTool.name),
+            Tool(name=TaskTrackerTool.name),
+            # ``OH_ENABLE_VNC=true`` is set on the container, which makes
+            # browser-use force headless=False and run Chromium against the
+            # virtual display that noVNC streams to the frontend.
+            Tool(name=BrowserToolSet.name),
         ],
         agent_context=agent_context,
     )
