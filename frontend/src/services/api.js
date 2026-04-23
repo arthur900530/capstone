@@ -73,6 +73,29 @@ export async function fetchTaskTrajectory(employeeId, sessionId, taskIndex) {
   return res.json();
 }
 
+export async function annotateTaskTrajectory(employeeId, sessionId, taskIndex, { force = false } = {}) {
+  const query = force ? "?force=true" : "";
+  const res = await fetch(
+    `${API_BASE}/employees/${employeeId}/task_runs/${encodeURIComponent(sessionId)}/${encodeURIComponent(taskIndex)}/trajectory/annotate${query}`,
+    { method: "POST" },
+  );
+  if (res.status === 410) {
+    const body = await res.json();
+    return body?.detail || body;
+  }
+  if (!res.ok) {
+    let detail = `${res.status}`;
+    try {
+      const body = await res.json();
+      detail = body?.detail || detail;
+    } catch {
+      // keep default
+    }
+    throw new Error(`Failed to annotate trajectory: ${detail}`);
+  }
+  return res.json();
+}
+
 export async function fetchAgents() {
   const res = await fetch(`${API_BASE}/agents`);
   if (!res.ok) throw new Error(`Failed to load agents: ${res.status}`);

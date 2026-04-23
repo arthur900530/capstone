@@ -14,6 +14,7 @@ from metrics import (
     task_runs_from_chat,
 )
 from trajectory import build_nodes_from_events, flatten_action_nodes, segment_nodes, to_dict
+from trajectory_llm import annotate_tree, apply_annotations
 
 router = APIRouter(prefix="/api/employees", tags=["employees"])
 
@@ -442,14 +443,20 @@ async def employee_task_trajectory(employee_id: str, session_id: str, task_index
             or run.get("prompt_preview")
             or ""
         )
+
+        annotations = run.get("trajectory_annotations") or {}
+        tree_dict = apply_annotations(to_dict(tree), annotations)
+
         return {
             "available": True,
             "session_id": session_id,
             "task_index": task_index,
             "prompt": prompt,
             "summary": _trajectory_summary(run, tree),
-            "tree": to_dict(tree),
+            "tree": tree_dict,
             "raw_events": raw_events,
+            "annotations": annotations,
+            "annotated": bool(annotations),
         }
 
     emp = next((e for e in _memory_store if e.get("id") == employee_id), None)
@@ -484,4 +491,127 @@ async def employee_task_trajectory(employee_id: str, session_id: str, task_index
         "summary": _trajectory_summary(run, tree),
         "tree": to_dict(tree),
         "raw_events": raw_events,
+        "annotations": {},
+        "annotated": False,
+    }
+
+
+@router.post("/{employee_id}/task_runs/{session_id}/{task_index}/trajectory/annotate")
+async def annotate_task_trajectory(
+    employee_id: str,
+    session_id: str,
+    task_index: int,
+    force: bool = False,
+):
+    """Run LLM goal/status annotation on the task's trajectory tree.
+
+    Mirrors the ``induce.py`` step of ai4work-resources/profiling: for every
+    ``SequenceNode`` in the segmented tree we ask the LLM to summarize a goal
+    from child subgoals and judge whether the action sequence achieved it.
+    Results are cached in ``task_runs.trajectory_annotations`` so subsequent
+    opens of the "Processed" view are free. Pass ``?force=true`` to recompute.
+    """
+    if not _db_available:
+        raise HTTPException(
+            503, "Trajectory annotation requires the database to be available."
+        )
+
+    from db.engine import async_session
+    from db.models import Employee, TaskRun
+    from sqlalchemy import select, update
+
+    emp_uuid = _parse_uuid(employee_id)
+    async with async_session() as session:
+        emp_row = (
+            await session.execute(select(Employee).where(Employee.id == emp_uuid))
+        ).scalar_one_or_none()
+        if emp_row is None:
+            raise HTTPException(404, "Employee not found")
+
+        row = (
+            await session.execute(
+                select(TaskRun).where(
+                    TaskRun.employee_id == emp_uuid,
+                    TaskRun.session_id == session_id,
+                    TaskRun.task_index == task_index,
+                )
+            )
+        ).scalar_one_or_none()
+        if row is None:
+            raise HTTPException(404, "Task run not found")
+
+        run = serialize_task_run(row)
+        cached = run.get("trajectory_annotations") or {}
+        raw_events = run.get("raw_events") or []
+
+    # Fall back to in-memory chat if the DB row predates raw-event persistence.
+    if not raw_events:
+        try:
+            from server import _chats  # type: ignore
+        except Exception:
+            _chats = {}
+        chat = _chats.get(session_id)
+        if chat is not None:
+            live_run = next(
+                (
+                    r for r in task_runs_from_chat(chat)
+                    if r.get("session_id") == session_id and r.get("task_index") == task_index
+                ),
+                None,
+            )
+            if live_run is not None:
+                raw_events = live_run.get("raw_events") or []
+
+    if not raw_events:
+        raise HTTPException(
+            status_code=410,
+            detail={"available": False, "reason": "trajectory_not_persisted"},
+        )
+
+    action_nodes, trial_boundaries = build_nodes_from_events(raw_events)
+    tree = segment_nodes(action_nodes, trial_boundaries)
+
+    if cached and not force:
+        annotations = cached
+    else:
+        try:
+            annotations = await annotate_tree(tree)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(
+                status_code=502,
+                detail=f"LLM annotation failed: {exc}",
+            ) from exc
+
+        # Write-through cache so we only pay once per task.
+        async with async_session() as session:
+            await session.execute(
+                update(TaskRun)
+                .where(
+                    TaskRun.employee_id == emp_uuid,
+                    TaskRun.session_id == session_id,
+                    TaskRun.task_index == task_index,
+                )
+                .values(trajectory_annotations=annotations)
+            )
+            await session.commit()
+
+    tree_dict = apply_annotations(to_dict(tree), annotations)
+    prompt = (
+        run.get("full_prompt")
+        or _task_run_prompt_from_chat(session_id, task_index)
+        or run.get("prompt_preview")
+        or ""
+    )
+
+    return {
+        "available": True,
+        "session_id": session_id,
+        "task_index": task_index,
+        "prompt": prompt,
+        "summary": _trajectory_summary(run, tree),
+        "tree": tree_dict,
+        "raw_events": raw_events,
+        "annotations": annotations,
+        "annotated": True,
+        "source": "cache" if (cached and not force) else "llm",
     }

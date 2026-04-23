@@ -254,4 +254,5 @@ def serialize_task_run(row) -> dict:
         "n_reflections": row.n_reflections,
         "tool_histogram": row.tool_histogram or {},
         "raw_events": row.raw_events or [],
+        "trajectory_annotations": getattr(row, "trajectory_annotations", None) or {},
     }

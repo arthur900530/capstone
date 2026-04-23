@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   AlertCircle,
   BarChart3,
+  CheckCircle2,
   ChevronDown,
   ChevronRight,
   ListTree,
@@ -9,8 +10,10 @@ import {
   PanelRightClose,
   Rows3,
   ScrollText,
+  Sparkles,
+  XCircle,
 } from "lucide-react";
-import { fetchTaskTrajectory } from "../../services/api";
+import { annotateTaskTrajectory, fetchTaskTrajectory } from "../../services/api";
 import TrajectoryNodeCard from "./TrajectoryNodeCard";
 
 function formatMs(ms) {
@@ -53,7 +56,31 @@ function ViewButton({ active, icon: Icon, label, onClick }) {
   );
 }
 
-function TreeNode({ node, depth = 0 }) {
+function SequenceStatusBadge({ status }) {
+  if (status === "success") {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-emerald-300">
+        <CheckCircle2 size={12} />
+        achieved
+      </span>
+    );
+  }
+  if (status === "failure") {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full border border-red-500/40 bg-red-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-red-300">
+        <XCircle size={12} />
+        not achieved
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full border border-border/50 bg-surface px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-text-muted">
+      unknown
+    </span>
+  );
+}
+
+function TreeNode({ node, depth = 0, processed = false }) {
   const [open, setOpen] = useState(depth < 2);
 
   if (!node) return null;
@@ -61,29 +88,57 @@ function TreeNode({ node, depth = 0 }) {
     return <TrajectoryNodeCard node={node} />;
   }
 
+  const llm = processed ? node.llm : null;
+  const displayGoal = (llm?.goal || node.goal || "Sequence").trim();
+  const displayStatus = llm?.status || node.status || "unknown";
+  const showLlmAccent = processed && Boolean(llm?.goal);
+
   return (
     <div className="space-y-3">
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
-        className="flex w-full items-center justify-between rounded-xl border border-border/50 bg-[#2a2c31] px-4 py-3 text-left"
+        className={`flex w-full items-center justify-between rounded-xl border px-4 py-3 text-left transition-colors ${
+          showLlmAccent
+            ? "border-accent-teal/40 bg-accent-teal/[0.04]"
+            : "border-border/50 bg-[#2a2c31]"
+        }`}
       >
-        <div>
-          <p className="text-sm font-semibold text-text-primary">
-            {node.goal || "Sequence"}
+        <div className="min-w-0">
+          <div className="mb-1 flex flex-wrap items-center gap-2">
+            {showLlmAccent ? (
+              <span className="inline-flex items-center gap-1 rounded-full border border-accent-teal/40 bg-accent-teal/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-accent-teal">
+                <Sparkles size={10} />
+                LLM goal
+              </span>
+            ) : null}
+            <SequenceStatusBadge status={displayStatus} />
+            <span className="text-[10px] uppercase tracking-wider text-text-muted">
+              {(node.nodes || []).length} item{(node.nodes || []).length !== 1 ? "s" : ""}
+            </span>
+          </div>
+          <p className="text-sm font-semibold text-text-primary break-words">
+            {displayGoal}
           </p>
-          <p className="mt-1 text-xs text-text-muted">
-            {(node.nodes || []).length} item{(node.nodes || []).length !== 1 ? "s" : ""}
-          </p>
+          {llm?.status_reason ? (
+            <p className="mt-1 text-xs text-text-muted break-words">
+              {llm.status_reason}
+            </p>
+          ) : null}
         </div>
-        <div className="text-text-muted">
+        <div className="ml-3 shrink-0 text-text-muted">
           {open ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
         </div>
       </button>
       {open ? (
         <div className="ml-4 space-y-3 border-l border-border/40 pl-4">
           {(node.nodes || []).map((child, index) => (
-            <TreeNode key={`${child.node_type}-${index}`} node={child} depth={depth + 1} />
+            <TreeNode
+              key={`${child.node_type}-${index}`}
+              node={child}
+              depth={depth + 1}
+              processed={processed}
+            />
           ))}
         </div>
       ) : null}
@@ -96,12 +151,15 @@ export default function TaskTrajectoryDrawer({ employeeId, task, onClose }) {
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
+  const [annotating, setAnnotating] = useState(false);
+  const [annotationError, setAnnotationError] = useState(null);
 
   useEffect(() => {
     if (!task) return undefined;
     let cancelled = false;
     setLoading(true);
     setError(null);
+    setAnnotationError(null);
     setData(null);
 
     fetchTaskTrajectory(employeeId, task.sessionId, task.taskIndex)
@@ -121,6 +179,28 @@ export default function TaskTrajectoryDrawer({ employeeId, task, onClose }) {
   }, [employeeId, task]);
 
   const linearNodes = useMemo(() => flattenActions(data?.tree), [data?.tree]);
+  const annotated = Boolean(data?.annotated);
+  const canAnnotate = data?.available !== false && Array.isArray(data?.raw_events) && data.raw_events.length > 0;
+
+  const handleAnnotate = async ({ force = false } = {}) => {
+    if (!task) return;
+    setAnnotating(true);
+    setAnnotationError(null);
+    try {
+      const result = await annotateTaskTrajectory(
+        employeeId,
+        task.sessionId,
+        task.taskIndex,
+        { force },
+      );
+      setData(result);
+      setView("processed");
+    } catch (err) {
+      setAnnotationError(err.message || "Failed to annotate trajectory");
+    } finally {
+      setAnnotating(false);
+    }
+  };
 
   if (!task) return null;
 
@@ -177,6 +257,12 @@ export default function TaskTrajectoryDrawer({ employeeId, task, onClose }) {
               onClick={() => setView("hierarchical")}
             />
             <ViewButton
+              active={view === "processed"}
+              icon={Sparkles}
+              label={annotated ? "Processed" : "Processed (LLM)"}
+              onClick={() => setView("processed")}
+            />
+            <ViewButton
               active={view === "raw"}
               icon={ScrollText}
               label="Raw"
@@ -225,6 +311,65 @@ export default function TaskTrajectoryDrawer({ employeeId, task, onClose }) {
               {view === "hierarchical" ? (
                 <div className="space-y-3">
                   <TreeNode node={data?.tree} />
+                </div>
+              ) : null}
+
+              {view === "processed" ? (
+                <div className="space-y-4">
+                  <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-accent-teal/20 bg-accent-teal/[0.04] px-4 py-3">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2 text-sm font-medium text-text-primary">
+                        <Sparkles size={14} className="text-accent-teal" />
+                        Induced workflow
+                      </div>
+                      <p className="mt-1 text-xs text-text-muted">
+                        {annotated
+                          ? "Each sequence shows an LLM-summarized goal and whether the action sequence achieved it."
+                          : "Run LLM annotation to summarize goals and judge success for each sequence node."}
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {annotated ? (
+                        <button
+                          type="button"
+                          onClick={() => handleAnnotate({ force: true })}
+                          disabled={annotating}
+                          className="inline-flex items-center gap-2 rounded-lg border border-border/50 bg-surface px-3 py-2 text-xs font-medium text-text-secondary transition-colors hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          {annotating ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />}
+                          Re-annotate
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => handleAnnotate()}
+                          disabled={annotating || !canAnnotate}
+                          className="inline-flex items-center gap-2 rounded-lg bg-accent-teal px-3 py-2 text-xs font-semibold text-charcoal transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          {annotating ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />}
+                          Annotate with LLM
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {annotationError ? (
+                    <div className="flex items-center gap-2 rounded-xl border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-300">
+                      <AlertCircle size={16} />
+                      {annotationError}
+                    </div>
+                  ) : null}
+
+                  {annotating && !annotated ? (
+                    <div className="flex items-center gap-2 rounded-xl border border-border/40 bg-[#2a2c31] px-4 py-6 text-sm text-text-muted">
+                      <Loader2 size={16} className="animate-spin text-accent-teal" />
+                      Summarizing goals and judging status across the trajectory…
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      <TreeNode node={data?.tree} processed />
+                    </div>
+                  )}
                 </div>
               ) : null}
 

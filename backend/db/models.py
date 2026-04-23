@@ -375,6 +375,7 @@ class TaskRun(Base):
     n_reflections: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     tool_histogram: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     raw_events: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    trajectory_annotations: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow
     )
