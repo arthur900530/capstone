@@ -4,14 +4,14 @@ import { ArrowLeft } from "lucide-react";
 import StepDescribe from "../components/wizard/StepDescribe";
 import StepPlugin from "../components/wizard/StepPlugin";
 import StepLearnSkills from "../components/wizard/StepLearnSkills";
-import StepUpload from "../components/wizard/StepUpload";
+// import StepUpload from "../components/wizard/StepUpload";
 import StepLaunch from "../components/wizard/StepLaunch";
 import PLUGINS from "../data/plugins";
 import EMPLOYEE_TEMPLATES from "../data/employeeTemplates";
 import { createEmployee } from "../services/employeeStore";
 import { useApp } from "../context/AppContext";
 
-const STEPS = ["Describe", "Plugin", "Learn Skills", "Upload", "Launch"];
+const STEPS = ["Describe", "Plugin", "Learn Skills", "Launch"];
 
 export default function CreationWizard() {
   const navigate = useNavigate();
@@ -85,7 +85,7 @@ export default function CreationWizard() {
       </div>
 
       <div className="border-b border-border/20 px-6 py-3">
-        <div className="mx-auto flex max-w-3xl items-center gap-2">
+        <div className="mx-auto flex max-w-3xl items-center justify-center gap-2">
           {STEPS.map((label, i) => (
             <div key={label} className="flex items-center gap-2">
               <div
@@ -145,15 +145,15 @@ export default function CreationWizard() {
             onNext={() => setStep(3)}
           />
         )}
-        {step === 3 && (
+        {/* {step === 3 && (
           <StepUpload
             files={files}
             onFilesChange={setFiles}
             onBack={() => setStep(2)}
             onNext={() => setStep(4)}
           />
-        )}
-        {step === 4 && (
+        )} */}
+        {step === 3 && (
           <StepLaunch
             name={name}
             onNameChange={setName}
