@@ -11,12 +11,40 @@ import openai
 from typing import *
 from pathlib import Path
 from .prompts import MMSkillTrainer_PROMPT_TEMPLATE
-from config import BASE_URL, API_KEY, SKILL_MODEL
+import config
 
 
-MODEL_NAME = SKILL_MODEL
+def _config_value(name: str, default: str = "") -> str:
+    value = os.getenv(name)
+    if value is not None:
+        return value
+    return getattr(config, name, default)
 
-client = openai.OpenAI(base_url=BASE_URL, api_key=API_KEY)
+
+def _openrouter_api_key() -> str:
+    key = _config_value("OPENROUTER_API_KEY") or _config_value("SKILL_API_KEY")
+    if key:
+        return key
+
+    # Backward compatibility for the original all-OpenRouter config.py.
+    base_url = getattr(config, "BASE_URL", "")
+    if "openrouter.ai" in base_url:
+        return getattr(config, "API_KEY", "")
+    return ""
+
+
+MODEL_NAME = (
+    _config_value("OPENROUTER_SKILL_MODEL")
+    or _config_value("SKILL_MODEL", "google/gemini-2.5-flash")
+)
+SKILL_BASE_URL = (
+    _config_value("OPENROUTER_BASE_URL")
+    or _config_value("SKILL_BASE_URL")
+    or "https://openrouter.ai/api/v1"
+)
+SKILL_API_KEY = _openrouter_api_key()
+
+client = openai.OpenAI(base_url=SKILL_BASE_URL, api_key=SKILL_API_KEY)
 
 
 class MMSkillTrainer:
@@ -192,6 +220,13 @@ class MMSkillTrainer:
     }
 
     def _train_impl(self, input_file_paths: list[str]):
+        if not SKILL_API_KEY:
+            raise RuntimeError(
+                "OpenRouter API key is required for skill training. Set "
+                "OPENROUTER_API_KEY or SKILL_API_KEY in backend/config.py or "
+                "your environment."
+            )
+
         content_parts: list[dict] = []
         for path in input_file_paths:
             if self._is_text_file(path):

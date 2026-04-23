@@ -2,7 +2,7 @@ import { Sparkles } from "lucide-react";
 
 export default function WelcomeHeader() {
   return (
-    <div className="flex flex-col items-center gap-3 pt-16 pb-10 md:pt-24 md:pb-14">
+    <div className="flex flex-col items-center gap-3 pt-16 pb-24 md:pt-24 md:pb-32">
       <div className="flex items-center gap-3">
         <h1 className="font-welcome font-bold
                text-5xl md:text-5xl

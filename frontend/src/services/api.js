@@ -196,6 +196,8 @@ export async function streamChat(
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  let currentEvent = "message";
+  const terminalEvents = new Set(["done", "answer", "chat_response", "error"]);
 
   while (true) {
     const { done, value } = await reader.read();
@@ -205,7 +207,6 @@ export async function streamChat(
     const lines = buffer.split("\n");
     buffer = lines.pop() || "";
 
-    let currentEvent = "message";
     for (const line of lines) {
       if (line.startsWith("event:")) {
         currentEvent = line.slice(6).trim();
@@ -217,6 +218,10 @@ export async function streamChat(
           onEvent(currentEvent, data);
         } catch {
           onEvent(currentEvent, { text: raw });
+        }
+        if (terminalEvents.has(currentEvent)) {
+          await reader.cancel();
+          return;
         }
         currentEvent = "message";
       }
@@ -314,6 +319,32 @@ export async function fetchWorkspaceFile(rootDir, filePath) {
     `${API_BASE}/workspace/file?root=${encodeURIComponent(rootDir)}&path=${encodeURIComponent(filePath)}`,
   );
   if (!res.ok) throw new Error(`Failed to load file: ${res.status}`);
+  return res.json();
+}
+
+export function workspaceRawUrl(rootDir, filePath) {
+  return `${API_BASE}/workspace/raw?root=${encodeURIComponent(rootDir)}&path=${encodeURIComponent(filePath)}`;
+}
+
+// Opens the host OS's native folder picker dialog via the backend. Only
+// meaningful when the backend runs on the same machine as the user.
+// Resolves to { path: string | null, cancelled: boolean, platform: string }.
+export async function pickWorkspaceDirectory() {
+  const res = await fetch(`${API_BASE}/workspace/pick-directory`, {
+    method: "POST",
+  });
+  if (!res.ok) {
+    let detail = `Failed to open folder picker: ${res.status}`;
+    try {
+      const body = await res.json();
+      if (body?.detail) detail = body.detail;
+    } catch {
+      // ignore JSON parse errors
+    }
+    const err = new Error(detail);
+    err.status = res.status;
+    throw err;
+  }
   return res.json();
 }
 

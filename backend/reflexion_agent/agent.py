@@ -3,6 +3,7 @@ import json
 import os
 import platform
 import socket
+import threading
 import dotenv
 import logging
 import uuid
@@ -15,10 +16,14 @@ from openhands.sdk.context.skills import load_project_skills
 from openhands.sdk import AgentContext, LLM, Agent, Tool, Conversation, Message, TextContent
 from openhands.sdk.conversation.exceptions import ConversationRunError
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
+from openhands.sdk.utils.command import execute_command
+from openhands.sdk.workspace import RemoteWorkspace
+from openhands.tools.browser_use import BrowserToolSet
 from openhands.tools.file_editor import FileEditorTool
 from openhands.tools.task_tracker import TaskTrackerTool
 from openhands.tools.terminal import TerminalTool
-from openhands.sdk.workspace import LocalWorkspace
+from openhands.workspace import DockerWorkspace
+from openhands.workspace.docker.workspace import check_port_available
 
 from reflexion_agent import evaluate_trajectory, generate_reflection, ReflexionMemory
 from config import BASE_URL, API_KEY, AGENT_MODEL
@@ -66,20 +71,179 @@ base_url = BASE_URL
 api_key = API_KEY
 model = AGENT_MODEL
 
+# The agent-server image ships with TigerVNC + noVNC on port 8002 and takes a
+# non-headless Chromium when ``OH_ENABLE_VNC=true``. We map that noVNC port
+# out so the frontend can iframe the live browser view.
+NOVNC_CONTAINER_PORT = 8002
+# VSCode is exposed on 8001 inside the container, noVNC on 8002.
+# ``extra_ports`` makes ``DockerWorkspace`` publish ``host_port+1`` → 8001
+# and ``host_port+2`` → 8002.
+
 
 def _detect_platform():
     m = platform.machine().lower()
     return "linux/arm64" if "arm" in m or "aarch64" in m else "linux/amd64"
 
 
-def _find_port(start=8010):
-    port = start
-    while True:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            if s.connect_ex(("localhost", port)) != 0:
+def _find_port(start: int = 8010, end: int = 9010) -> int:
+    """Find a host port we can actually bind on 127.0.0.1.
+
+    We test by binding (with SO_REUSEADDR off) rather than ``connect_ex``:
+    ``connect_ex`` only detects "someone is listening", but Docker needs the
+    port to be free to bind — which also excludes ports held by zombie
+    containers, ports reserved by the OS, and ports bound on different
+    interfaces. Matching DockerWorkspace's own check avoids races where we
+    pick a port it then rejects.
+    """
+    for port in range(start, end):
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.bind(("127.0.0.1", port))
                 return port
-        port += 1
-        
+        except OSError:
+            continue
+    raise RuntimeError(f"No free port available in range [{start}, {end})")
+
+
+class BrowserDockerWorkspace(DockerWorkspace):
+    """Docker workspace with VNC enabled so the agent's Chromium can be
+    iframed into the UI via the bundled noVNC web client."""
+
+    def _start_container(self, image: str, context) -> None:
+        self._image_name = image
+
+        if self.host_port is None:
+            self.host_port = _find_port()
+        else:
+            self.host_port = int(self.host_port)
+
+        if not check_port_available(self.host_port):
+            raise RuntimeError(f"Port {self.host_port} is not available")
+
+        # We always want VNC ports mapped so the live browser view works.
+        self.extra_ports = True
+
+        if not check_port_available(self.host_port + 1):
+            raise RuntimeError(
+                f"Port {self.host_port + 1} is not available for VSCode"
+            )
+        if not check_port_available(self.host_port + 2):
+            raise RuntimeError(
+                f"Port {self.host_port + 2} is not available for noVNC"
+            )
+
+        docker_ver = execute_command(["docker", "version"]).returncode
+        if docker_ver != 0:
+            raise RuntimeError(
+                "Docker is not available. Please install and start "
+                "Docker Desktop/daemon."
+            )
+
+        flags: list[str] = []
+        for key in self.forward_env:
+            if key in os.environ:
+                flags += ["-e", f"{key}={os.environ[key]}"]
+
+        # Force the agent-server's VNC/Xvfb stack on so Chromium runs
+        # non-headless against a virtual display, which noVNC then streams
+        # over WebSocket to the browser panel.
+        flags += ["-e", "OH_ENABLE_VNC=true"]
+
+        for volume in self.volumes:
+            flags += ["-v", volume]
+            logger.info("Adding volume mount: %s", volume)
+
+        flags += ["-p", f"{self.host_port}:8000"]
+        flags += [
+            "-p",
+            f"{self.host_port + 1}:8001",
+            "-p",
+            f"{self.host_port + 2}:{NOVNC_CONTAINER_PORT}",
+        ]
+
+        if self.enable_gpu:
+            flags += ["--gpus", "all"]
+
+        if self.network:
+            flags += ["--network", self.network]
+
+        run_cmd = [
+            "docker",
+            "run",
+            "-d",
+            "--platform",
+            self.platform,
+            "--rm",
+            "--ulimit",
+            "nofile=65536:65536",
+            "--name",
+            f"agent-server-{uuid.uuid4()}",
+            *flags,
+            image,
+            "--host",
+            "0.0.0.0",
+            "--port",
+            "8000",
+        ]
+        proc = execute_command(run_cmd)
+        if proc.returncode != 0:
+            raise RuntimeError(f"Failed to run docker container: {proc.stderr}")
+
+        self._container_id = proc.stdout.strip()
+        logger.info(
+            "Started browser-enabled container=%s api_port=%s novnc_port=%s",
+            self._container_id,
+            self.host_port,
+            self.host_port + 2,
+        )
+
+        if self.detach_logs:
+            self._logs_thread = threading.Thread(
+                target=self._stream_docker_logs,
+                daemon=True,
+            )
+            self._logs_thread.start()
+
+        if not self.host:
+            object.__setattr__(self, "host", f"http://127.0.0.1:{self.host_port}")
+        object.__setattr__(self, "api_key", None)
+
+        self._wait_for_health()
+        logger.info("Docker workspace is ready at %s", self.host)
+        RemoteWorkspace.model_post_init(self, context)
+
+    @property
+    def novnc_host_port(self) -> int | None:
+        """Host port that maps to the container's noVNC (8002)."""
+        if self.host_port is None:
+            return None
+        return int(self.host_port) + 2
+
+
+def build_workspace(mount_host_dir: str | None = None) -> DockerWorkspace:
+    """Construct a DockerWorkspace with our standard image/platform settings.
+
+    Used by both the CLI path (which opens a short-lived workspace) and the
+    FastAPI server (which keeps one alive for the lifetime of the process and
+    copies session files in/out of the bind-mounted host directory).
+    """
+    if mount_host_dir:
+        abs_mount = str(Path(mount_host_dir).resolve())
+        Path(abs_mount, "conversations").mkdir(parents=True, exist_ok=True)
+        Path(abs_mount, "bash_events").mkdir(parents=True, exist_ok=True)
+        volumes = [f"{abs_mount}:/workspace:rw"]
+    else:
+        volumes = []
+    os.environ.setdefault("OH_CONVERSATIONS_PATH", "/workspace/conversations")
+    os.environ.setdefault("OH_BASH_EVENTS_DIR", "/workspace/bash_events")
+    return BrowserDockerWorkspace(
+        server_image="ghcr.io/openhands/agent-server:latest-python",
+        host_port=_find_port(),
+        platform=_detect_platform(),
+        volumes=volumes,
+        forward_env=["OH_CONVERSATIONS_PATH", "OH_BASH_EVENTS_DIR"],
+    )
+
 
 def _make_llm_call(llm_client):
     """Create a simple callable that wraps the OpenHands LLM client.
@@ -115,9 +279,13 @@ def _create_agent(llm, agent_context):
     return Agent(
         llm=llm,
         tools=[
-            Tool(name="terminal"),
-            Tool(name="file_editor"),
-            Tool(name="task_tracker"),
+            Tool(name=TerminalTool.name),
+            Tool(name=FileEditorTool.name),
+            Tool(name=TaskTrackerTool.name),
+            # ``OH_ENABLE_VNC=true`` is set on the container, which makes
+            # browser-use force headless=False and run Chromium against the
+            # virtual display that noVNC streams to the frontend.
+            Tool(name=BrowserToolSet.name),
         ],
         agent_context=agent_context,
     )
@@ -129,14 +297,20 @@ def runtime(
     mount_dir: str = None,
     event_callback: Callable | None = None,
     use_reflexion: bool | None = None,
+    workspace=None,
 ):
-    if mount_dir:
-        abs_mount = str(Path(mount_dir).resolve())
-        volumes = [f"{abs_mount}:/workspace:rw"]
-    else:
-        volumes = []
-
+    """
+    Run one agent conversation against a DockerWorkspace.
+    """
     callbacks = [event_callback] if event_callback else []
+    if repo_dir:
+        Path(repo_dir, "conversations").mkdir(parents=True, exist_ok=True)
+        Path(repo_dir, "workspace", "conversations").mkdir(parents=True, exist_ok=True)
+    if workspace is not None and hasattr(workspace, "execute_command"):
+        try:
+            workspace.execute_command("mkdir -p /workspace/conversations /workspace/bash_events")
+        except Exception:
+            logger.debug("Failed to pre-create OpenHands server directories", exc_info=True)
 
     llm = LLM(model=model, api_key=SecretStr(api_key), base_url=base_url, service_id="agent")
     skills = load_project_skills(work_dir=repo_dir)
@@ -148,19 +322,26 @@ def runtime(
     agent_context = AgentContext(skills=skills)
     use_rx = ENABLE_REFLEXION if use_reflexion is None else use_reflexion
     logger.info(
-        "model=%s, base_url=%s, mounted_dir=%s, use_reflexion=%s",
+        "model=%s, base_url=%s, mounted_dir=%s, use_reflexion=%s, injected_workspace=%s",
         model,
         base_url,
         mount_dir,
         use_rx,
+        workspace is not None,
     )
-    working_dir = abs_mount if mount_dir else repo_dir or "."
-    with LocalWorkspace(working_dir=working_dir) as workspace:
+
+    def _run(ws):
         if use_rx:
-            _run_with_reflexion(llm, agent_context, instruction, workspace, callbacks=callbacks)
-        else:
-            agent = _create_agent(llm, agent_context)
-            _run_without_reflexion(agent, instruction, workspace, callbacks=callbacks)
+            return _run_with_reflexion(llm, agent_context, instruction, ws, callbacks=callbacks)
+        agent = _create_agent(llm, agent_context)
+        return _run_without_reflexion(agent, instruction, ws, callbacks=callbacks)
+
+    if workspace is not None:
+        return _run(workspace)
+
+    # CLI fallback: no injected workspace, so own the lifecycle here.
+    with build_workspace(mount_host_dir=mount_dir) as owned_ws:
+        return _run(owned_ws)
 
 
 def _extract_trajectory_text(obj) -> str:
@@ -329,14 +510,131 @@ def _serialize_trajectory(events) -> str:
     return "\n".join(lines)
 
 
+def _event_to_dict(event) -> dict:
+    if isinstance(event, dict):
+        return event
+    if hasattr(event, "model_dump"):
+        try:
+            return event.model_dump(mode="json")
+        except TypeError:
+            return event.model_dump()
+    return {}
+
+
+def _extract_json_text(obj) -> str:
+    if obj is None:
+        return ""
+    if isinstance(obj, str):
+        return obj.strip()
+    if isinstance(obj, list):
+        return "\n".join(filter(None, (_extract_json_text(item) for item in obj))).strip()
+    if isinstance(obj, dict):
+        if obj.get("type") in {"text", "output_text", "input_text"} and isinstance(obj.get("text"), str):
+            return obj["text"].strip()
+        for key in ("text", "content", "extended_content", "llm_message", "message", "value"):
+            text = _extract_json_text(obj.get(key))
+            if text:
+                return text
+        return "\n".join(
+            filter(None, (_extract_json_text(value) for value in obj.values()))
+        ).strip()
+    text = getattr(obj, "text", None)
+    if isinstance(text, str):
+        return text.strip()
+    content = getattr(obj, "content", None)
+    if content is not None:
+        return _extract_json_text(content)
+    return ""
+
+
+def _raw_event_role(event: dict) -> str:
+    for key in ("role", "source", "sender"):
+        value = event.get(key)
+        if isinstance(value, str):
+            return value.lower()
+        if isinstance(value, dict):
+            nested = value.get("role") or value.get("value") or value.get("name")
+            if isinstance(nested, str):
+                return nested.lower()
+    message = event.get("message")
+    if isinstance(message, dict) and isinstance(message.get("role"), str):
+        return message["role"].lower()
+    return ""
+
+
+def _extract_final_answer_from_events(events) -> str:
+    for raw in reversed(list(events or [])):
+        event = _event_to_dict(raw)
+        role = _raw_event_role(event)
+        if role in {"user", "system"}:
+            continue
+        if role and role not in {"assistant", "agent"}:
+            continue
+
+        event_type = str(event.get("type") or event.get("kind") or event.get("event_type") or "").lower()
+        if event_type and "message" not in event_type and role not in {"assistant", "agent"}:
+            continue
+
+        for key in ("extended_content", "llm_message", "content", "message", "data", "payload"):
+            text = _extract_json_text(event.get(key))
+            if text:
+                return text
+    return ""
+
+
+def _fetch_remote_event_items(conversation) -> list[dict]:
+    client = getattr(conversation, "_client", None)
+    conversation_id = getattr(conversation, "_id", None) or getattr(conversation, "id", None)
+    base_path = getattr(conversation, "_conversation_action_base_path", "/api/conversations")
+    if not client or not conversation_id:
+        return []
+
+    items: list[dict] = []
+    page_id = None
+    while True:
+        params = {"limit": 100}
+        if page_id:
+            params["page_id"] = page_id
+        response = client.get(
+            f"{base_path}/{conversation_id}/events/search",
+            params=params,
+        )
+        response.raise_for_status()
+        data = response.json()
+        page_items = data.get("items", data if isinstance(data, list) else [])
+        items.extend(page_items)
+        page_id = data.get("next_page_id") if isinstance(data, dict) else None
+        if not page_id:
+            break
+    return items
+
+
+def _extract_final_answer(conversation) -> str:
+    try:
+        events_state = getattr(getattr(conversation, "state", None), "events", None)
+        if hasattr(events_state, "reconcile"):
+            events_state.reconcile()
+    except Exception:
+        logger.debug("OpenHands event reconciliation failed", exc_info=True)
+
+    try:
+        raw_events = _fetch_remote_event_items(conversation)
+        answer = _extract_final_answer_from_events(raw_events)
+        if answer:
+            return answer
+    except Exception:
+        logger.debug("OpenHands raw event fetch failed", exc_info=True)
+
+    events = getattr(getattr(conversation, "state", None), "events", [])
+    return _extract_final_answer_from_events(events)
+
+
 def _run_without_reflexion(agent, instruction, workspace, callbacks=None):
     """Single attempt, optionally streaming events via callbacks."""
     conversation = Conversation(agent=agent, workspace=workspace, callbacks=callbacks or [])
     conversation.send_message(instruction)
     conversation.run()
-
-    conversation.send_message("According to the history of this task, summarize the preferences of the user, or key memories, and save them in AGENT.md and MEMORY.md.")
-    conversation.run()
+    return _extract_final_answer(conversation)
 
 
 def _format_numbered_reflections(reflections: list[str]) -> str:
@@ -383,6 +681,7 @@ def _run_with_reflexion(llm, agent_context, instruction, workspace, callbacks=No
 
     # In-session ordered reflections — the primary prompt-injection mechanism.
     session_reflections: list[str] = []
+    final_answer = ""
 
     # Also pull any *cross-session* reflections from persistent memory.
     cross_session_context = memory.format_for_prompt(instruction)
@@ -459,6 +758,7 @@ def _run_with_reflexion(llm, agent_context, instruction, workspace, callbacks=No
         )
         conversation.send_message(full_instruction)
         conversation.run()
+        final_answer = _extract_final_answer(conversation)
         logger.info(
             "[reflexion] Trial %d finished: %d steps used of %d max (task=%s)",
             attempt, step_counter["n"], MAX_ITERATIONS_PER_TRIAL, task_id,
@@ -527,6 +827,8 @@ def _run_with_reflexion(llm, agent_context, instruction, workspace, callbacks=No
             reflection=reflection,
             score=evaluation.score,
         )
+
+    return final_answer
 
 
 def main():

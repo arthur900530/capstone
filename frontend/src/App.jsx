@@ -1,14 +1,24 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
-import { Menu, BarChart3, Bot, Database, PanelRight } from "lucide-react";
+import {
+  Routes,
+  Route,
+  Navigate,
+  useNavigate,
+  useLocation,
+} from "react-router-dom";
+import { Menu, PanelRight } from "lucide-react";
 import Sidebar from "./components/Sidebar";
-import WelcomeHeader from "./components/WelcomeHeader";
-import InputBox from "./components/InputBox";
-import ChatMessage from "./components/ChatMessage";
-import UploadedDataPanel from "./components/DataContext";
-import EvaluationView from "./components/EvaluationView";
-import SkillsView from "./components/skills/SkillsView";
-import EditorCanvas from "./components/EditorCanvas";
+import ChatView from "./components/ChatView";
+import EditorCanvas, { isCanvasPreviewable } from "./components/EditorCanvas";
 import WorkspacePanel from "./components/WorkspacePanel";
+import DashboardPage from "./pages/DashboardPage";
+import PluginsPage from "./pages/PluginsPage";
+import EvaluationLabPage from "./pages/EvaluationLabPage";
+import CreationWizard from "./pages/CreationWizard";
+import EmployeePage from "./pages/EmployeePage";
+import { AppProvider } from "./context/AppContext";
+import { getEmployees } from "./services/employeeStore";
+import { restoreMessage } from "./services/messageUtils";
 import {
   streamChat,
   uploadFiles,
@@ -21,113 +31,14 @@ import {
   fetchWorkspaceFile,
 } from "./services/api";
 
-function AgentBanner({ agent, onViewEval, files = [], onRemoveFile }) {
-  const [showData, setShowData] = useState(false);
+const LIVE_BROWSER_ENABLED = import.meta.env.VITE_LIVE_BROWSER !== "false";
 
-  if (!agent) return null;
-  return (
-    <div className="sticky top-0 z-20 border-b border-border/30 bg-workspace/95 backdrop-blur-sm">
-      <div className="mx-auto flex max-w-2xl items-center justify-between px-4 py-2.5">
-        <div className="flex items-center gap-2 text-sm">
-          <Bot size={15} className="text-accent-teal" />
-          <span className="font-medium text-text-primary">{agent.name}</span>
-          <span className="text-text-muted">&middot;</span>
-          <span className="text-xs text-text-muted">
-            {agent.model?.split("/").pop()}
-          </span>
-        </div>
-        <div className="flex items-center gap-2">
-          {files.length > 0 && (
-            <button
-              onClick={() => setShowData((v) => !v)}
-              className={`flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
-                showData
-                  ? "bg-accent-teal/20 text-accent-teal"
-                  : "bg-surface-hover text-text-secondary hover:text-text-primary"
-              }`}
-            >
-              <Database size={13} />
-              Uploaded Data
-              <span className="rounded-full bg-accent-teal/15 px-1.5 py-0.5 text-[10px] font-semibold text-accent-teal">
-                {files.length}
-              </span>
-            </button>
-          )}
-          <button
-            onClick={onViewEval}
-            className="flex items-center gap-1.5 rounded-md bg-accent-teal/10 px-2.5 py-1 text-xs font-medium text-accent-teal transition-colors hover:bg-accent-teal/20"
-          >
-            <BarChart3 size={13} />
-            Evaluation
-          </button>
-        </div>
-      </div>
-      {showData && (
-        <UploadedDataPanel files={files} onRemoveFile={onRemoveFile} />
-      )}
-    </div>
-  );
-}
-
-function AgentDivider({ agent, sentinelRef }) {
-  return (
-    <div ref={sentinelRef} className="flex items-center gap-3 py-1">
-      <div className="h-px flex-1 bg-border/40" />
-      <span className="flex items-center gap-1.5 text-[10px] font-medium text-text-muted">
-        <Bot size={11} />
-        {agent.name}
-      </span>
-      <div className="h-px flex-1 bg-border/40" />
-    </div>
-  );
-}
-
-function restoreMessage(m) {
-  const type = m.type || (m.role === "user" ? "user" : "chat_response");
-  const base = { role: m.role || "assistant", type, animate: false };
-
-  switch (type) {
-    case "user":
-      return { ...base, role: "user", content: m.content };
-    case "trial_start":
-      return { ...base, trial: m.trial, maxTrials: m.max_trials };
-    case "tool_call":
-      return { ...base, turn: m.turn, tool: m.tool, detail: m.detail };
-    case "file_edit":
-      return {
-        ...base,
-        turn: m.turn,
-        command: m.command,
-        path: m.path,
-        fileText: m.file_text,
-        oldStr: m.old_str,
-        newStr: m.new_str,
-        insertLine: m.insert_line,
-      };
-    case "tool_result":
-    case "reasoning":
-    case "reflection":
-    case "chat_response":
-      return { ...base, content: m.text ?? m.content };
-    case "self_eval":
-      return {
-        ...base,
-        content: m.critique ?? m.content,
-        confidenceScore: m.confidence_score,
-        isConfident: m.is_confident,
-      };
-    case "answer":
-      return { ...base, content: m.text ?? m.content };
-    case "status":
-      return { ...base, content: m.message ?? m.content, done: true };
-    default:
-      return { ...base, content: m.content ?? m.text ?? "" };
-  }
-}
-
+/* ── App (layout shell) ───────────────────────────────────────────────── */
 export default function App() {
+  const navigate = useNavigate();
+  const { pathname } = useLocation();
+
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [activeTab, setActiveTab] = useState("chat");
   const [messages, setMessages] = useState([]);
   const [isStreaming, setIsStreaming] = useState(false);
   const [sessionId, setSessionId] = useState(null);
@@ -141,6 +52,7 @@ export default function App() {
   const [mountDir, setMountDir] = useState("");
   const [selectedSkillIds, setSelectedSkillIds] = useState([]);
   const [skipSkillConfirm, setSkipSkillConfirm] = useState(false);
+  const [employees, setEmployees] = useState([]);
   const [config, setConfig] = useState({
     model: "",
     maxTrials: 3,
@@ -157,9 +69,20 @@ export default function App() {
   const [workspacePanelOpen, setWorkspacePanelOpen] = useState(true);
   const [treeRefreshTrigger, setTreeRefreshTrigger] = useState(0);
   const [canvasCollapsed, setCanvasCollapsed] = useState(false);
+  const [browserLive, setBrowserLive] = useState({
+    enabled: LIVE_BROWSER_ENABLED,
+    visible: false,
+    status: "idle",
+    sessionId: null,
+    lastAction: null,
+  });
 
-  const workspaceActive = Boolean(mountDir);
-  const canvasVisible = openFiles.length > 0 && !canvasCollapsed;
+  // Routes where the chat-style workspace (canvas + file tree) is meaningful.
+  // We gate by route — not by an effect-driven `chatMounted` flag — so the
+  // canvas appears immediately when a file_edit event fires, with no race
+  // between ChatView's mount effect and the state update from setOpenFiles.
+  const onChatCapableRoute =
+    pathname === "/chat" || pathname.startsWith("/employee/");
 
   const messagesEndRef = useRef(null);
   const scrollContainerRef = useRef(null);
@@ -236,9 +159,22 @@ export default function App() {
     }
   }, []);
 
+  const refreshEmployees = useCallback(async () => {
+    try {
+      const list = await getEmployees();
+      setEmployees(list);
+    } catch {
+      /* keep stale */
+    }
+  }, []);
+
   useEffect(() => {
     refreshChats();
   }, [refreshChats]);
+
+  useEffect(() => {
+    refreshEmployees();
+  }, [refreshEmployees]);
 
   const handleSubmit = async (question, submittedFiles = []) => {
     if (!question.trim() || isStreaming) return;
@@ -274,9 +210,14 @@ export default function App() {
           maxTrials: config.maxTrials,
           confidenceThreshold: config.confidenceThreshold,
           useReflexion: config.useReflexion,
-          files: submittedFiles.length > 0
-            ? submittedFiles.map((f) => ({ name: f.name, size: f.size, type: f.type }))
-            : undefined,
+          files:
+            submittedFiles.length > 0
+              ? submittedFiles.map((f) => ({
+                  name: f.name,
+                  size: f.size,
+                  type: f.type,
+                }))
+              : undefined,
           skillIds: selectedSkillIds,
           mountDir: mountDir || undefined,
         },
@@ -286,6 +227,10 @@ export default function App() {
           switch (eventType) {
             case "session":
               setSessionId(data.session_id);
+              setBrowserLive((prev) => ({
+                ...prev,
+                sessionId: data.session_id,
+              }));
               return;
             case "agent":
               setMessages((prev) => [
@@ -316,12 +261,33 @@ export default function App() {
                 tool: data.tool,
                 detail: data.detail,
               };
+              if (String(data.tool || "").startsWith("browser_")) {
+                setBrowserLive((prev) => ({
+                  ...prev,
+                  visible: true,
+                  status: "active",
+                  sessionId: sid,
+                  lastAction: {
+                    tool: data.tool,
+                    detail: data.detail,
+                    at: Date.now(),
+                  },
+                }));
+              }
               break;
             case "tool_result":
-              msg = { role: "assistant", type: "tool_result", content: data.text };
+              msg = {
+                role: "assistant",
+                type: "tool_result",
+                content: data.text,
+              };
               break;
             case "reasoning":
-              msg = { role: "assistant", type: "reasoning", content: data.text };
+              msg = {
+                role: "assistant",
+                type: "reasoning",
+                content: data.text,
+              };
               break;
             case "self_eval":
               msg = {
@@ -333,7 +299,11 @@ export default function App() {
               };
               break;
             case "reflection":
-              msg = { role: "assistant", type: "reflection", content: data.text };
+              msg = {
+                role: "assistant",
+                type: "reflection",
+                content: data.text,
+              };
               break;
             case "answer":
               msg = {
@@ -369,7 +339,8 @@ export default function App() {
                 newStr: data.new_str,
                 insertLine: data.insert_line,
               };
-              // --- Push edit to canvas (always, even without mountDir) ---
+              // Push edit to canvas (always, even without mountDir) so users
+              // see a live diff as the agent edits files.
               {
                 const editEvt = {
                   command: data.command,
@@ -381,23 +352,32 @@ export default function App() {
                 };
                 setEditEvents((prev) => [...prev, editEvt]);
                 setModifiedFiles((prev) => new Set(prev).add(data.path));
-                if (workspaceActive) setTreeRefreshTrigger((n) => n + 1);
+                if (mountDir) setTreeRefreshTrigger((n) => n + 1);
 
-                // Auto-open the file in canvas
+                // Auto-open only previewable files so binary / unknown
+                // extensions don't pop up unreadable tabs.
                 const filePath = data.path;
-                setOpenFiles((prev) =>
-                  prev.includes(filePath) ? prev : [...prev, filePath],
-                );
-                setActiveFile(filePath);
+                if (isCanvasPreviewable(filePath)) {
+                  setOpenFiles((prev) =>
+                    prev.includes(filePath) ? prev : [...prev, filePath],
+                  );
+                  setActiveFile(filePath);
 
-                // For "create" commands, store the content directly
-                if (data.command === "create" && data.file_text) {
-                  setFileContents((prev) => ({ ...prev, [filePath]: data.file_text }));
-                } else if (mountDir) {
-                  // Refresh file content from backend
-                  fetchWorkspaceFile(mountDir, filePath)
-                    .then((res) => setFileContents((prev) => ({ ...prev, [filePath]: res.content })))
-                    .catch(() => {});
+                  if (data.command === "create" && data.file_text) {
+                    setFileContents((prev) => ({
+                      ...prev,
+                      [filePath]: data.file_text,
+                    }));
+                  } else if (mountDir) {
+                    fetchWorkspaceFile(mountDir, filePath)
+                      .then((res) =>
+                        setFileContents((prev) => ({
+                          ...prev,
+                          [filePath]: res.content,
+                        })),
+                      )
+                      .catch(() => {});
+                  }
                 }
               }
               break;
@@ -447,17 +427,24 @@ export default function App() {
     setModifiedFiles(new Set());
     setEditEvents([]);
     setTreeRefreshTrigger(0);
+    setCanvasCollapsed(false);
+    setBrowserLive({
+      enabled: LIVE_BROWSER_ENABLED,
+      visible: false,
+      status: "idle",
+      sessionId: null,
+      lastAction: null,
+    });
   };
 
   const handleSelectChat = async (chatId) => {
     if (chatId === sessionId) {
-      setActiveTab("chat");
+      navigate("/chat");
       return;
     }
     try {
       const chat = await fetchChatById(chatId);
       setSessionId(chatId);
-      setActiveTab("chat");
 
       const agent = agentMap[chat.agent_id] ?? null;
 
@@ -474,10 +461,21 @@ export default function App() {
       setMessages(restored);
       setChatFiles(chat.files ?? []);
       setStagedFiles([]);
+      const hasBrowserActivity = chat.messages.some(
+        (m) => m.type === "tool_call" && String(m.tool || "").startsWith("browser_"),
+      );
+      setBrowserLive((prev) => ({
+        ...prev,
+        visible: hasBrowserActivity,
+        sessionId: chatId,
+        status: hasBrowserActivity ? "active" : "idle",
+        lastAction: null,
+      }));
       if (agent) {
         visibleAgentRef.current = agent.id;
         setVisibleAgent(agent);
       }
+      navigate("/chat");
     } catch {
       /* ignore */
     }
@@ -506,10 +504,8 @@ export default function App() {
 
   const handleViewEval = (agentId) => {
     if (agentId) setFocusAgentId(agentId);
-    setActiveTab("evaluation");
+    navigate("/evaluation");
   };
-
-  const hasMessages = messages.length > 0;
 
   const registerSentinel = (index, el, agent) => {
     if (el) {
@@ -527,6 +523,24 @@ export default function App() {
       );
       setActiveFile(filePath);
       if (!fileContents[filePath] && mountDir) {
+        // Binary previews (PDF, images) are rendered directly from the raw
+        // endpoint; don't try to fetch them as text.
+        const ext = filePath.split(".").pop()?.toLowerCase();
+        const binaryExts = new Set([
+          "pdf",
+          "png",
+          "jpg",
+          "jpeg",
+          "gif",
+          "bmp",
+          "webp",
+          "svg",
+          "ico",
+        ]);
+        if (binaryExts.has(ext)) {
+          setFileContents((prev) => ({ ...prev, [filePath]: "" }));
+          return;
+        }
         try {
           const res = await fetchWorkspaceFile(mountDir, filePath);
           setFileContents((prev) => ({ ...prev, [filePath]: res.content }));
@@ -551,176 +565,137 @@ export default function App() {
     [activeFile],
   );
 
-  const renderChatView = () => {
-    if (hasMessages) {
-      return (
-        <>
-          <div
-            ref={scrollContainerRef}
-            onScroll={updateVisibleAgent}
-            className="flex-1 overflow-y-auto"
-          >
-            <AgentBanner
-              agent={visibleAgent}
-              onViewEval={() => handleViewEval(visibleAgent?.id)}
-              files={chatFiles}
-              onRemoveFile={(i) => setChatFiles((prev) => prev.filter((_, idx) => idx !== i))}
-            />
-            <div className="px-4 pt-4 pb-4">
-              <div className="mx-auto max-w-2xl space-y-3">
-                {messages.map((msg, i) =>
-                  msg.type === "agent_marker" ? (
-                    <AgentDivider
-                      key={`${sessionId}-${i}`}
-                      agent={msg.agent}
-                      sentinelRef={(el) => registerSentinel(i, el, msg.agent)}
-                    />
-                  ) : (
-                    <ChatMessage
-                      key={`${sessionId}-${i}`}
-                      message={msg}
-                      animate={msg.animate !== false}
-                      onFileEditClick={(m) => {
-                        if (m.path) handleCanvasSelectFile(m.path);
-                      }}
-                    />
-                  ),
-                )}
-                <div ref={messagesEndRef} />
-              </div>
-            </div>
-          </div>
-          <div className="border-t border-border/30 bg-workspace pb-4 pt-3">
-            <InputBox
-              onSubmit={handleSubmit}
-              isStreaming={isStreaming}
-              config={config}
-              onConfigChange={setConfig}
-              stagedFiles={stagedFiles}
-              onFilesChange={setStagedFiles}
-              skills={skills}
-              selectedSkillIds={selectedSkillIds}
-              onSelectedSkillsChange={setSelectedSkillIds}
-              skipConfirm={skipSkillConfirm}
-              onSkipConfirmChange={setSkipSkillConfirm}
-              mountDir={mountDir}
-              onMountDirChange={setMountDir}
-            />
-          </div>
-        </>
-      );
-    }
-
-    return (
-      <>
-        <div className="flex flex-1 flex-col items-center justify-center">
-          <div className="w-full">
-            <WelcomeHeader />
-            <InputBox
-              onSubmit={handleSubmit}
-              isStreaming={isStreaming}
-              config={config}
-              onConfigChange={setConfig}
-              stagedFiles={stagedFiles}
-              onFilesChange={setStagedFiles}
-              skills={skills}
-              selectedSkillIds={selectedSkillIds}
-              onSelectedSkillsChange={setSelectedSkillIds}
-              skipConfirm={skipSkillConfirm}
-              onSkipConfirmChange={setSkipSkillConfirm}
-              mountDir={mountDir}
-              onMountDirChange={setMountDir}
-            />
-          </div>
-        </div>
-        <footer className="pb-4 text-center text-xs text-text-muted">
-          AI may produce inaccurate information. Verify important facts.
-        </footer>
-      </>
-    );
+  const ctxValue = {
+    messages,
+    setMessages,
+    isStreaming,
+    sessionId,
+    setSessionId,
+    visibleAgent,
+    agents,
+    agentMap,
+    chats,
+    chatFiles,
+    setChatFiles,
+    stagedFiles,
+    setStagedFiles,
+    skills,
+    selectedSkillIds,
+    setSelectedSkillIds,
+    skipSkillConfirm,
+    setSkipSkillConfirm,
+    config,
+    setConfig,
+    mountDir,
+    setMountDir,
+    focusAgentId,
+    setFocusAgentId,
+    employees,
+    refreshEmployees,
+    refreshSkills,
+    refreshChats,
+    handleSubmit,
+    handleNewChat,
+    handleSelectChat,
+    handleDeleteChat,
+    handleRenameChat,
+    handleViewEval,
+    scrollContainerRef,
+    messagesEndRef,
+    updateVisibleAgent,
+    registerSentinel,
+    // canvas / workspace
+    openFiles,
+    activeFile,
+    fileContents,
+    modifiedFiles,
+    editEvents,
+    canvasCollapsed,
+    setCanvasCollapsed,
+    browserLive,
+    setBrowserLive,
+    handleCanvasSelectFile,
+    handleCanvasCloseFile,
+    workspacePanelOpen,
+    setWorkspacePanelOpen,
+    treeRefreshTrigger,
   };
 
   return (
-    <div className="flex h-full bg-workspace">
-      <Sidebar
-        isOpen={sidebarOpen}
-        onClose={() => setSidebarOpen(false)}
-        activeTab={activeTab}
-        onTabChange={setActiveTab}
-        onNewChat={handleNewChat}
-        chats={chats}
-        agentMap={agentMap}
-        activeChatId={sessionId}
-        onSelectChat={handleSelectChat}
-        onDeleteChat={handleDeleteChat}
-        onRenameChat={handleRenameChat}
-      />
-
-      <main className="relative flex flex-1 flex-col overflow-hidden">
-        <div className="absolute top-4 left-4 z-30 lg:hidden">
-          <button
-            onClick={() => setSidebarOpen(true)}
-            className="flex h-10 w-10 items-center justify-center rounded-lg text-text-secondary transition-colors hover:bg-surface"
-          >
-            <Menu size={20} />
-          </button>
-        </div>
-
-        {activeTab === "evaluation" ? (
-          <EvaluationView
-            agentMap={agentMap}
-            focusAgentId={focusAgentId}
-            onClearFocus={() => setFocusAgentId(null)}
-          />
-        ) : activeTab === "skills" ? (
-          <SkillsView onSkillsChanged={refreshSkills} />
-        ) : (
-          <div className="flex flex-1 overflow-hidden">
-            {/* Chat column */}
-            <div className={`flex flex-col transition-all duration-300 ${canvasVisible ? "w-1/2 min-w-[360px] border-r border-border/20" : "flex-1"}`}>
-              {renderChatView()}
-            </div>
-
-            {/* Canvas panel — only visible when files are open and not collapsed */}
-            {openFiles.length > 0 && (
-              <EditorCanvas
-                openFiles={openFiles}
-                activeFile={activeFile}
-                fileContents={fileContents}
-                modifiedFiles={modifiedFiles}
-                editEvents={editEvents}
-                onSelectFile={handleCanvasSelectFile}
-                onCloseFile={handleCanvasCloseFile}
-                collapsed={canvasCollapsed}
-                onToggleCollapse={() => setCanvasCollapsed((v) => !v)}
-              />
-            )}
-          </div>
-        )}
-      </main>
-
-      {/* Right sidebar: workspace file tree */}
-      {workspaceActive && activeTab === "chat" && workspacePanelOpen && (
-        <WorkspacePanel
-          mountDir={mountDir}
-          activeFile={activeFile}
-          modifiedFiles={modifiedFiles}
-          onSelectFile={handleCanvasSelectFile}
-          onClose={() => setWorkspacePanelOpen(false)}
-          refreshTrigger={treeRefreshTrigger}
+    <AppProvider value={ctxValue}>
+      <div className="flex h-full bg-workspace">
+        <Sidebar
+          isOpen={sidebarOpen}
+          onClose={() => setSidebarOpen(false)}
+          onNewChat={handleNewChat}
+          chats={chats}
+          agentMap={agentMap}
+          activeChatId={sessionId}
+          onSelectChat={handleSelectChat}
+          onDeleteChat={handleDeleteChat}
+          onRenameChat={handleRenameChat}
+          employees={employees}
         />
-      )}
 
-      {/* Toggle button when workspace panel is closed */}
-      {workspaceActive && activeTab === "chat" && !workspacePanelOpen && (
-        <button
-          onClick={() => setWorkspacePanelOpen(true)}
-          className="fixed right-3 top-3 z-30 flex h-8 w-8 items-center justify-center rounded-lg bg-surface text-text-muted transition-colors hover:bg-surface-hover hover:text-text-primary"
-          title="Show workspace files"
-        >
-          <PanelRight size={16} />
-        </button>
-      )}
-    </div>
+        <main className="relative flex flex-1 flex-col overflow-hidden">
+          <div className="absolute top-4 left-4 z-30 lg:hidden">
+            <button
+              onClick={() => setSidebarOpen(true)}
+              className="flex h-10 w-10 items-center justify-center rounded-lg text-text-secondary transition-colors hover:bg-surface"
+            >
+              <Menu size={20} />
+            </button>
+          </div>
+
+          <Routes>
+            <Route path="/" element={<DashboardPage />} />
+            <Route path="/new" element={<CreationWizard />} />
+            <Route path="/employee/:id" element={<EmployeePage />} />
+            <Route path="/chat" element={<ChatView />} />
+            <Route path="/plugins" element={<PluginsPage />} />
+            <Route path="/evaluation" element={<EvaluationLabPage />} />
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
+        </main>
+
+        {/* Canvas & workspace panel live at the app-root flex row so they
+            span the full viewport height (above the employee page banner). */}
+        {onChatCapableRoute && openFiles.length > 0 && (
+          <EditorCanvas
+            openFiles={openFiles}
+            activeFile={activeFile}
+            fileContents={fileContents}
+            modifiedFiles={modifiedFiles}
+            editEvents={editEvents}
+            mountDir={mountDir}
+            onSelectFile={handleCanvasSelectFile}
+            onCloseFile={handleCanvasCloseFile}
+            collapsed={canvasCollapsed}
+            onToggleCollapse={() => setCanvasCollapsed((v) => !v)}
+          />
+        )}
+
+        {onChatCapableRoute && mountDir && workspacePanelOpen && (
+          <WorkspacePanel
+            mountDir={mountDir}
+            activeFile={activeFile}
+            modifiedFiles={modifiedFiles}
+            onSelectFile={handleCanvasSelectFile}
+            onClose={() => setWorkspacePanelOpen(false)}
+            refreshTrigger={treeRefreshTrigger}
+          />
+        )}
+
+        {onChatCapableRoute && mountDir && !workspacePanelOpen && (
+          <button
+            onClick={() => setWorkspacePanelOpen(true)}
+            className="fixed right-3 top-3 z-30 flex h-8 w-8 items-center justify-center rounded-lg bg-surface text-text-muted transition-colors hover:bg-surface-hover hover:text-text-primary"
+            title="Show workspace files"
+          >
+            <PanelRight size={16} />
+          </button>
+        )}
+      </div>
+    </AppProvider>
   );
 }

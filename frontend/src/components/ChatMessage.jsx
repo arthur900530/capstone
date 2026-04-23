@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import {
   Wrench,
   Brain,
@@ -98,6 +99,7 @@ function AnswerBlock({ message, animate }) {
       </p>
       <div className="prose-dark text-sm leading-relaxed text-text-primary">
         <ReactMarkdown
+          remarkPlugins={[remarkGfm]}
           components={{
             p: ({ children }) => <p className="mb-2 last:mb-0">{children}</p>,
             strong: ({ children }) => <strong className="font-semibold text-accent-light">{children}</strong>,
@@ -111,6 +113,20 @@ function AnswerBlock({ message, animate }) {
             ),
             code: ({ children }) => (
               <code className="rounded bg-charcoal px-1.5 py-0.5 text-xs font-mono text-accent-light">{children}</code>
+            ),
+            table: ({ children }) => (
+              <div className="my-3 overflow-x-auto">
+                <table className="w-full border-collapse text-xs">{children}</table>
+              </div>
+            ),
+            thead: ({ children }) => <thead className="bg-charcoal">{children}</thead>,
+            th: ({ children }) => (
+              <th className="border border-border/30 px-2 py-1 text-left font-semibold text-text-primary">
+                {children}
+              </th>
+            ),
+            td: ({ children }) => (
+              <td className="border border-border/30 px-2 py-1 text-text-secondary">{children}</td>
             ),
           }}
         >

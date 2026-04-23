@@ -53,7 +53,7 @@ export default function SkillCard({ skill, isSelected, onClick, viewMode = "grid
   return (
     <button
       onClick={onClick}
-      className={`flex min-w-0 flex-col overflow-hidden rounded-xl border p-4 text-left transition-all ${
+      className={`flex h-full min-w-0 flex-col overflow-hidden rounded-xl border p-4 text-left transition-all ${
         isSelected
           ? "border-accent-teal/40 bg-surface"
           : "border-border/40 bg-surface hover:border-accent-teal/30 hover:bg-surface-hover"

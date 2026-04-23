@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import csv
 import os
+import sys
 import asyncio
 import json
 import logging
@@ -30,6 +31,7 @@ from typing import Any
 import dotenv
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
@@ -39,15 +41,21 @@ dotenv.load_dotenv()
 
 logger = logging.getLogger(__name__)
 
+
+def _env_bool(name: str, default: str = "false") -> bool:
+    return os.getenv(name, default).strip().lower() in ("1", "true", "yes")
+
 # ---------------------------------------------------------------------------
 # Real-agent feature flag
 # ---------------------------------------------------------------------------
 REAL_AGENT_ENABLED = True
+ENABLE_BROWSER_LIVE = _env_bool("ENABLE_BROWSER_LIVE", "true")
 
 _agent_import_error: str | None = None
 if REAL_AGENT_ENABLED:
     try:
         from reflexion_agent.agent import runtime as _agent_runtime
+        from reflexion_agent.agent import build_workspace as _build_workspace
         from openhands.sdk.event import (
             ActionEvent,
             ObservationEvent,
@@ -68,38 +76,136 @@ else:
 
 from contextlib import asynccontextmanager
 
+from config import AGENT_MODEL
 from db.engine import engine
 from db.seed import seed_from_filesystem
 from routers.skills import router as skills_router
 from routers.marketplace import router as marketplace_router
 from routers.submissions import router as submissions_router
+from routers.employees import router as employees_router
+
+
+# ---------------------------------------------------------------------------
+# Shared DockerWorkspace
+# ---------------------------------------------------------------------------
+# A single DockerWorkspace is started at server boot with its bind mount
+# pointing at a neutral scratch directory on the host (``_SHARED_WS["host_dir"]``).
+# Sessions never bind-mount their own directories; instead, at session-swap
+# time we (1) sync the current owner's changes back to their original
+# ``mount_dir`` on the host, (2) wipe the shared bind mount, and (3) copy
+# the incoming session's files in. Within a single session, no copying
+# happens between turns — the container and its /workspace contents are
+# reused as-is, so every turn after the first is instant.
+#
+# The tradeoffs (spelled out so the next reader isn't surprised):
+#   - Only one agent runs at a time; ``_SHARED_WS["lock"]`` serializes them.
+#   - The user's ``mount_dir`` on disk is not live: changes are synced back
+#     after each turn of the owning session, and again on eviction.
+#   - Hidden top-level dirs (``.agents``, ``.openhands``) are excluded from
+#     sync-back to avoid polluting the user's project with agent-internal
+#     scaffolding. They still live inside /workspace during the run.
+
+_SHARED_WS: dict[str, Any] = {
+    "workspace": None,       # DockerWorkspace instance (entered via __enter__)
+    "host_dir": None,        # str: host path bind-mounted at /workspace
+    "lock": None,            # asyncio.Lock — serializes session access
+    "current_owner": None,   # dict or None — see _prime_shared_workspace
+}
 
 
 @asynccontextmanager
 async def lifespan(application):
-    """Start DB engine and seed skills on first boot. Falls back to in-memory if no DB."""
+    """Start DB engine, seed skills, and warm the shared DockerWorkspace."""
     from routers.skills import set_db_available
+    from routers.employees import set_db_available as set_emp_db
     try:
-        # Run Alembic migrations programmatically
         from alembic.config import Config
         from alembic import command
         alembic_cfg = Config(os.path.join(os.path.dirname(__file__), "alembic.ini"))
         await asyncio.to_thread(command.upgrade, alembic_cfg, "head")
-        # Seed filesystem skills into DB if needed
         await seed_from_filesystem()
         set_db_available(True)
+        set_emp_db(True)
         logger.info("Database initialized and seeded.")
     except Exception as exc:
         set_db_available(False)
+        set_emp_db(False)
         logger.warning("DB init skipped — falling back to in-memory skills: %s", exc)
+
+    # Warm the shared DockerWorkspace once, before accepting requests.
+    if REAL_AGENT_ENABLED:
+        host_dir = tempfile.mkdtemp(prefix="shared_ws_")
+        logger.info("Starting shared DockerWorkspace (host_dir=%s) …", host_dir)
+        workspace = None
+        last_exc: Exception | None = None
+        # Retry a few times: a freshly-chosen host port may race with another
+        # container / process coming up on the same port. On each retry
+        # _find_port picks a new one.
+        for attempt in range(1, 4):
+            try:
+                workspace = await asyncio.to_thread(_start_shared_workspace, host_dir)
+                break
+            except Exception as exc:
+                last_exc = exc
+                logger.warning(
+                    "Shared DockerWorkspace start attempt %d/3 failed: %s",
+                    attempt, exc,
+                )
+        if workspace is not None:
+            _SHARED_WS["host_dir"] = host_dir
+            _SHARED_WS["workspace"] = workspace
+            _SHARED_WS["lock"] = asyncio.Lock()
+            _SHARED_WS["current_owner"] = None
+            logger.info("Shared DockerWorkspace ready — bind mount %s:/workspace", host_dir)
+        else:
+            logger.error(
+                "Failed to start shared DockerWorkspace after 3 attempts; real agent disabled. "
+                "Check for stale containers: `docker ps -a | rg openhands/agent-server`. "
+                "Last error: %s",
+                last_exc,
+            )
+            shutil.rmtree(host_dir, ignore_errors=True)
+            _SHARED_WS["workspace"] = None
+            _SHARED_WS["host_dir"] = None
+            _SHARED_WS["lock"] = None
+
     yield
+
+    if _SHARED_WS.get("workspace") is not None:
+        try:
+            await asyncio.to_thread(_evict_current_owner_sync)
+            await asyncio.to_thread(
+                _SHARED_WS["workspace"].__exit__, None, None, None
+            )
+        except Exception:
+            logger.exception("Error while tearing down shared DockerWorkspace")
+        finally:
+            host_dir = _SHARED_WS.get("host_dir")
+            if host_dir and os.path.isdir(host_dir):
+                shutil.rmtree(host_dir, ignore_errors=True)
+            _SHARED_WS["workspace"] = None
+            _SHARED_WS["host_dir"] = None
+
     try:
         await engine.dispose()
     except Exception:
         pass
 
 
-app = FastAPI(title="Skill Marketplace Agent API", lifespan=lifespan)
+def _start_shared_workspace(host_dir: str):
+    """Synchronous helper: build the workspace and enter its context."""
+    ws = _build_workspace(mount_host_dir=host_dir)
+    return ws.__enter__()
+
+
+def _workspace_novnc_port() -> int | None:
+    workspace = _SHARED_WS.get("workspace")
+    if workspace is None:
+        return None
+    return getattr(workspace, "novnc_host_port", None)
+
+
+app = FastAPI(title="Digital Employee Platform API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -112,41 +218,8 @@ app.add_middleware(
 app.include_router(skills_router)
 app.include_router(marketplace_router)
 app.include_router(submissions_router)
+app.include_router(employees_router)
 
-
-# ---------------------------------------------------------------------------
-# In-memory stores (Have to change)
-# ---------------------------------------------------------------------------
-
-_AGENTS: dict[str, dict] = {
-    "agent-claude-full": {
-        "id": "agent-claude-full",
-        "name": "Equity Research Analyst",
-        "model": "anthropic/claude-sonnet-4-5-20250929",
-        "skills": ["web_search", "edgar_search", "parse_html", "retrieve_info"],
-    },
-    "agent-gpt4o-web": {
-        "id": "agent-gpt4o-web",
-        "name": "Market Intelligence Associate",
-        "model": "openai/gpt-4o",
-        "skills": ["web_search", "parse_html", "retrieve_info"],
-    },
-    "agent-claude-lite": {
-        "id": "agent-claude-lite",
-        "name": "Portfolio Risk Analyst",
-        "model": "anthropic/claude-sonnet-4-5-20250929",
-        "skills": ["web_search", "edgar_search", "parse_html"],
-    },
-    "agent-conversational": {
-        "id": "agent-conversational",
-        "name": "Financial Advisor Assistant",
-        "model": "anthropic/claude-sonnet-4-5-20250929",
-        "skills": [],
-    },
-}
-
-_DEFAULT_TASK_AGENT = "agent-claude-full"
-_DEFAULT_CHAT_AGENT = "agent-conversational"
 
 _chats: dict[str, dict] = {}
 _upload_dirs: dict[str, str] = {}
@@ -156,13 +229,56 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+# Registry of agent profiles surfaced by /api/agents and consumed by
+# _resolve_agent. The ``model`` field here is a historical/display value;
+# the reflexion runtime always calls ``config.AGENT_MODEL``, and callers
+# stamp that real model onto the returned profile (see _resolve_agent).
+_AGENTS: dict[str, dict] = {
+    "agent-gpt5.4-full": {
+        "id": "agent-gpt5.4-full",
+        "name": "Equity Research Analyst",
+        "model": "openai/gpt-5.4",
+        "skills": ["web_search", "edgar_search", "parse_html", "retrieve_info"],
+    },
+    "agent-gpt5.4-web": {
+        "id": "agent-gpt5.4-web",
+        "name": "Market Intelligence Associate",
+        "model": "openai/gpt-5.4",
+        "skills": ["web_search", "parse_html", "retrieve_info"],
+    },
+    "agent-conversational": {
+        "id": "agent-conversational",
+        "name": "Financial Advisor Assistant",
+        "model": "openai/gpt-5.4",
+        "skills": [],
+    },
+}
+
+_DEFAULT_TASK_AGENT = "agent-gpt5.4-full"
+_DEFAULT_CHAT_AGENT = "agent-conversational"
+
+
 def _resolve_agent(model: str | None, is_task: bool = True) -> dict:
-    """Pick the best matching agent for a given model string and query type."""
+    """Pick the best matching agent profile and stamp it with the REAL model
+    that the runtime will actually call.
+
+    The `_AGENTS` registry carries historical/display model strings, but the
+    reflexion runtime always uses ``config.AGENT_MODEL``. To keep the UI
+    honest we clone the selected profile and overwrite its ``model`` field
+    with ``AGENT_MODEL`` before returning.
+    """
     if model:
         for agent in _AGENTS.values():
             if agent["model"] == model and (bool(agent["skills"]) == is_task):
-                return agent
-    return _AGENTS[_DEFAULT_TASK_AGENT if is_task else _DEFAULT_CHAT_AGENT]
+                return {**agent, "model": AGENT_MODEL}
+    default_id = _DEFAULT_TASK_AGENT if is_task else _DEFAULT_CHAT_AGENT
+    base = _AGENTS.get(default_id)
+    if base is None:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Default agent '{default_id}' is not registered.",
+        )
+    return {**base, "model": AGENT_MODEL}
 
 
 _SKILLS_DIR = os.path.join(os.path.dirname(__file__), "skills")
@@ -609,6 +725,15 @@ def _map_event_to_sse(event: Any, session_id: str) -> dict | None:
                 _turn_counter.setdefault(session_id, 0)
                 _turn_counter[session_id] += 1
 
+                # For terminal/bash actions, predict which files this command
+                # will write so the matching ObservationEvent can read them
+                # off the workspace and emit file_edit payloads.
+                if tool_name.lower() in _TERMINAL_TOOL_NAMES:
+                    predicted = _extract_bash_output_paths(
+                        str(args_dict.get("command", ""))
+                    )
+                    _pending_bash_writes.setdefault(session_id, []).append(predicted)
+
                 # Emit a richer event for file_editor tool calls
                 if tool_name.lower() in ("file_editor", "fileeditortool"):
                     raw_path = args_dict.get("path", "")
@@ -667,6 +792,11 @@ def _map_event_to_sse(event: Any, session_id: str) -> dict | None:
             text = _extract_text(getattr(event, "extended_content", None))
             if not text:
                 text = getattr(event, "reasoning_content", None) or ""
+            if not text:
+                text = _extract_text(getattr(event, "content", None))
+            if not text:
+                message = getattr(event, "message", None)
+                text = _extract_text(getattr(message, "content", None))
             if text:
                 return _sse("answer", {"text": text})
             return None
@@ -676,13 +806,30 @@ def _map_event_to_sse(event: Any, session_id: str) -> dict | None:
             return _sse("error", {"message": getattr(event, "error", str(event))})
 
         if isinstance(event, ConversationErrorEvent):
-            msg = getattr(event, "message", None) or getattr(event, "error", None) or str(event)
-            return _sse("error", {"message": msg})
+            code = getattr(event, "code", None) or "ConversationError"
+            detail = getattr(event, "detail", None) or getattr(event, "message", None) or str(event)
+            logger.error("ConversationErrorEvent: code=%s detail=%s", code, detail)
+            return _sse("error", {"message": f"{code}: {detail}"})
 
     except Exception:
         logger.exception("Failed to map event to SSE: %s", type(event).__name__)
 
     return None
+
+
+def _validate_mount_dir(mount_dir: str | None) -> str | None:
+    """Reject mount_dir paths that escape the user's home or /tmp."""
+    if not mount_dir:
+        return None
+    resolved = os.path.realpath(mount_dir)
+    home = os.path.expanduser("~")
+    allowed_prefixes = (home + os.sep, tempfile.gettempdir() + os.sep)
+    if not resolved.startswith(allowed_prefixes):
+        raise HTTPException(
+            status_code=400,
+            detail="mount_dir must be under your home directory or /tmp",
+        )
+    return resolved
 
 
 def _resolve_workspace(session_id: str, mount_dir: str | None) -> tuple[str | None, str | None]:
@@ -694,6 +841,7 @@ def _resolve_workspace(session_id: str, mount_dir: str | None) -> tuple[str | No
 
     Returns (effective_mount_dir, staging_dir_to_cleanup_or_None).
     """
+    mount_dir = _validate_mount_dir(mount_dir)
     staging = _upload_dirs.pop(session_id, None)
 
     if staging and mount_dir:
@@ -723,6 +871,165 @@ def _copy_dir_contents(src_dir: str, dst_dir: str) -> None:
             shutil.copytree(src, dst, dirs_exist_ok=True)
         else:
             shutil.copy2(src, dst)
+
+
+# Top-level entries excluded when syncing back the shared workspace to the
+# user's real mount_dir. These are agent-internal scaffolding (skill packs,
+# task tracker files, conversation journals, …) that should not pollute
+# the user's project directory.
+_SYNC_BACK_EXCLUDE_TOPLEVEL: set[str] = {".agents", ".openhands"}
+
+
+def _sync_dir_contents_for_export(src_dir: str, dst_dir: str) -> None:
+    """Copy src_dir → dst_dir, skipping agent-internal scaffolding dirs.
+
+    Used to flush /workspace back to the user's original ``mount_dir`` after
+    a run. Hidden dotfiles are kept (users may intentionally create them),
+    but the well-known agent-internal top-level dirs are excluded so the
+    user's tree stays clean.
+    """
+    if not os.path.isdir(src_dir) or not dst_dir:
+        return
+    os.makedirs(dst_dir, exist_ok=True)
+    for name in os.listdir(src_dir):
+        if name in _SYNC_BACK_EXCLUDE_TOPLEVEL:
+            continue
+        src = os.path.join(src_dir, name)
+        dst = os.path.join(dst_dir, name)
+        if os.path.isdir(src):
+            shutil.copytree(src, dst, dirs_exist_ok=True)
+        else:
+            shutil.copy2(src, dst)
+
+
+def _clear_dir_contents(path: str) -> None:
+    """Remove everything inside ``path`` but keep the directory itself."""
+    if not path or not os.path.isdir(path):
+        return
+    for name in os.listdir(path):
+        full = os.path.join(path, name)
+        try:
+            if os.path.isdir(full) and not os.path.islink(full):
+                shutil.rmtree(full)
+            else:
+                os.unlink(full)
+        except OSError:
+            logger.warning("Failed to remove %s while clearing %s", full, path)
+
+
+def _owner_key(
+    session_id: str,
+    mount_dir: str | None,
+    skill_ids: list[str] | None,
+) -> tuple[str, str | None, tuple[str, ...]]:
+    """Stable identity for 'the session + workspace config currently in /workspace'."""
+    return (session_id, mount_dir, tuple(sorted(skill_ids or [])))
+
+
+def _evict_current_owner_sync() -> None:
+    """Sync-back + cleanup for the current owner. Caller must hold the lock.
+
+    - If the owner set a ``sync_target`` (the user's real mount_dir), copy
+      the current /workspace contents back into it, skipping agent-internal
+      dirs.
+    - Remove any temp ``cleanup_dirs`` the owner accumulated (skill staging,
+      upload staging).
+    - Clear ``_SHARED_WS["current_owner"]`` so the next prime runs a full swap.
+    """
+    owner = _SHARED_WS.get("current_owner")
+    if not owner:
+        return
+
+    host_dir = _SHARED_WS.get("host_dir")
+    sync_target = owner.get("sync_target")
+    if host_dir and sync_target:
+        try:
+            _sync_dir_contents_for_export(host_dir, sync_target)
+            logger.info(
+                "Synced shared workspace back to mount_dir=%s (session=%s)",
+                sync_target, owner.get("session_id"),
+            )
+        except Exception:
+            logger.exception(
+                "Sync-back failed for session=%s → %s",
+                owner.get("session_id"), sync_target,
+            )
+
+    for path in owner.get("cleanup_dirs") or []:
+        if path and os.path.isdir(path):
+            shutil.rmtree(path, ignore_errors=True)
+
+    _SHARED_WS["current_owner"] = None
+
+
+def _prime_shared_workspace_sync(
+    session_id: str,
+    effective_mount: str | None,
+    sync_target: str | None,
+    cleanup_dirs: list[str],
+    key: tuple,
+) -> None:
+    """Make /workspace reflect ``effective_mount``. Caller must hold the lock.
+
+    Fast path: if the incoming ``key`` matches the current owner, do nothing —
+    the session is continuing and /workspace already holds its state.
+
+    Slow path: evict the current owner (sync-back + cleanup), wipe the shared
+    bind mount, copy ``effective_mount`` contents in, and record this session
+    as the new owner.
+    """
+    current = _SHARED_WS.get("current_owner")
+    if current and current.get("key") == key:
+        # Same session + mount + skills as last turn — reuse as-is.
+        for path in cleanup_dirs or []:
+            if path and os.path.isdir(path) and path not in (current.get("cleanup_dirs") or []):
+                shutil.rmtree(path, ignore_errors=True)
+        return
+
+    _evict_current_owner_sync()
+
+    host_dir = _SHARED_WS["host_dir"]
+    _clear_dir_contents(host_dir)
+    if effective_mount and os.path.isdir(effective_mount):
+        _copy_dir_contents(effective_mount, host_dir)
+
+    _SHARED_WS["current_owner"] = {
+        "key": key,
+        "session_id": session_id,
+        "sync_target": sync_target,
+        "cleanup_dirs": list(cleanup_dirs or []),
+    }
+    logger.info(
+        "Primed shared workspace: session=%s mount=%s skills_cached=%s",
+        session_id, sync_target, bool(cleanup_dirs),
+    )
+
+
+def _sync_current_owner_back_sync() -> None:
+    """Copy /workspace contents back to the owner's sync target (no eviction).
+
+    Called after each turn so the user sees their files on disk without
+    having to wait for session eviction. Caller must hold the lock.
+    """
+    logger.info("Syncing current owner back to sync target")
+    owner = _SHARED_WS.get("current_owner")
+    if not owner:
+        return
+    host_dir = _SHARED_WS.get("host_dir")
+    sync_target = owner.get("sync_target")
+    if not (host_dir and sync_target):
+        return
+    try:
+        _sync_dir_contents_for_export(host_dir, sync_target)
+        logger.info(
+            "Synced shared workspace back to mount_dir=%s (session=%s)",
+            sync_target, owner.get("session_id"),
+        )
+    except Exception:
+        logger.exception(
+            "Post-turn sync-back failed for session=%s → %s",
+            owner.get("session_id"), sync_target,
+        )
 
 
 def _try_get_skill_from_db(skill_id: str) -> dict | None:
@@ -789,7 +1096,9 @@ def _materialize_skill_package(skills_root: str, skill_id: str) -> None:
         for rel_path, content in db_data.get("files", {}).items():
             if rel_path == "SKILL.md" or rel_path.endswith("/SKILL.md"):
                 continue
-            dest = os.path.join(pkg, rel_path)
+            dest = os.path.realpath(os.path.join(pkg, rel_path))
+            if not dest.startswith(os.path.realpath(pkg) + os.sep):
+                continue  # skip path traversal attempts
             os.makedirs(os.path.dirname(dest), exist_ok=True)
             with open(dest, "w", encoding="utf-8") as f:
                 f.write(content or "")
@@ -803,18 +1112,24 @@ def _materialize_skill_package(skills_root: str, skill_id: str) -> None:
     with open(os.path.join(pkg, "SKILL.md"), "w", encoding="utf-8") as f:
         f.write(definition)
     by_name = _FILE_CONTENTS.get(skill_id, {})
+    pkg_real = os.path.realpath(pkg)
     for meta in skill.get("files") or []:
         rel = meta["name"].replace("\\", "/")
         if rel == "SKILL.md" or rel.endswith("/SKILL.md"):
             continue
-        dest = os.path.join(pkg, rel)
+        dest = os.path.realpath(os.path.join(pkg, rel))
+        if not dest.startswith(pkg_real + os.sep):
+            continue  # skip path traversal attempts
         dest_parent = os.path.dirname(dest)
         if dest_parent:
             os.makedirs(dest_parent, exist_ok=True)
         if rel in by_name:
             text = by_name[rel]
         else:
-            disk_path = os.path.join(_SKILLS_DIR, skill_id, rel)
+            skill_dir_real = os.path.realpath(os.path.join(_SKILLS_DIR, skill_id))
+            disk_path = os.path.realpath(os.path.join(_SKILLS_DIR, skill_id, rel))
+            if not disk_path.startswith(skill_dir_real + os.sep):
+                continue
             with open(disk_path, encoding="utf-8") as f:
                 text = f.read()
         with open(dest, "w", encoding="utf-8") as f:
@@ -874,6 +1189,162 @@ def _resolve_workspace_for_runtime(
     return workspace, cleanup
 
 
+# ---------------------------------------------------------------------------
+# Terminal-write detection (auto-open canvas for files dropped by bash)
+# ---------------------------------------------------------------------------
+#
+# Strategy: instead of polling the workspace, we statically parse each
+# terminal tool invocation, predict which paths the command will write, and
+# read+emit those files when the matching observation event comes back.
+# This mirrors how file_editor surfaces its writes — purely event-driven.
+
+# Files we know how to render in the canvas. Mirrors the frontend allowlist
+# in EditorCanvas.jsx (`isCanvasPreviewable`). Files outside this set still
+# show up in the workspace tree, just don't auto-open.
+_PREVIEWABLE_EXTS: set[str] = {
+    ".md", ".markdown", ".mdown", ".mkd",
+    ".txt", ".log", ".csv", ".tsv",
+    ".pdf",
+    ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".svg", ".ico",
+    ".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs",
+    ".json", ".yml", ".yaml", ".toml", ".ini", ".cfg",
+    ".sh", ".bash", ".zsh",
+    ".css", ".scss", ".less", ".html", ".htm", ".xml",
+    ".sql", ".rs", ".go", ".java", ".kt", ".swift",
+    ".c", ".cc", ".cpp", ".h", ".hpp", ".rb", ".lua", ".r", ".php", ".pl",
+}
+
+# Agent-internal artifacts that should never auto-open the canvas even if
+# bash happens to create one (TASKS.json, reflexion memory, OpenHands
+# event journals, …). They remain visible in the workspace tree.
+_AUTO_OPEN_IGNORED_BASENAMES: set[str] = {
+    "TASKS.json",
+    "TASKS.md",
+    "reflexion_memory.json",
+    "base_state.json",
+}
+_AUTO_OPEN_IGNORED_SEGMENTS: tuple[str, ...] = (
+    "subagents",
+    "events",
+    "conversations",
+)
+_AUTO_OPEN_IGNORED_BASENAME_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"^event-\d{5}-[0-9a-fA-F\-]{8,}\.json$"),
+)
+
+
+def _should_skip_auto_open(rel_path: str) -> bool:
+    base = os.path.basename(rel_path)
+    if base in _AUTO_OPEN_IGNORED_BASENAMES:
+        return True
+    if any(p.match(base) for p in _AUTO_OPEN_IGNORED_BASENAME_PATTERNS):
+        return True
+    parts = rel_path.replace("\\", "/").split("/")
+    return any(seg in _AUTO_OPEN_IGNORED_SEGMENTS for seg in parts[:-1])
+
+
+# Per-session FIFO of [paths] predicted by each pending terminal action.
+# Pushed when an ActionEvent for the terminal tool is observed, popped when
+# the matching ObservationEvent comes back so we can read the actual files.
+_pending_bash_writes: dict[str, list[list[str]]] = {}
+
+# Tools whose action/observation we treat as "bash-like".
+_TERMINAL_TOOL_NAMES: set[str] = {
+    "terminal", "bash", "execute_bash", "shell", "executebash",
+}
+
+# Path char class: anything that isn't whitespace, quoting, redirection or
+# subshell punctuation. Covers most realistic POSIX paths.
+_PATH_CHARS = r"[^\s'\"`;&|<>()]+"
+
+# >, >>, &>, &>>, 1>, 2>, 1>>, 2>> followed by a (optionally quoted) path.
+_REDIRECT_RE = re.compile(rf"(?:[12]?&?>>?|&>>?)\s*(['\"]?)({_PATH_CHARS})\1")
+# `tee [-a] file...`
+_TEE_RE = re.compile(rf"\btee\s+(?:-a\s+)?(['\"]?)({_PATH_CHARS})\1")
+# `touch f1 f2 ...` — capture the run of args.
+_TOUCH_RE = re.compile(rf"\btouch\s+((?:{_PATH_CHARS}\s*)+)")
+# `cp/mv/install [-flags] src dst` — last arg is the destination.
+_CPMV_RE = re.compile(
+    rf"\b(?:cp|mv|install)\s+(?:-[A-Za-z]+\s+)*{_PATH_CHARS}\s+({_PATH_CHARS})"
+)
+# `pandoc … -o file`
+_PANDOC_RE = re.compile(rf"\bpandoc\b[^;&|]*?-o\s+(['\"]?)({_PATH_CHARS})\1")
+
+
+def _extract_bash_output_paths(command: str) -> list[str]:
+    """Best-effort: return workspace-relative paths a shell command will write."""
+    if not command:
+        return []
+    # Strip $(…) and `…` subshells so paths inside them don't get picked up
+    # as outputs of the parent command.
+    cleaned = re.sub(r"\$\([^()]*\)|`[^`]*`", "", command)
+
+    raw_paths: list[str] = []
+    for rx in (_REDIRECT_RE, _TEE_RE, _PANDOC_RE):
+        for m in rx.finditer(cleaned):
+            raw_paths.append(m.group(2))
+    for m in _TOUCH_RE.finditer(cleaned):
+        raw_paths.extend(p.strip("'\"") for p in m.group(1).split())
+    for m in _CPMV_RE.finditer(cleaned):
+        raw_paths.append(m.group(1))
+
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in raw_paths:
+        p = raw.strip().strip("'\"")
+        if not p or p in {"/dev/null", "/dev/stderr", "/dev/stdout"}:
+            continue
+        # Normalize to workspace-relative paths; the agent runs with cwd at
+        # /workspace inside the container, which == host_dir on the host.
+        if p.startswith("/workspace/"):
+            p = p[len("/workspace/"):]
+        elif p.startswith("/"):
+            continue  # absolute path outside the workspace, ignore
+        p = p.lstrip("./")
+        if not p or p in seen:
+            continue
+        seen.add(p)
+        out.append(p)
+    return out
+
+
+def _build_terminal_file_edits(session_id: str, host_dir: str) -> list[dict]:
+    """Pop the next pending bash-write batch and emit file_edit payloads."""
+    fifo = _pending_bash_writes.get(session_id)
+    if not fifo:
+        return []
+    paths = fifo.pop(0)
+    payloads: list[dict] = []
+    for rel in paths:
+        if _should_skip_auto_open(rel):
+            continue
+        ext = os.path.splitext(rel)[1].lower()
+        if ext not in _PREVIEWABLE_EXTS:
+            continue
+        full = os.path.join(host_dir, rel)
+        if not os.path.isfile(full):
+            continue  # command may have failed, or path didn't resolve
+        file_text: str | None = None
+        if _is_text_file(full):
+            try:
+                with open(full, "r", encoding="utf-8", errors="replace") as f:
+                    file_text = f.read(500_000)
+            except OSError:
+                file_text = None
+        _turn_counter.setdefault(session_id, 0)
+        _turn_counter[session_id] += 1
+        payloads.append({
+            "turn": _turn_counter[session_id],
+            "command": "create",
+            "path": rel,
+            "file_text": file_text,
+            "old_str": None,
+            "new_str": None,
+            "insert_line": None,
+        })
+    return payloads
+
+
 async def _stream_real_task(
     question: str,
     session_id: str,
@@ -882,7 +1353,20 @@ async def _stream_real_task(
     use_reflexion: bool = False,
     skill_ids: list[str] | None = None,
 ):
-    """Run the real OpenHands agent in a background thread, streaming events as SSE."""
+    """Run the real OpenHands agent against the shared DockerWorkspace.
+
+    The container is started once at app boot (see ``lifespan``). Here we:
+      1. Resolve the request's source workspace (user mount_dir ± skills).
+      2. Under the shared lock, prime /workspace (noop if this session already
+         owns it; full wipe + copy-in otherwise).
+      3. Run the agent against the shared workspace, streaming events.
+      4. Sync /workspace back to the user's mount_dir so the UI sees results.
+    """
+    if _SHARED_WS.get("workspace") is None:
+        yield _sse("error", {"message": "Shared workspace is not available."})
+        yield _sse("done", {"message": "Complete"})
+        return
+
     queue: asyncio.Queue = asyncio.Queue()
     loop = asyncio.get_running_loop()
 
@@ -896,30 +1380,57 @@ async def _stream_real_task(
             skill_ids,
         )
 
+    # Where sync-back writes. Only the user's declared mount_dir is a valid
+    # sync target; skills-only or staging-only runs don't write back anywhere.
+    sync_target = _validate_mount_dir(mount_dir)
+    owner_key = _owner_key(session_id, sync_target, skill_ids)
+    host_dir = _SHARED_WS["host_dir"]
+
     _turn_counter[session_id] = 0
+    answer_emitted = {"value": False}
 
     def _callback(event):
         mapped = _map_event_to_sse(event, session_id)
         if mapped:
+            if mapped.get("event") == "answer":
+                answer_emitted["value"] = True
             loop.call_soon_threadsafe(queue.put_nowait, mapped)
+
+        # When a terminal/bash observation comes back, read the predicted
+        # output files off the workspace and surface them as file_edit
+        # events so the canvas auto-opens just like file_editor writes.
+        try:
+            if isinstance(event, ObservationEvent):
+                obs_tool = (getattr(event, "tool_name", None) or "").lower()
+                if obs_tool in _TERMINAL_TOOL_NAMES:
+                    for payload in _build_terminal_file_edits(session_id, host_dir):
+                        loop.call_soon_threadsafe(
+                            queue.put_nowait, _sse("file_edit", payload)
+                        )
+        except Exception:
+            logger.exception("Failed to emit terminal-driven file_edit events")
 
     def _run_agent():
         error = None
         try:
-            _agent_runtime(
-                repo_dir=effective_mount or "",
+            final_answer = _agent_runtime(
+                repo_dir=host_dir,
                 instruction=question,
-                mount_dir=effective_mount,
+                mount_dir=host_dir,
                 event_callback=_callback,
                 use_reflexion=use_reflexion,
+                workspace=_SHARED_WS["workspace"],
             )
+            if final_answer and not answer_emitted["value"]:
+                answer_emitted["value"] = True
+                loop.call_soon_threadsafe(
+                    queue.put_nowait,
+                    _sse("answer", {"text": final_answer}),
+                )
         except Exception as exc:
             error = str(exc)
             logger.exception("Agent runtime failed")
         finally:
-            for path in cleanup_dirs:
-                if path and os.path.isdir(path):
-                    shutil.rmtree(path, ignore_errors=True)
             if error:
                 loop.call_soon_threadsafe(
                     queue.put_nowait,
@@ -931,32 +1442,77 @@ async def _stream_real_task(
     yield _sse("agent", agent_info)
     yield _sse("status", {"message": f"Agent starting work — model: {agent_info.get('model', 'unknown')}"})
 
-    loop.run_in_executor(None, _run_agent)
-
+    lock: asyncio.Lock = _SHARED_WS["lock"]
     got_answer = False
     last_tool_text: str | None = None
+    try:
+        async with lock:
+            # Prime /workspace: fast path if the same session/mount is continuing,
+            # full swap otherwise (sync out previous owner, wipe, copy in).
+            try:
+                await asyncio.to_thread(
+                    _prime_shared_workspace_sync,
+                    session_id,
+                    effective_mount,
+                    sync_target,
+                    cleanup_dirs,
+                    owner_key,
+                )
+            except Exception as exc:
+                logger.exception("Failed to prime shared workspace")
+                yield _sse("error", {"message": f"workspace prime failed: {exc}"})
+                yield _sse("done", {"message": "Complete"})
+                return
 
-    while True:
-        item = await queue.get()
-        if item is None:
-            break
-        event_type = item["event"]
-        data = json.loads(item["data"])
-        _append_event(session_id, event_type, data)
-        yield item
+            _pending_bash_writes[session_id] = []
 
-        if event_type == "answer":
-            got_answer = True
-        elif event_type == "tool_result":
-            last_tool_text = data.get("text")
+            loop.run_in_executor(None, _run_agent)
 
-    if not got_answer and last_tool_text:
-        evt = {"text": last_tool_text}
-        yield _sse("answer", evt)
-        _append_event(session_id, "answer", evt)
+            try:
+                while True:
+                    item = await queue.get()
+                    if item is None:
+                        break
+                    event_type = item["event"]
+                    data = json.loads(item["data"])
+                    _append_event(session_id, event_type, data)
 
-    _turn_counter.pop(session_id, None)
-    yield _sse("done", {"message": "Complete"})
+                    yield item
+
+                    if event_type == "answer":
+                        got_answer = True
+                    elif event_type == "tool_result":
+                        last_tool_text = data.get("text")
+            finally:
+                # Always flush this turn's changes back to the user's mount_dir,
+                # even if the SSE client disconnected mid-stream (which raises
+                # GeneratorExit/CancelledError at `yield item` and would
+                # otherwise skip the sync). asyncio.shield prevents the copy
+                # from being interrupted mid-way so the user's files on disk
+                # always reflect the latest workspace state.
+                try:
+                    await asyncio.shield(
+                        asyncio.to_thread(_sync_current_owner_back_sync)
+                    )
+                except asyncio.CancelledError:
+                    logger.warning(
+                        "Post-turn sync-back await cancelled; thread continues "
+                        "in background (session=%s)",
+                        session_id,
+                    )
+                    raise
+                except Exception:
+                    logger.exception("Post-turn sync-back failed")
+
+        if not got_answer and last_tool_text:
+            evt = {"text": last_tool_text}
+            yield _sse("answer", evt)
+            _append_event(session_id, "answer", evt)
+
+        yield _sse("done", {"message": "Complete"})
+    finally:
+        _turn_counter.pop(session_id, None)
+        _pending_bash_writes.pop(session_id, None)
 
 
 # ---------------------------------------------------------------------------
@@ -992,13 +1548,13 @@ async def upload_files(
     saved: list[dict] = []
 
     for upload in files:
-        dest = os.path.join(staging, upload.filename)
-        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        safe_name = os.path.basename(upload.filename) or f"upload_{uuid.uuid4().hex}"
+        dest = os.path.join(staging, safe_name)
         content = await upload.read()
         with open(dest, "wb") as f:
             f.write(content)
         saved.append({
-            "name": upload.filename,
+            "name": safe_name,
             "size": len(content),
             "type": upload.content_type,
         })
@@ -1039,6 +1595,40 @@ async def chat(req: ChatRequest):
         )
 
     return EventSourceResponse(gen)
+
+
+@app.get("/api/browser/live")
+async def browser_live_info(session_id: str | None = None):
+    """Return connection info for the agent's live browser view.
+
+    The agent-server container runs Chromium inside Xvfb and serves a
+    noVNC client on a bundled HTTP port (container ``8002``). We publish
+    that port onto the host and let the frontend iframe it directly;
+    ``session_id`` is accepted for API symmetry but the same browser
+    is shared for all sessions on the shared workspace.
+    """
+    if not ENABLE_BROWSER_LIVE:
+        raise HTTPException(status_code=503, detail="Live browser is disabled.")
+
+    novnc_port = _workspace_novnc_port()
+    if novnc_port is None:
+        raise HTTPException(status_code=503, detail="Live browser is not ready yet.")
+
+    return {
+        "sessionId": session_id,
+        "port": novnc_port,
+        # ``vnc_lite.html`` (or ``vnc.html``) is shipped with noVNC and
+        # auto-connects to the websockify endpoint on the same origin.
+        # ``resize=scale`` makes the noVNC client scale the remote display
+        # to fit the iframe (preserving aspect ratio). Using ``remote``
+        # relies on the VM's RandR support and frequently leaves the view
+        # clipped when the iframe is smaller than the native VM resolution,
+        # which we don't want.
+        "url": (
+            f"http://127.0.0.1:{novnc_port}/vnc.html"
+            "?autoconnect=1&resize=scale&reconnect=1&show_dot=1"
+        ),
+    }
 
 
 @app.get("/api/chats")
@@ -1086,7 +1676,9 @@ async def delete_chat(chat_id: str):
 
 @app.get("/api/agents")
 async def list_agents():
-    return list(_AGENTS.values())
+    # Stamp the real model onto every profile so the UI's agent list matches
+    # what the runtime will actually call (see _resolve_agent).
+    return [{**agent, "model": AGENT_MODEL} for agent in _AGENTS.values()]
 
 
 @app.get("/api/evaluations")
@@ -1538,14 +2130,33 @@ async def workspace_tree(path: str):
     return {"root": path, "tree": tree}
 
 
-@app.get("/api/workspace/file")
-async def workspace_file(root: str, path: str):
-    """Return text content of a file inside a workspace root."""
+def _resolve_workspace_path(root: str, path: str) -> str:
+    """Resolve ``path`` under ``root``; fall back to the shared host_dir.
+
+    During an agent turn the agent writes into the shared DockerWorkspace
+    bind-mount (``_SHARED_WS["host_dir"]``). Sync-back to the user's
+    ``mount_dir`` only runs after the turn finishes, so files (especially
+    binaries like PDFs/images that we can't embed in SSE) are temporarily
+    invisible under ``root``. Treating the shared dir as a fallback makes
+    those files reachable immediately.
+    """
     if not root or not os.path.isdir(root):
         raise HTTPException(status_code=400, detail="Invalid root directory")
     full_path = _safe_resolve(root, path)
-    if not os.path.isfile(full_path):
-        raise HTTPException(status_code=404, detail="File not found")
+    if os.path.isfile(full_path):
+        return full_path
+    shared = _SHARED_WS.get("host_dir")
+    if shared and os.path.isdir(shared):
+        fallback = _safe_resolve(shared, path)
+        if os.path.isfile(fallback):
+            return fallback
+    raise HTTPException(status_code=404, detail="File not found")
+
+
+@app.get("/api/workspace/file")
+async def workspace_file(root: str, path: str):
+    """Return text content of a file inside a workspace root."""
+    full_path = _resolve_workspace_path(root, path)
     if not _is_text_file(full_path):
         raise HTTPException(status_code=415, detail="Binary file — cannot display")
     try:
@@ -1554,6 +2165,159 @@ async def workspace_file(root: str, path: str):
     except OSError as e:
         raise HTTPException(status_code=500, detail=str(e))
     return {"path": path, "content": content}
+
+
+@app.get("/api/workspace/raw")
+async def workspace_raw(root: str, path: str):
+    """Stream a file's bytes as-is (used for PDFs, images, etc.)."""
+    full_path = _resolve_workspace_path(root, path)
+
+    media_type, _ = mimetypes.guess_type(full_path)
+    if media_type is None:
+        ext = os.path.splitext(full_path)[1].lower()
+        if ext == ".pdf":
+            media_type = "application/pdf"
+        else:
+            media_type = "application/octet-stream"
+
+    headers = {"Content-Disposition": f'inline; filename="{os.path.basename(full_path)}"'}
+    return FileResponse(full_path, media_type=media_type, headers=headers)
+
+
+async def _run_native_picker(*args: str) -> tuple[int, str, str]:
+    """Run a subprocess and capture stdout/stderr as text."""
+    proc = await asyncio.create_subprocess_exec(
+        *args,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout_b, stderr_b = await proc.communicate()
+    return (
+        proc.returncode if proc.returncode is not None else 0,
+        stdout_b.decode("utf-8", "replace"),
+        stderr_b.decode("utf-8", "replace"),
+    )
+
+
+@app.post("/api/workspace/pick-directory")
+async def pick_workspace_directory():
+    """Open the host OS's native folder picker and return the selected path.
+
+    Intended for local dev setups where the backend runs on the same machine
+    as the user. For remote/headless deployments this returns a 501 and the
+    frontend should fall back to typing a path manually.
+    """
+    plat = sys.platform
+
+    try:
+        if plat == "darwin":
+            script = (
+                'try\n'
+                '    tell application "System Events" to activate\n'
+                '    set theFolder to choose folder with prompt '
+                '"Select workspace folder"\n'
+                '    POSIX path of theFolder\n'
+                'on error number -128\n'
+                '    return ""\n'
+                'end try'
+            )
+            code, out, err = await _run_native_picker("osascript", "-e", script)
+            if code != 0:
+                raise HTTPException(
+                    status_code=500,
+                    detail=err.strip() or "osascript failed",
+                )
+            path = out.strip().rstrip("/")
+            return {
+                "path": path or None,
+                "cancelled": not path,
+                "platform": "macOS",
+            }
+
+        if plat.startswith("linux"):
+            if shutil.which("zenity"):
+                code, out, err = await _run_native_picker(
+                    "zenity",
+                    "--file-selection",
+                    "--directory",
+                    "--title=Select workspace folder",
+                )
+                if code == 1:
+                    return {"path": None, "cancelled": True, "platform": "Linux"}
+                if code != 0:
+                    raise HTTPException(
+                        status_code=500,
+                        detail=err.strip() or "zenity failed",
+                    )
+                return {
+                    "path": out.strip() or None,
+                    "cancelled": False,
+                    "platform": "Linux",
+                }
+            if shutil.which("kdialog"):
+                code, out, err = await _run_native_picker(
+                    "kdialog",
+                    "--getexistingdirectory",
+                    os.path.expanduser("~"),
+                    "--title",
+                    "Select workspace folder",
+                )
+                if code != 0:
+                    return {"path": None, "cancelled": True, "platform": "Linux"}
+                return {
+                    "path": out.strip() or None,
+                    "cancelled": False,
+                    "platform": "Linux",
+                }
+            raise HTTPException(
+                status_code=501,
+                detail="No native folder picker available on this host "
+                "(install 'zenity' or 'kdialog')",
+            )
+
+        if plat in ("win32", "cygwin"):
+            ps_script = (
+                "Add-Type -AssemblyName System.Windows.Forms | Out-Null; "
+                "$f = New-Object System.Windows.Forms.FolderBrowserDialog; "
+                "$f.Description = 'Select workspace folder'; "
+                "$f.ShowNewFolderButton = $true; "
+                "if ($f.ShowDialog() -eq "
+                "[System.Windows.Forms.DialogResult]::OK) "
+                "{ Write-Output $f.SelectedPath }"
+            )
+            code, out, err = await _run_native_picker(
+                "powershell",
+                "-NoProfile",
+                "-STA",
+                "-Command",
+                ps_script,
+            )
+            if code != 0:
+                raise HTTPException(
+                    status_code=500,
+                    detail=err.strip() or "powershell failed",
+                )
+            path = out.strip()
+            return {
+                "path": path or None,
+                "cancelled": not path,
+                "platform": "Windows",
+            }
+
+        raise HTTPException(
+            status_code=501,
+            detail=f"Unsupported platform for native folder picker: {plat}",
+        )
+    except HTTPException:
+        raise
+    except FileNotFoundError as e:
+        raise HTTPException(
+            status_code=501,
+            detail=f"Native folder picker binary not found: {e}",
+        ) from e
+    except Exception as e:  # noqa: BLE001
+        logger.exception("Native folder picker failed")
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @app.get("/api/health")

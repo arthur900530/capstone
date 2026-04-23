@@ -1,9 +1,18 @@
 #!/usr/bin/env bash
 # =============================================================================
-# BNY Skill Marketplace — startup script
+# BNY Digital Employee Platform — startup script
 # =============================================================================
 
 set -euo pipefail
+
+MOCK_MODE=0
+DEMO_MODE=0
+for arg in "$@"; do
+  case "$arg" in
+    --mock) MOCK_MODE=1 ;;
+    --demo) DEMO_MODE=1 ;;
+  esac
+done
 
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 FRONTEND_DIR="$ROOT_DIR/frontend"
@@ -104,7 +113,7 @@ echo " / /_/ / /|  /   / /  / ___ / /_/ /  __/ / / / /_  "
 echo "/_____/_/ |_/   /_/  /_/  |_\\__, /\\___/_/ /_/\\__/  "
 echo "                           /____/                   "
 echo -e "${RESET}"
-echo -e "  ${DIM}Skill Marketplace${RESET}                    ${DIM}$(date '+%Y-%m-%d %H:%M')${RESET}"
+echo -e "  ${DIM}Digital Employee Platform${RESET}              ${DIM}$(date '+%Y-%m-%d %H:%M')${RESET}"
 line
 echo ""
 
@@ -124,20 +133,22 @@ step "npm         $(npm --version 2>&1)"
 command -v git >/dev/null 2>&1 || die "git not found."
 step "git         $(git --version 2>&1 | cut -d' ' -f3)"
 
-PYTHON_API="python3"
-PYTHON_BENCH="python3"
-if command -v python3.12 >/dev/null 2>&1; then
-  PYTHON_BENCH="python3.12"
-elif command -v python3.13 >/dev/null 2>&1; then
-  PYTHON_BENCH="python3.13"
-fi
+PYTHON_API=""
+PYTHON_BENCH=""
+for candidate in python3.12 python3.13 python3; do
+  if command -v "$candidate" >/dev/null 2>&1 \
+    && "$candidate" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 12) else 1)' 2>/dev/null; then
+    PYTHON_API="$candidate"
+    PYTHON_BENCH="$candidate"
+    break
+  fi
+done
 
-bench_meets_312() {
-  "$PYTHON_BENCH" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 12) else 1)'
-}
+[[ -n "$PYTHON_API" ]] || die "backend needs Python >= 3.12 because openhands-sdk requires it."
+step "Backend py  $($PYTHON_API --version 2>&1 | cut -d' ' -f2)"
 
-if [[ "${SKIP_SKILLSBENCH:-0}" != "1" ]]; then
-  bench_meets_312 || die "skillsbench needs Python >= 3.12. Set SKIP_SKILLSBENCH=1 to skip."
+if [[ "${SKIP_SKILLSBENCH:-0}" != "1" && -z "$PYTHON_BENCH" ]]; then
+  die "skillsbench needs Python >= 3.12. Set SKIP_SKILLSBENCH=1 to skip."
 fi
 
 [[ -d "$FRONTEND_DIR" ]] || die "Missing frontend directory"
@@ -151,7 +162,12 @@ header "Frontend"
 
 if [[ ! -d "$FRONTEND_DIR/node_modules" ]]; then
   info "First run — installing npm dependencies..."
-  (cd "$FRONTEND_DIR" && npm install --silent 2>&1 | grep -E "added|up to date" | head -1 | sed "s/^/       /")
+  if npm_output="$(cd "$FRONTEND_DIR" && npm install --silent 2>&1)"; then
+    printf '%s\n' "$npm_output" | grep -E "added|up to date" | head -1 | sed "s/^/       /" || true
+  else
+    printf '%s\n' "$npm_output" >&2
+    die "npm install failed"
+  fi
   step "Dependencies installed"
 else
   step "Dependencies ready"
@@ -160,6 +176,12 @@ fi
 # ── Backend virtualenv ────────────────────────────────────────────────────────
 
 header "Backend"
+
+if [[ -d "$BACKEND_DIR/.venv" ]] \
+  && ! "$BACKEND_DIR/.venv/bin/python" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 12) else 1)' 2>/dev/null; then
+  info "Recreating backend virtual environment with $($PYTHON_API --version 2>&1)..."
+  rm -rf "$BACKEND_DIR/.venv"
+fi
 
 if [[ ! -d "$BACKEND_DIR/.venv" ]]; then
   info "Creating virtual environment..."
@@ -234,12 +256,29 @@ else
   info "Install with: ${CYAN}sudo apt install postgresql${RESET}"
 fi
 
+
 # ── Launch ────────────────────────────────────────────────────────────────────
 
 header "Starting services"
 
-# Start backend first, wait for it to be ready
-(cd "$BACKEND_DIR" && PYTHONPATH=. .venv/bin/uvicorn server:app --reload --host 127.0.0.1 --port 8000 >/dev/null 2>&1) &
+# Build frontend env vars from flags
+VITE_ENV=""
+MODE_LABEL=""
+if [[ "$MOCK_MODE" == "1" ]]; then
+  VITE_ENV="VITE_MOCK=true $VITE_ENV"
+  MODE_LABEL="${MODE_LABEL} mock"
+  step "Mock LLM streaming enabled"
+fi
+if [[ "$DEMO_MODE" == "1" ]]; then
+  VITE_ENV="VITE_DEMO=true $VITE_ENV"
+  MODE_LABEL="${MODE_LABEL} demo"
+  step "Desktop simulator demo enabled"
+fi
+
+# Start backend (logs go to backend/server.log so errors are inspectable)
+BACKEND_LOG="$BACKEND_DIR/server.log"
+: > "$BACKEND_LOG"
+(cd "$BACKEND_DIR" && PYTHONPATH=. .venv/bin/uvicorn server:app --host 127.0.0.1 --port 8000 >>"$BACKEND_LOG" 2>&1) &
 PIDS+=($!)
 
 info "Waiting for API..."
@@ -251,8 +290,8 @@ for i in $(seq 1 15); do
 done
 step "API server running"
 
-# Start frontend after backend is ready
-(cd "$FRONTEND_DIR" && npx vite --host 0.0.0.0 >/dev/null 2>&1) &
+# Start frontend with env vars
+(cd "$FRONTEND_DIR" && env $VITE_ENV npx vite --host 0.0.0.0 >/dev/null 2>&1) &
 PIDS+=($!)
 
 sleep 2
@@ -261,7 +300,11 @@ step "Frontend server running"
 echo ""
 line
 echo ""
-echo -e "  ${GREEN}${BOLD}Ready!${RESET}"
+if [[ -n "$MODE_LABEL" ]]; then
+  echo -e "  ${GREEN}${BOLD}Ready!${RESET}  ${YELLOW}[${MODE_LABEL# }]${RESET}"
+else
+  echo -e "  ${GREEN}${BOLD}Ready!${RESET}"
+fi
 echo ""
 echo -e "  ${ARROW}  API         ${BOLD}http://localhost:8000${RESET}"
 echo -e "  ${ARROW}  Frontend    ${BOLD}http://localhost:5173${RESET}"

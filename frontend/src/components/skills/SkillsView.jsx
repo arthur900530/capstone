@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import {
   Wrench, Plus, Loader2, AlertCircle, Search, Sparkles,
   LayoutGrid, List, Store, Download, Upload as UploadIcon, ClipboardCheck,
@@ -11,6 +11,7 @@ import CreateSkillModal from "./CreateSkillModal";
 import TrainSkillModal from "./TrainSkillModal";
 import SubmitSkillModal from "./SubmitSkillModal";
 import ReviewQueue from "./ReviewQueue";
+import FloatingWindow from "./FloatingWindow";
 
 const TABS = [
   { id: "browse", label: "Browse", icon: Store },
@@ -28,10 +29,12 @@ export default function SkillsView({ onSkillsChanged }) {
   const [search, setSearch] = useState("");
   const [showCreate, setShowCreate] = useState(false);
   const [showTrain, setShowTrain] = useState(false);
-  const [showSubmit, setShowSubmit] = useState(false);
+  const [showSubmit, setShowSubmit] = useState(null); // null or { version }
   const [subTab, setSubTab] = useState("browse");
   const [viewMode, setViewMode] = useState("grid");
   const [typeFilter, setTypeFilter] = useState("all");
+  const [floatingWindows, setFloatingWindows] = useState([]);
+  const nextZRef = useRef(31);
 
   useEffect(() => {
     let cancelled = false;
@@ -116,6 +119,39 @@ export default function SkillsView({ onSkillsChanged }) {
     });
     onSkillsChanged?.();
   };
+
+  /* ── Floating window management ──────────────────────────────────── */
+
+  const handlePopOut = useCallback((skillId, type) => {
+    const idx = floatingWindows.length;
+    const fw = {
+      id: `fw_${skillId}_${Date.now()}`,
+      skillId,
+      type,
+      zIndex: nextZRef.current++,
+      position: { x: 120 + idx * 30, y: 60 + idx * 30 },
+    };
+    setFloatingWindows((prev) => [...prev, fw]);
+    if (selectedId === skillId) setSelectedId(null);
+  }, [floatingWindows.length, selectedId]);
+
+  const handleDock = useCallback((windowId) => {
+    const fw = floatingWindows.find((w) => w.id === windowId);
+    setFloatingWindows((prev) => prev.filter((w) => w.id !== windowId));
+    if (fw) setSelectedId(fw.skillId);
+  }, [floatingWindows]);
+
+  const handleCloseFloating = useCallback((windowId) => {
+    setFloatingWindows((prev) => prev.filter((w) => w.id !== windowId));
+  }, []);
+
+  const handleFocusFloating = useCallback((windowId) => {
+    setFloatingWindows((prev) =>
+      prev.map((w) =>
+        w.id === windowId ? { ...w, zIndex: nextZRef.current++ } : w
+      )
+    );
+  }, []);
 
   if (loading) {
     return (
@@ -330,7 +366,8 @@ export default function SkillsView({ onSkillsChanged }) {
                       onDeleted={handleDeleted}
                       viewingFile={viewingFile}
                       onViewFile={setViewingFile}
-                      onSubmit={() => setShowSubmit(true)}
+                      onSubmit={(skill, onSuccess) => setShowSubmit({ onSuccess })}
+                      onPopOut={() => handlePopOut(selectedSkill.id, "editor")}
                     />
                   ) : (
                     <SkillDetailPanel
@@ -358,6 +395,7 @@ export default function SkillsView({ onSkillsChanged }) {
                         setSkills(refreshed);
                         onSkillsChanged?.();
                       }}
+                      onPopOut={() => handlePopOut(selectedSkill.id, "detail")}
                     />
                   )}
                 </div>
@@ -405,11 +443,66 @@ export default function SkillsView({ onSkillsChanged }) {
         onTrained={handleTrained}
       />
       <SubmitSkillModal
-        open={showSubmit}
-        onClose={() => setShowSubmit(false)}
+        open={!!showSubmit}
+        onClose={() => setShowSubmit(null)}
         skill={selectedSkill}
-        onSubmitted={() => {}}
+        version={showSubmit?.version}
+        onSubmitted={() => showSubmit?.onSuccess?.()}
       />
+
+      {/* Floating windows */}
+      {floatingWindows.map((fw) => {
+        const fwSkill = skills.find((s) => s.id === fw.skillId);
+        if (!fwSkill) return null;
+        return (
+          <FloatingWindow
+            key={fw.id}
+            title={fwSkill.name}
+            initialPosition={fw.position}
+            zIndex={fw.zIndex}
+            onClose={() => handleCloseFloating(fw.id)}
+            onDock={() => handleDock(fw.id)}
+            onFocus={() => handleFocusFloating(fw.id)}
+          >
+            {fw.type === "editor" ? (
+              <SkillEditor
+                skill={fwSkill}
+                onSaved={handleSaved}
+                onDeleted={(id) => { handleCloseFloating(fw.id); handleDeleted(id); }}
+                viewingFile={null}
+                onViewFile={() => {}}
+                onSubmit={(skill, onSuccess) => setShowSubmit({ onSuccess })}
+              />
+            ) : (
+              <SkillDetailPanel
+                skill={fwSkill}
+                onClose={() => handleCloseFloating(fw.id)}
+                onSaved={(updated) => {
+                  setSkills((prev) => prev.map((s) => (s.id === updated.id ? updated : s)));
+                }}
+                onInstall={async (id) => {
+                  await installSkill(id);
+                  const refreshed = await fetchSkills();
+                  setSkills(refreshed);
+                }}
+                onUninstall={async (id) => {
+                  await uninstallSkill(id);
+                  const refreshed = await fetchSkills();
+                  setSkills(refreshed);
+                }}
+                onDelete={async (id) => {
+                  handleCloseFloating(fw.id);
+                  setSkills((prev) => prev.filter((s) => s.id !== id));
+                  await deleteSkill(id);
+                  const refreshed = await fetchSkills();
+                  setSkills(refreshed);
+                  onSkillsChanged?.();
+                }}
+              />
+            )}
+          </FloatingWindow>
+        );
+      })}
     </>
   );
 }
