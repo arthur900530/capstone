@@ -67,6 +67,41 @@ logger = logging.getLogger(__name__)
 # Resolved once at import time so the value is available module-wide.
 REFLEXION_SCORE_THRESHOLD = _parse_score_threshold()
 
+# ---------------------------------------------------------------------------
+# Per-session conversation persistence
+# ---------------------------------------------------------------------------
+# To give a single chat session real multi-turn memory, we keep a stable
+# ConversationID per session_id. On turn 1 we mint a fresh UUID; on every
+# subsequent turn we pass the same id to Conversation(...) so the OpenHands
+# agent-server re-attaches to the existing conversation and the LLM sees all
+# previous events in its context window.
+#
+# Deterministic derivation (uuid5 from the session_id) would also work, but
+# we prefer an explicit map so that `clear_session_conversation` on chat
+# delete actually drops server-side state on the next turn.
+_SESSION_CONVERSATION_IDS: dict[str, uuid.UUID] = {}
+
+
+def _conversation_id_for_session(session_id: str | None) -> uuid.UUID | None:
+    """Return a stable ConversationID for this chat session, minting one on
+    first use. Returns None if no session_id was supplied (e.g. CLI path)."""
+    if not session_id:
+        return None
+    cid = _SESSION_CONVERSATION_IDS.get(session_id)
+    if cid is None:
+        cid = uuid.uuid4()
+        _SESSION_CONVERSATION_IDS[session_id] = cid
+        logger.info(
+            "[session] Minted new conversation_id=%s for session=%s",
+            cid, session_id,
+        )
+    return cid
+
+
+def clear_session_conversation(session_id: str) -> None:
+    """Forget the conversation mapping for this session (called on chat delete)."""
+    _SESSION_CONVERSATION_IDS.pop(session_id, None)
+
 base_url = BASE_URL
 api_key = API_KEY
 model = AGENT_MODEL
@@ -298,9 +333,16 @@ def runtime(
     event_callback: Callable | None = None,
     use_reflexion: bool | None = None,
     workspace=None,
+    session_id: str | None = None,
 ):
     """
     Run one agent conversation against a DockerWorkspace.
+
+    ``session_id`` (optional): stable chat-session identifier. When supplied
+    and reflexion is disabled, subsequent turns reuse the same OpenHands
+    conversation so the LLM remembers prior turns. Reflexion retries still
+    spin up fresh conversations per trial — that's intentional and matches
+    the paper's per-trial isolation.
     """
     callbacks = [event_callback] if event_callback else []
     if repo_dir:
@@ -334,7 +376,9 @@ def runtime(
         if use_rx:
             return _run_with_reflexion(llm, agent_context, instruction, ws, callbacks=callbacks)
         agent = _create_agent(llm, agent_context)
-        return _run_without_reflexion(agent, instruction, ws, callbacks=callbacks)
+        return _run_without_reflexion(
+            agent, instruction, ws, callbacks=callbacks, session_id=session_id
+        )
 
     if workspace is not None:
         return _run(workspace)
@@ -629,9 +673,28 @@ def _extract_final_answer(conversation) -> str:
     return _extract_final_answer_from_events(events)
 
 
-def _run_without_reflexion(agent, instruction, workspace, callbacks=None):
-    """Single attempt, optionally streaming events via callbacks."""
-    conversation = Conversation(agent=agent, workspace=workspace, callbacks=callbacks or [])
+def _run_without_reflexion(agent, instruction, workspace, callbacks=None, session_id=None):
+    """Single attempt, optionally streaming events via callbacks.
+
+    When ``session_id`` is provided, a stable ConversationID is reused across
+    turns so the agent-server keeps the prior event log and the LLM sees it
+    as context on this turn. ``delete_on_close=False`` prevents the conversation
+    from being torn down when this function returns — we want it alive for the
+    next turn.
+    """
+    conversation_id = _conversation_id_for_session(session_id)
+    conversation = Conversation(
+        agent=agent,
+        workspace=workspace,
+        callbacks=callbacks or [],
+        conversation_id=conversation_id,
+        delete_on_close=False,
+    )
+    if conversation_id is not None:
+        logger.info(
+            "[session] Attached conversation_id=%s (session=%s)",
+            conversation_id, session_id,
+        )
     conversation.send_message(instruction)
     conversation.run()
     return _extract_final_answer(conversation)

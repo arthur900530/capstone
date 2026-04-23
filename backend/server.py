@@ -56,6 +56,7 @@ if REAL_AGENT_ENABLED:
     try:
         from reflexion_agent.agent import runtime as _agent_runtime
         from reflexion_agent.agent import build_workspace as _build_workspace
+        from reflexion_agent.agent import clear_session_conversation as _clear_session_conv
         from openhands.sdk.event import (
             ActionEvent,
             ObservationEvent,
@@ -1420,6 +1421,7 @@ async def _stream_real_task(
                 event_callback=_callback,
                 use_reflexion=use_reflexion,
                 workspace=_SHARED_WS["workspace"],
+                session_id=session_id,
             )
             if final_answer and not answer_emitted["value"]:
                 answer_emitted["value"] = True
@@ -1671,6 +1673,14 @@ async def delete_chat(chat_id: str):
     if chat_id not in _chats:
         raise HTTPException(status_code=404, detail="Chat not found")
     del _chats[chat_id]
+    # Drop the session→conversation mapping so a future chat reusing this
+    # id (shouldn't happen — ids are UUIDs — but cheap insurance) won't
+    # attach to a phantom server-side conversation.
+    if REAL_AGENT_ENABLED:
+        try:
+            _clear_session_conv(chat_id)
+        except Exception:
+            logger.debug("clear_session_conversation failed", exc_info=True)
     return {"ok": True}
 
 
