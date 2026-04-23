@@ -67,6 +67,43 @@ logger = logging.getLogger(__name__)
 # Resolved once at import time so the value is available module-wide.
 REFLEXION_SCORE_THRESHOLD = _parse_score_threshold()
 
+# Persistent scratchpad the agent is asked to maintain at /workspace/MEMORY.md
+# so facts, file locations, running servers, and partial progress survive
+# across turns of the same chat (and remain visible to a fresh Agent on
+# reflexion retries). This is appended to the system prompt via
+# AgentContext.system_message_suffix — no new tools required since
+# FileEditorTool already handles the read/write.
+MEMORY_MD_INSTRUCTION = (
+    "## Persistent memory: /workspace/MEMORY.md\n"
+    "You must maintain a running memory file at /workspace/MEMORY.md so that "
+    "future turns of this chat can pick up where the current one leaves off.\n"
+    "\n"
+    "At the START of every task:\n"
+    "- Read /workspace/MEMORY.md if it exists. Treat its contents as known "
+    "  context about the user, the codebase, and prior work in this chat.\n"
+    "- If it does not exist yet, skip the read — you will create it below.\n"
+    "\n"
+    "At the END of every task, BEFORE you return the final answer:\n"
+    "- Update /workspace/MEMORY.md with any durable information worth "
+    "  remembering: stable facts about the project, file/directory paths you "
+    "  discovered, servers or processes you started, credentials scoped to "
+    "  this session, user preferences, decisions made, and a short summary "
+    "  of what was just completed and what remains.\n"
+    "- Keep it concise and well-structured. Use markdown headings (e.g. "
+    "  `## Project`, `## Running services`, `## Open questions`, "
+    "  `## Recent turns`) and bullet points.\n"
+    "- Overwrite entries that have become stale or incorrect; prefer editing "
+    "  the file in place over appending redundant content.\n"
+    "- Never write secrets you were told not to persist.\n"
+    "- If the task produced no memory-worthy information, still touch the "
+    "  file by appending a dated bullet under `## Recent turns` so the next "
+    "  turn can see what happened.\n"
+    "\n"
+    "Use the file_editor tool for both the read and the write. MEMORY.md is "
+    "the single source of truth for cross-turn state — do not invent "
+    "parallel memory files."
+)
+
 # ---------------------------------------------------------------------------
 # Per-session conversation persistence
 # ---------------------------------------------------------------------------
@@ -361,7 +398,7 @@ def runtime(
         len(skills),
         repo_dir or "(empty)",
     )
-    agent_context = AgentContext(skills=skills)
+    agent_context = AgentContext(skills=skills, system_message_suffix=MEMORY_MD_INSTRUCTION)
     use_rx = ENABLE_REFLEXION if use_reflexion is None else use_reflexion
     logger.info(
         "model=%s, base_url=%s, mounted_dir=%s, use_reflexion=%s, injected_workspace=%s",
