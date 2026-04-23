@@ -9,6 +9,8 @@ import {
   Wrench,
   Check,
   FolderOpen,
+  Globe,
+  GlobeLock,
 } from "lucide-react";
 import { fetchAgents, pickWorkspaceDirectory } from "../services/api";
 
@@ -26,9 +28,12 @@ export default function InputBox({
   onSkipConfirmChange,
   mountDir = "",
   onMountDirChange,
-  hideSkillPicker = false,
+  hideSkillPicker = true,
   hideModelPicker = false,
   models: modelsProp,
+  showBrowserToggle = false,
+  browserVisible = false,
+  onToggleBrowser,
 }) {
   const [text, setText] = useState("");
   const [isFocused, setIsFocused] = useState(false);
@@ -150,7 +155,7 @@ export default function InputBox({
     : "…";
 
   return (
-    <div className="mx-auto w-full max-w-4xl px-4">
+    <div className="mx-auto w-full max-w-6xl px-4">
       <div
         onMouseEnter={() => setIsHovered(true)}
         onMouseLeave={() => setIsHovered(false)}
@@ -426,6 +431,22 @@ export default function InputBox({
           </div>
 
           <div className="flex items-center gap-2">
+            {showBrowserToggle && (
+              <button
+                type="button"
+                onClick={onToggleBrowser}
+                title={browserVisible ? "Hide live browser" : "Show live browser"}
+                className={`flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium transition-colors ${
+                  browserVisible
+                    ? "bg-cyan-500/20 text-cyan-300 hover:bg-cyan-500/30"
+                    : "text-text-muted hover:bg-surface-hover hover:text-text-secondary"
+                }`}
+              >
+                {browserVisible ? <Globe size={13} /> : <GlobeLock size={13} />}
+                Live Browser
+              </button>
+            )}
+
             {!hideModelPicker && (
             <>
             <button

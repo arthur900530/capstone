@@ -1,8 +1,6 @@
-import { useMemo, useState } from "react";
-import { Bot, BarChart3, Database, Globe, GlobeLock } from "lucide-react";
+import { useMemo } from "react";
 import ChatMessage from "./ChatMessage";
 import InputBox from "./InputBox";
-import UploadedDataPanel from "./DataContext";
 import WelcomeHeader from "./WelcomeHeader";
 import BrowserLiveView from "./BrowserLiveView";
 import { useApp } from "../context/AppContext";
@@ -10,101 +8,11 @@ import { useApp } from "../context/AppContext";
 const LIVE_BROWSER_ENABLED = import.meta.env.VITE_LIVE_BROWSER !== "false";
 const IS_DEMO = import.meta.env.VITE_DEMO === "true";
 
-function AgentBanner({
-  agent,
-  onViewEval,
-  files = [],
-  onRemoveFile,
-  showBrowserToggle = false,
-  browserVisible = false,
-  onToggleBrowser,
-}) {
-  const [showData, setShowData] = useState(false);
-
-  if (!agent) return null;
-  return (
-    <div className="sticky top-0 z-20 border-b border-border/30 bg-workspace/95 backdrop-blur-sm">
-      <div className="mx-auto flex max-w-2xl items-center justify-between px-4 py-2.5">
-        <div className="flex items-center gap-2 text-sm">
-          <Bot size={15} className="text-accent-teal" />
-          <span className="font-medium text-text-primary">{agent.name}</span>
-          <span className="text-text-muted">&middot;</span>
-          <span className="text-xs text-text-muted">
-            {agent.model?.split("/").pop()}
-          </span>
-        </div>
-        <div className="flex items-center gap-2">
-          {files.length > 0 && (
-            <button
-              onClick={() => setShowData((v) => !v)}
-              className={`flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
-                showData
-                  ? "bg-accent-teal/20 text-accent-teal"
-                  : "bg-surface-hover text-text-secondary hover:text-text-primary"
-              }`}
-            >
-              <Database size={13} />
-              Uploaded Data
-              <span className="rounded-full bg-accent-teal/15 px-1.5 py-0.5 text-[10px] font-semibold text-accent-teal">
-                {files.length}
-              </span>
-            </button>
-          )}
-          {showBrowserToggle && (
-            <button
-              onClick={onToggleBrowser}
-              className={`flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
-                browserVisible
-                  ? "bg-cyan-500/20 text-cyan-300 hover:bg-cyan-500/30"
-                  : "bg-surface-hover text-text-secondary hover:text-text-primary"
-              }`}
-              title={
-                browserVisible ? "Hide live browser" : "Show live browser"
-              }
-            >
-              {browserVisible ? <Globe size={13} /> : <GlobeLock size={13} />}
-              Live Browser
-            </button>
-          )}
-          {onViewEval && (
-            <button
-              onClick={onViewEval}
-              className="flex items-center gap-1.5 rounded-md bg-accent-teal/10 px-2.5 py-1 text-xs font-medium text-accent-teal transition-colors hover:bg-accent-teal/20"
-            >
-              <BarChart3 size={13} />
-              Evaluation
-            </button>
-          )}
-        </div>
-      </div>
-      {showData && (
-        <UploadedDataPanel files={files} onRemoveFile={onRemoveFile} />
-      )}
-    </div>
-  );
-}
-
-function AgentDivider({ agent, sentinelRef }) {
-  return (
-    <div ref={sentinelRef} className="flex items-center gap-3 py-1">
-      <div className="h-px flex-1 bg-border/40" />
-      <span className="flex items-center gap-1.5 text-[10px] font-medium text-text-muted">
-        <Bot size={11} />
-        {agent.name}
-      </span>
-      <div className="h-px flex-1 bg-border/40" />
-    </div>
-  );
-}
-
 export default function ChatView({ showWelcome = true, embedded = false }) {
   const {
     messages,
     isStreaming,
     sessionId,
-    visibleAgent,
-    chatFiles,
-    setChatFiles,
     stagedFiles,
     setStagedFiles,
     config,
@@ -120,11 +28,8 @@ export default function ChatView({ showWelcome = true, embedded = false }) {
     browserLive,
     setBrowserLive,
     handleSubmit,
-    handleViewEval,
     scrollContainerRef,
-    updateVisibleAgent,
     messagesEndRef,
-    registerSentinel,
     handleCanvasSelectFile,
   } = useApp();
 
@@ -152,32 +57,11 @@ export default function ChatView({ showWelcome = true, embedded = false }) {
 
   const chatColumn = hasMessages ? (
     <>
-      <div
-        ref={scrollContainerRef}
-        onScroll={updateVisibleAgent}
-        className="flex-1 overflow-y-auto"
-      >
-        <AgentBanner
-          agent={visibleAgent}
-          onViewEval={() => handleViewEval(visibleAgent?.id)}
-          files={chatFiles}
-          onRemoveFile={(i) =>
-            setChatFiles((prev) => prev.filter((_, idx) => idx !== i))
-          }
-          showBrowserToggle={liveBrowserAvailable}
-          browserVisible={Boolean(browserLive?.visible)}
-          onToggleBrowser={toggleBrowserVisible}
-        />
+      <div ref={scrollContainerRef} className="flex-1 overflow-y-auto">
         <div className="px-4 pt-4 pb-4">
-          <div className="mx-auto max-w-2xl space-y-3">
+          <div className="mx-auto max-w-5xl space-y-3">
             {messages.map((msg, i) =>
-              msg.type === "agent_marker" ? (
-                <AgentDivider
-                  key={`${sessionId}-${i}`}
-                  agent={msg.agent}
-                  sentinelRef={(el) => registerSentinel(i, el, msg.agent)}
-                />
-              ) : (
+              msg.type === "agent_marker" ? null : (
                 <ChatMessage
                   key={`${sessionId}-${i}`}
                   message={msg}
@@ -208,6 +92,9 @@ export default function ChatView({ showWelcome = true, embedded = false }) {
           mountDir={mountDir}
           onMountDirChange={setMountDir}
           models={availableModels}
+          showBrowserToggle={liveBrowserAvailable}
+          browserVisible={Boolean(browserLive?.visible)}
+          onToggleBrowser={toggleBrowserVisible}
         />
       </div>
     </>
