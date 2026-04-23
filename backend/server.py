@@ -468,6 +468,7 @@ async def _persist_task_run(employee_id: str, run: dict) -> None:
                     n_trials=run["n_trials"],
                     n_reflections=run["n_reflections"],
                     tool_histogram=run["tool_histogram"],
+                    raw_events=run.get("raw_events"),
                 )
                 .on_conflict_do_nothing(
                     index_elements=["session_id", "task_index"]
@@ -925,6 +926,7 @@ def _map_event_to_sse(event: Any, session_id: str) -> dict | None:
                     "turn": _turn_counter[session_id],
                     "tool": tool_name,
                     "detail": detail or f"Calling {tool_name}",
+                    "args": args_dict,
                 })
 
             # thought is Sequence[TextContent]

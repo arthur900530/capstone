@@ -48,6 +48,34 @@ def _parse_ts(value: Any) -> datetime | None:
     return None
 
 
+_MAX_RAW_EVENT_TEXT_CHARS = 8_000
+_MAX_RAW_EVENTS_BYTES = 2_000_000
+
+
+def _trim_raw_event_value(value: Any) -> Any:
+    if isinstance(value, str):
+        return value[:_MAX_RAW_EVENT_TEXT_CHARS]
+    if isinstance(value, list):
+        return [_trim_raw_event_value(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _trim_raw_event_value(v) for k, v in value.items()}
+    return value
+
+
+def _serialize_raw_events(events: list[dict]) -> list[dict]:
+    """Trim stored raw events so trajectory playback survives without huge rows."""
+    serialized: list[dict] = []
+    total_bytes = 0
+    for event in events:
+        trimmed = _trim_raw_event_value(event)
+        approx_bytes = len(str(trimmed).encode("utf-8", errors="ignore"))
+        if serialized and total_bytes + approx_bytes > _MAX_RAW_EVENTS_BYTES:
+            break
+        serialized.append(trimmed)
+        total_bytes += approx_bytes
+    return serialized
+
+
 def build_task_run_from_buffer(
     *,
     user_msg: dict,
@@ -80,6 +108,7 @@ def build_task_run_from_buffer(
     return {
         "session_id": None,  # caller fills this in
         "task_index": 0,     # caller fills this in
+        "full_prompt": prompt,
         "prompt_preview": prompt_preview,
         "started_at": started_at,
         "ended_at": end_ts,
@@ -88,6 +117,7 @@ def build_task_run_from_buffer(
         "n_trials": max(len(trials), 1),
         "n_reflections": len(reflections),
         "tool_histogram": tool_histogram,
+        "raw_events": _serialize_raw_events(events),
     }
 
 
@@ -223,4 +253,5 @@ def serialize_task_run(row) -> dict:
         "n_trials": row.n_trials,
         "n_reflections": row.n_reflections,
         "tool_histogram": row.tool_histogram or {},
+        "raw_events": row.raw_events or [],
     }

@@ -13,6 +13,7 @@ from metrics import (
     serialize_task_run,
     task_runs_from_chat,
 )
+from trajectory import build_nodes_from_events, flatten_action_nodes, segment_nodes, to_dict
 
 router = APIRouter(prefix="/api/employees", tags=["employees"])
 
@@ -293,6 +294,41 @@ def _fallback_metrics_from_memory(employee_id: str) -> dict:
     }
 
 
+def _task_run_prompt_from_chat(session_id: str, task_index: int) -> str | None:
+    try:
+        from server import _chats  # type: ignore
+    except Exception:
+        return None
+
+    chat = _chats.get(session_id)
+    if not chat:
+        return None
+
+    current_index = -1
+    for message in chat.get("messages") or []:
+        if message.get("type") == "user":
+            current_index += 1
+            if current_index == task_index:
+                return message.get("content")
+    return None
+
+
+def _trajectory_summary(run: dict, tree) -> dict:
+    flat = flatten_action_nodes(tree)
+    answer_nodes = [
+        node for node in flat
+        if node.state.extra.get("event_type") in {"answer", "chat_response", "error"}
+    ]
+    final_status = answer_nodes[-1].status if answer_nodes else tree.status
+    return {
+        "n_tool_calls": int(run.get("n_tool_calls") or 0),
+        "n_trials": int(run.get("n_trials") or 1),
+        "duration_ms": int(run.get("duration_ms") or 0),
+        "tool_histogram": run.get("tool_histogram") or {},
+        "status": final_status or "unknown",
+    }
+
+
 @router.get("/{employee_id}/metrics")
 async def employee_metrics(employee_id: str):
     """Return aggregate + recent task-run metrics for the report card.
@@ -336,3 +372,116 @@ async def employee_metrics(employee_id: str):
     if emp is None:
         raise HTTPException(404, "Employee not found")
     return _fallback_metrics_from_memory(employee_id)
+
+
+@router.get("/{employee_id}/task_runs/{session_id}/{task_index}/trajectory")
+async def employee_task_trajectory(employee_id: str, session_id: str, task_index: int):
+    if _db_available:
+        from db.engine import async_session
+        from db.models import Employee, TaskRun
+        from sqlalchemy import select
+
+        emp_uuid = _parse_uuid(employee_id)
+        async with async_session() as session:
+            emp_row = (
+                await session.execute(
+                    select(Employee).where(Employee.id == emp_uuid)
+                )
+            ).scalar_one_or_none()
+            if emp_row is None:
+                raise HTTPException(404, "Employee not found")
+
+            row = (
+                await session.execute(
+                    select(TaskRun).where(
+                        TaskRun.employee_id == emp_uuid,
+                        TaskRun.session_id == session_id,
+                        TaskRun.task_index == task_index,
+                    )
+                )
+            ).scalar_one_or_none()
+
+        if row is None:
+            raise HTTPException(404, "Task run not found")
+
+        run = serialize_task_run(row)
+        raw_events = run.get("raw_events") or []
+        if not raw_events:
+            try:
+                from server import _chats  # type: ignore
+            except Exception:
+                _chats = {}
+
+            chat = _chats.get(session_id)
+            if chat is not None:
+                live_run = next(
+                    (
+                        r for r in task_runs_from_chat(chat)
+                        if r.get("session_id") == session_id and r.get("task_index") == task_index
+                    ),
+                    None,
+                )
+                if live_run is not None:
+                    run = live_run
+                    raw_events = live_run.get("raw_events") or []
+
+        if not raw_events:
+            raise HTTPException(
+                status_code=410,
+                detail={
+                    "available": False,
+                    "reason": "trajectory_not_persisted",
+                },
+            )
+
+        action_nodes, trial_boundaries = build_nodes_from_events(raw_events)
+        tree = segment_nodes(action_nodes, trial_boundaries)
+        prompt = (
+            run.get("full_prompt")
+            or _task_run_prompt_from_chat(session_id, task_index)
+            or run.get("prompt_preview")
+            or ""
+        )
+        return {
+            "available": True,
+            "session_id": session_id,
+            "task_index": task_index,
+            "prompt": prompt,
+            "summary": _trajectory_summary(run, tree),
+            "tree": to_dict(tree),
+            "raw_events": raw_events,
+        }
+
+    emp = next((e for e in _memory_store if e.get("id") == employee_id), None)
+    if emp is None:
+        raise HTTPException(404, "Employee not found")
+
+    try:
+        from server import _chats  # type: ignore
+    except Exception:
+        _chats = {}
+
+    chat = _chats.get(session_id)
+    if chat is None:
+        raise HTTPException(404, "Task run not found")
+
+    runs = task_runs_from_chat(chat)
+    run = next(
+        (r for r in runs if r.get("session_id") == session_id and r.get("task_index") == task_index),
+        None,
+    )
+    if run is None:
+        raise HTTPException(404, "Task run not found")
+
+    raw_events = run.get("raw_events") or []
+    action_nodes, trial_boundaries = build_nodes_from_events(raw_events)
+    tree = segment_nodes(action_nodes, trial_boundaries)
+    return {
+        "available": True,
+        "session_id": session_id,
+        "task_index": task_index,
+        "prompt": run.get("full_prompt") or run.get("prompt_preview") or "",
+        "summary": _trajectory_summary(run, tree),
+        "tree": to_dict(tree),
+        "raw_events": raw_events,
+    }

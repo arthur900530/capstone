@@ -8,8 +8,10 @@ import {
   Loader2,
   AlertCircle,
   ListChecks,
+  ChevronRight,
 } from "lucide-react";
 import { fetchEmployeeMetrics } from "../../services/api";
+import TaskTrajectoryDrawer from "./TaskTrajectoryDrawer";
 
 /* ── Tiny primitives ──────────────────────────────────────────────────── */
 
@@ -68,7 +70,7 @@ function ToolMixBar({ tool, count, total }) {
   );
 }
 
-function RecentTaskRow({ run }) {
+function RecentTaskRow({ run, onClick }) {
   const when = run.started_at ? new Date(run.started_at) : null;
   const durationSec = (run.duration_ms || 0) / 1000;
   const topTools = Object.entries(run.tool_histogram || {})
@@ -76,43 +78,50 @@ function RecentTaskRow({ run }) {
     .slice(0, 4);
 
   return (
-    <li className="rounded-lg border border-border/40 bg-surface/40 p-3">
-      <div className="flex items-start justify-between gap-3">
-        <p
-          className="min-w-0 flex-1 truncate text-sm text-text-primary"
-          title={run.prompt_preview}
-        >
-          {run.prompt_preview || <span className="italic text-text-muted">(empty prompt)</span>}
-        </p>
-        <div className="flex shrink-0 items-center gap-3 text-[11px] text-text-muted tabular-nums">
-          <span>{run.n_tool_calls} tools</span>
-          <span>{durationSec.toFixed(1)}s</span>
-          {when && <span>{when.toLocaleString()}</span>}
+    <li>
+      <button
+        type="button"
+        onClick={onClick}
+        className="w-full rounded-lg border border-border/40 bg-surface/40 p-3 text-left transition-colors hover:border-accent-teal/30 hover:bg-surface/60"
+      >
+        <div className="flex items-start justify-between gap-3">
+          <p
+            className="min-w-0 flex-1 truncate text-sm text-text-primary"
+            title={run.prompt_preview}
+          >
+            {run.prompt_preview || <span className="italic text-text-muted">(empty prompt)</span>}
+          </p>
+          <div className="flex shrink-0 items-center gap-3 text-[11px] text-text-muted tabular-nums">
+            <span>{run.n_tool_calls} tools</span>
+            <span>{durationSec.toFixed(1)}s</span>
+            {when && <span>{when.toLocaleString()}</span>}
+            <ChevronRight size={14} className="text-text-muted" />
+          </div>
         </div>
-      </div>
-      {topTools.length > 0 && (
-        <div className="mt-2 flex flex-wrap gap-1">
-          {topTools.map(([name, n]) => (
-            <span
-              key={name}
-              className="rounded bg-accent-teal/10 px-1.5 py-0.5 text-[10px] font-medium text-accent-teal"
-            >
-              {name}
-              {n > 1 ? ` ×${n}` : ""}
-            </span>
-          ))}
-          {run.n_trials > 1 && (
-            <span className="rounded bg-yellow-500/10 px-1.5 py-0.5 text-[10px] font-medium text-yellow-400">
-              {run.n_trials} trials
-            </span>
-          )}
-          {run.n_reflections > 0 && (
-            <span className="rounded bg-purple-500/10 px-1.5 py-0.5 text-[10px] font-medium text-purple-300">
-              {run.n_reflections} reflections
-            </span>
-          )}
-        </div>
-      )}
+        {topTools.length > 0 && (
+          <div className="mt-2 flex flex-wrap gap-1">
+            {topTools.map(([name, n]) => (
+              <span
+                key={name}
+                className="rounded bg-accent-teal/10 px-1.5 py-0.5 text-[10px] font-medium text-accent-teal"
+              >
+                {name}
+                {n > 1 ? ` ×${n}` : ""}
+              </span>
+            ))}
+            {run.n_trials > 1 && (
+              <span className="rounded bg-yellow-500/10 px-1.5 py-0.5 text-[10px] font-medium text-yellow-400">
+                {run.n_trials} trials
+              </span>
+            )}
+            {run.n_reflections > 0 && (
+              <span className="rounded bg-purple-500/10 px-1.5 py-0.5 text-[10px] font-medium text-purple-300">
+                {run.n_reflections} reflections
+              </span>
+            )}
+          </div>
+        )}
+      </button>
     </li>
   );
 }
@@ -165,6 +174,7 @@ export default function EmployeeReportCard({ employee }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [selectedTask, setSelectedTask] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -296,6 +306,13 @@ export default function EmployeeReportCard({ employee }) {
                 <RecentTaskRow
                   key={`${r.session_id}-${r.task_index}`}
                   run={r}
+                  onClick={() =>
+                    setSelectedTask({
+                      sessionId: r.session_id,
+                      taskIndex: r.task_index,
+                      run: r,
+                    })
+                  }
                 />
               ))}
             </ul>
@@ -306,6 +323,13 @@ export default function EmployeeReportCard({ employee }) {
           )}
         </div>
       </div>
+      {selectedTask ? (
+        <TaskTrajectoryDrawer
+          employeeId={employee.id}
+          task={selectedTask}
+          onClose={() => setSelectedTask(null)}
+        />
+      ) : null}
     </div>
   );
 }

@@ -61,6 +61,18 @@ export async function fetchEmployeeMetrics(employeeId) {
   return res.json();
 }
 
+export async function fetchTaskTrajectory(employeeId, sessionId, taskIndex) {
+  const res = await fetch(
+    `${API_BASE}/employees/${employeeId}/task_runs/${encodeURIComponent(sessionId)}/${encodeURIComponent(taskIndex)}/trajectory`,
+  );
+  if (res.status === 410) {
+    const body = await res.json();
+    return body?.detail || body;
+  }
+  if (!res.ok) throw new Error(`Failed to load task trajectory: ${res.status}`);
+  return res.json();
+}
+
 export async function fetchAgents() {
   const res = await fetch(`${API_BASE}/agents`);
   if (!res.ok) throw new Error(`Failed to load agents: ${res.status}`);
