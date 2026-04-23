@@ -55,6 +55,12 @@ export async function deleteChat(chatId) {
   return res.json();
 }
 
+export async function fetchEmployeeMetrics(employeeId) {
+  const res = await fetch(`${API_BASE}/employees/${employeeId}/metrics`);
+  if (!res.ok) throw new Error(`Failed to load employee metrics: ${res.status}`);
+  return res.json();
+}
+
 export async function fetchAgents() {
   const res = await fetch(`${API_BASE}/agents`);
   if (!res.ok) throw new Error(`Failed to load agents: ${res.status}`);

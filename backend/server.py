@@ -37,6 +37,8 @@ from sse_starlette.sse import EventSourceResponse
 
 from skills_ingestor.mm_train import MMSkillTrainer
 
+import metrics
+
 dotenv.load_dotenv()
 
 logger = logging.getLogger(__name__)
@@ -229,6 +231,10 @@ _upload_dirs: dict[str, str] = {}
 # client-side payload drops ``employee_id`` (e.g. stale bundle, page reload).
 _SESSION_EMPLOYEE_IDS: dict[str, str] = {}
 
+# Strong refs for background ``task_runs`` persistence. Without this set the
+# asyncio task could be garbage-collected before it finishes writing.
+_background_metrics_tasks: set[asyncio.Task] = set()
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -416,6 +422,150 @@ def _append_event(session_id: str, event_type: str, data: dict):
     msg.update(data)
     _chats[session_id]["messages"].append(msg)
     _chats[session_id]["updated_at"] = _now_iso()
+
+
+async def _persist_task_run(employee_id: str, run: dict) -> None:
+    """Insert a single ``task_runs`` row. Idempotent via (session_id, task_index).
+
+    Silent best-effort: metrics should never break the chat stream.
+    """
+    try:
+        from routers.employees import _db_available as db_flag
+    except Exception:
+        db_flag = False
+    if not db_flag:
+        logger.info(
+            "[metrics] persist skipped — DB not available (session=%s)",
+            run.get("session_id"),
+        )
+        return
+    try:
+        from db.engine import async_session
+        from db.models import TaskRun
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+        try:
+            emp_uuid = uuid.UUID(employee_id)
+        except ValueError:
+            logger.info(
+                "[metrics] persist skipped — bad employee_id=%r",
+                employee_id,
+            )
+            return
+
+        async with async_session() as session:
+            stmt = (
+                pg_insert(TaskRun.__table__)
+                .values(
+                    employee_id=emp_uuid,
+                    session_id=run["session_id"],
+                    task_index=run["task_index"],
+                    prompt_preview=run["prompt_preview"],
+                    started_at=run["started_at"],
+                    ended_at=run["ended_at"],
+                    duration_ms=run["duration_ms"],
+                    n_tool_calls=run["n_tool_calls"],
+                    n_trials=run["n_trials"],
+                    n_reflections=run["n_reflections"],
+                    tool_histogram=run["tool_histogram"],
+                )
+                .on_conflict_do_nothing(
+                    index_elements=["session_id", "task_index"]
+                )
+            )
+            result = await session.execute(stmt)
+            await session.commit()
+            logger.info(
+                "[metrics] persisted task_run session=%s task_index=%s rows=%s",
+                run.get("session_id"),
+                run.get("task_index"),
+                result.rowcount,
+            )
+    except Exception:
+        logger.exception(
+            "Failed to persist task_run session=%s task_index=%s",
+            run.get("session_id"),
+            run.get("task_index"),
+        )
+
+
+async def _record_task_run_for_session(session_id: str) -> None:
+    """Record a task-run row for the most recent turn on ``session_id``.
+
+    Walks the in-memory chat transcript to find the final user message and
+    the events emitted after it, derives a metrics record via
+    :func:`metrics.build_task_run_from_buffer`, and persists it to the
+    ``task_runs`` table when the DB is available.
+
+    No-op for non-employee chats (there's no report card to populate).
+    """
+    try:
+        employee_id = _SESSION_EMPLOYEE_IDS.get(session_id)
+        if not employee_id:
+            logger.info(
+                "[metrics] skip session=%s — no employee mapped", session_id
+            )
+            return
+        chat = _chats.get(session_id)
+        if not chat:
+            logger.info(
+                "[metrics] skip session=%s employee=%s — chat not in _chats",
+                session_id, employee_id,
+            )
+            return
+        messages = chat.get("messages") or []
+
+        last_user_idx = next(
+            (
+                i
+                for i in range(len(messages) - 1, -1, -1)
+                if messages[i].get("type") == "user"
+            ),
+            None,
+        )
+        if last_user_idx is None:
+            logger.info(
+                "[metrics] skip session=%s employee=%s — no user message in %d msgs",
+                session_id, employee_id, len(messages),
+            )
+            return
+        user_msg = messages[last_user_idx]
+        trailing = messages[last_user_idx + 1 :]
+        if not trailing:
+            logger.info(
+                "[metrics] skip session=%s employee=%s — no trailing events after user turn",
+                session_id, employee_id,
+            )
+            return
+
+        # 0-based index of this task within the session.
+        task_index = sum(
+            1 for m in messages[:last_user_idx] if m.get("type") == "user"
+        )
+
+        end_ts = metrics._parse_ts(trailing[-1].get("timestamp")) or datetime.now(
+            timezone.utc
+        )
+        run = metrics.build_task_run_from_buffer(
+            user_msg=user_msg,
+            events=trailing,
+            end_ts=end_ts,
+        )
+        run["session_id"] = session_id
+        run["task_index"] = task_index
+
+        logger.info(
+            "[metrics] recording session=%s employee=%s task_index=%d "
+            "n_tool_calls=%d n_trials=%d duration_ms=%d",
+            session_id, employee_id, task_index,
+            run["n_tool_calls"], run["n_trials"], run["duration_ms"],
+        )
+
+        await _persist_task_run(employee_id, run)
+    except Exception:
+        logger.exception(
+            "Failed to record task_run for session=%s", session_id
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -633,6 +783,18 @@ async def _stream_task(question: str, session_id: str, max_trials: int, confiden
     yield _sse("answer", evt)
     _append_event(session_id, "answer", evt)
     await asyncio.sleep(0.1)
+
+    try:
+        task = asyncio.create_task(
+            _record_task_run_for_session(session_id)
+        )
+        _background_metrics_tasks.add(task)
+        task.add_done_callback(_background_metrics_tasks.discard)
+    except Exception:
+        logger.exception(
+            "Failed to schedule task_run persist for session=%s",
+            session_id,
+        )
 
     yield _sse("done", {"message": "Complete"})
 
@@ -1519,6 +1681,23 @@ async def _stream_real_task(
 
         yield _sse("done", {"message": "Complete"})
     finally:
+        # Persist task_run metrics in the outer finally so it survives the
+        # very common case where the SSE client disconnects right after the
+        # final "answer" and raises CancelledError mid-stream. We launch as
+        # a background task so cancellation of the request doesn't abort the
+        # DB write (asyncio.shield alone would still drop it if the event
+        # loop is tearing down this coroutine's frame).
+        try:
+            task = asyncio.create_task(
+                _record_task_run_for_session(session_id)
+            )
+            _background_metrics_tasks.add(task)
+            task.add_done_callback(_background_metrics_tasks.discard)
+        except Exception:
+            logger.exception(
+                "Failed to schedule task_run persist for session=%s",
+                session_id,
+            )
         _turn_counter.pop(session_id, None)
         _pending_bash_writes.pop(session_id, None)
 

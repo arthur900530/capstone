@@ -8,6 +8,12 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from metrics import (
+    aggregate_task_runs,
+    serialize_task_run,
+    task_runs_from_chat,
+)
+
 router = APIRouter(prefix="/api/employees", tags=["employees"])
 
 _db_available = False
@@ -237,3 +243,96 @@ async def delete_employee(employee_id: str):
     global _memory_store
     _memory_store = [e for e in _memory_store if e["id"] != employee_id]
     return {"ok": True}
+
+
+# ── Metrics / Report Card ────────────────────────────────────────────────────
+
+
+_RECENT_TASK_LIMIT = 20
+
+
+def _fallback_metrics_from_memory(employee_id: str) -> dict:
+    """Derive metrics from the in-memory chat store.
+
+    Used when the DB is unavailable (or for very old sessions predating the
+    ``task_runs`` table). Imports ``_chats`` lazily because ``server.py``
+    imports this module during app setup.
+    """
+    try:
+        from server import _chats  # type: ignore
+    except Exception:
+        _chats = {}
+
+    emp = next((e for e in _memory_store if e.get("id") == employee_id), None)
+    session_ids = (emp or {}).get("chatSessionIds") or []
+    runs: list[dict] = []
+    for sid in session_ids:
+        chat = _chats.get(sid)
+        if chat:
+            runs.extend(task_runs_from_chat(chat))
+
+    def _sort_key(run):
+        ts = run.get("started_at")
+        if isinstance(ts, datetime):
+            return ts
+        return datetime.min.replace(tzinfo=timezone.utc)
+
+    runs.sort(key=_sort_key, reverse=True)
+
+    def _iso(ts):
+        return ts.isoformat() if isinstance(ts, datetime) else ts
+
+    return {
+        "employee_id": employee_id,
+        "aggregate": aggregate_task_runs(runs),
+        "recent": [
+            {**r, "started_at": _iso(r.get("started_at")), "ended_at": _iso(r.get("ended_at"))}
+            for r in runs[:_RECENT_TASK_LIMIT]
+        ],
+        "source": "memory",
+    }
+
+
+@router.get("/{employee_id}/metrics")
+async def employee_metrics(employee_id: str):
+    """Return aggregate + recent task-run metrics for the report card.
+
+    Reads from the ``task_runs`` table when the DB is available; otherwise
+    falls back to deriving runs from the in-memory chat transcript so older
+    sessions and DB-less dev environments still render a useful card.
+    """
+    if _db_available:
+        from db.engine import async_session
+        from db.models import Employee, TaskRun
+        from sqlalchemy import select
+
+        emp_uuid = _parse_uuid(employee_id)
+        async with async_session() as session:
+            emp_row = (
+                await session.execute(
+                    select(Employee).where(Employee.id == emp_uuid)
+                )
+            ).scalar_one_or_none()
+            if emp_row is None:
+                raise HTTPException(404, "Employee not found")
+
+            rows = (
+                await session.execute(
+                    select(TaskRun)
+                    .where(TaskRun.employee_id == emp_uuid)
+                    .order_by(TaskRun.started_at.desc())
+                )
+            ).scalars().all()
+
+        runs = [serialize_task_run(r) for r in rows]
+        return {
+            "employee_id": employee_id,
+            "aggregate": aggregate_task_runs(runs),
+            "recent": runs[:_RECENT_TASK_LIMIT],
+            "source": "db",
+        }
+
+    emp = next((e for e in _memory_store if e.get("id") == employee_id), None)
+    if emp is None:
+        raise HTTPException(404, "Employee not found")
+    return _fallback_metrics_from_memory(employee_id)

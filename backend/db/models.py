@@ -333,3 +333,53 @@ class Employee(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow
     )
+
+    task_runs: Mapped[list["TaskRun"]] = relationship(
+        back_populates="employee", cascade="all, delete-orphan"
+    )
+
+
+# ── Task Runs (per-employee metrics) ─────────────────────────────────────────
+
+
+class TaskRun(Base):
+    """One row per user-turn an employee handled.
+
+    Written when a chat turn finishes so the report card can aggregate real
+    behavioral metrics (tool calls, trials, latency, tool mix) per employee
+    without having to re-walk the in-memory chat transcript on every read.
+    """
+
+    __tablename__ = "task_runs"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    employee_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("employees.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    session_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    task_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    prompt_preview: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    ended_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    duration_ms: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    n_tool_calls: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    n_trials: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    n_reflections: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    tool_histogram: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow
+    )
+
+    employee: Mapped[Employee] = relationship(back_populates="task_runs")
+
+    __table_args__ = (
+        UniqueConstraint("session_id", "task_index", name="ix_task_runs_session"),
+    )
