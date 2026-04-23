@@ -208,7 +208,7 @@ class BrowserDockerWorkspace(DockerWorkspace):
             object.__setattr__(self, "host", f"http://127.0.0.1:{self.host_port}")
         object.__setattr__(self, "api_key", None)
 
-        self._wait_for_health()
+        self._wait_for_health(timeout=self.health_check_timeout)
         logger.info("Docker workspace is ready at %s", self.host)
         RemoteWorkspace.model_post_init(self, context)
 
