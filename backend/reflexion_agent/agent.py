@@ -280,9 +280,25 @@ class BrowserDockerWorkspace(DockerWorkspace):
             object.__setattr__(self, "host", f"http://127.0.0.1:{self.host_port}")
         object.__setattr__(self, "api_key", None)
 
-        self._wait_for_health(timeout=self.health_check_timeout)
-        logger.info("Docker workspace is ready at %s", self.host)
-        RemoteWorkspace.model_post_init(self, context)
+        try:
+            # OpenHands SDK's _wait_for_health uses a 120s default; there is
+            # no `health_check_timeout` attribute on DockerWorkspace in v1.15+.
+            self._wait_for_health()
+            logger.info("Docker workspace is ready at %s", self.host)
+            RemoteWorkspace.model_post_init(self, context)
+        except Exception:
+            # Make sure we don't leak the container we just started when
+            # health-check / post-init raises. Otherwise the outer retry
+            # loop in server.py will keep spawning new containers while the
+            # failed ones continue running against a bind-mount that is
+            # about to be rmtree'd.
+            try:
+                self.cleanup()
+            except Exception:
+                logger.exception(
+                    "Failed to clean up container after startup error"
+                )
+            raise
 
     @property
     def novnc_host_port(self) -> int | None:
