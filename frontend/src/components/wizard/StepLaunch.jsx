@@ -4,6 +4,8 @@ import PLUGINS from "../../data/plugins";
 export default function StepLaunch({
   name,
   onNameChange,
+  position,
+  onPositionChange,
   task,
   pluginIds,
   skillIds,
@@ -33,6 +35,14 @@ export default function StepLaunch({
         className="w-full rounded-xl border border-border/40 bg-surface px-4 py-3 text-lg font-medium text-text-primary placeholder:text-text-muted/60 focus:border-accent-teal/50 focus:outline-none focus:ring-1 focus:ring-accent-teal/30"
       />
 
+      <input
+        value={position || ""}
+        onChange={(e) => onPositionChange?.(e.target.value)}
+        maxLength={120}
+        placeholder="Position (e.g. Equity Research Analyst)"
+        className="mt-3 w-full rounded-xl border border-border/40 bg-surface px-4 py-3 text-sm text-text-primary placeholder:text-text-muted/60 focus:border-accent-teal/50 focus:outline-none focus:ring-1 focus:ring-accent-teal/30"
+      />
+
       {/* Summary card */}
       <div className="mt-6 rounded-xl border border-border/40 bg-surface p-5 space-y-4">
         <div className="flex items-center gap-3">
@@ -41,7 +51,9 @@ export default function StepLaunch({
           </div>
           <div>
             <p className="font-medium text-text-primary">
-              {selectedPlugins.map((p) => p.name).join(", ") || "Custom"}
+              {position?.trim() ||
+                selectedPlugins.map((p) => p.name).join(", ") ||
+                "Custom"}
             </p>
             <p className="text-xs text-text-muted">
               {config.model?.split("/").pop()}

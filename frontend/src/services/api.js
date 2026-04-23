@@ -169,9 +169,25 @@ export async function streamChat(
     files,
     skillIds,
     mountDir,
+    employeeId,
+    employee,
   },
   onEvent,
 ) {
+  // Only forward employee persona fields that are actually set so the backend
+  // never sees a payload like {name: undefined, position: "", task: ""}.
+  // The backend prefers its own DB lookup via employee_id; this client-side
+  // copy is a fallback for DB-less setups.
+  const employeePayload = employee
+    ? Object.fromEntries(
+        Object.entries({
+          name: employee.name,
+          position: employee.position,
+          task: employee.task,
+        }).filter(([, v]) => typeof v === "string" && v.trim() !== ""),
+      )
+    : null;
+
   const res = await fetch(`${API_BASE}/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -185,6 +201,11 @@ export async function streamChat(
       files: files || undefined,
       skill_ids: skillIds?.length ? skillIds : undefined,
       mount_dir: mountDir || undefined,
+      employee_id: employeeId || undefined,
+      employee:
+        employeePayload && Object.keys(employeePayload).length > 0
+          ? employeePayload
+          : undefined,
     }),
   });
 

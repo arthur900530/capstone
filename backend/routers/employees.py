@@ -21,6 +21,7 @@ def set_db_available(value: bool):
 
 class EmployeeCreate(BaseModel):
     name: str
+    position: str = ""
     task: str = ""
     pluginIds: list[str] = []
     skillIds: list[str] = []
@@ -33,6 +34,7 @@ class EmployeeCreate(BaseModel):
 
 class EmployeeUpdate(BaseModel):
     name: str | None = None
+    position: str | None = None
     task: str | None = None
     pluginIds: list[str] | None = None
     skillIds: list[str] | None = None
@@ -66,6 +68,7 @@ def _row_to_dict(row) -> dict:
     return {
         "id": str(row.id),
         "name": row.name,
+        "position": getattr(row, "position", "") or "",
         "task": row.task,
         "pluginIds": row.plugin_ids or [],
         "skillIds": row.skill_ids or [],
@@ -127,6 +130,7 @@ async def create_employee(body: EmployeeCreate):
         async with async_session() as session:
             emp = Employee(
                 name=body.name,
+                position=body.position,
                 task=body.task,
                 plugin_ids=body.pluginIds,
                 skill_ids=body.skillIds,
@@ -144,6 +148,7 @@ async def create_employee(body: EmployeeCreate):
     emp = {
         "id": str(uuid.uuid4()),
         "name": body.name,
+        "position": body.position,
         "task": body.task,
         "pluginIds": body.pluginIds,
         "skillIds": body.skillIds,
@@ -177,6 +182,8 @@ async def update_employee(employee_id: str, body: EmployeeUpdate):
 
             if body.name is not None:
                 row.name = body.name
+            if body.position is not None:
+                row.position = body.position
             if body.task is not None:
                 row.task = body.task
             if body.pluginIds is not None:

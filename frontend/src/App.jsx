@@ -84,6 +84,18 @@ export default function App() {
   const onChatCapableRoute =
     pathname === "/chat" || pathname.startsWith("/employee/");
 
+  // When we're on an employee page, the shared ChatView is the UI — but the
+  // /api/chat payload must still carry persona data so the backend can
+  // inject the employee's identity/role/task into the agent's system prompt.
+  // Derive the current employee from the URL + employees list rather than
+  // wiring new context plumbing; the id is the source of truth and the
+  // server does its own DB lookup from it.
+  const employeeIdMatch = pathname.match(/^\/employee\/([^/]+)/);
+  const currentEmployeeId = employeeIdMatch?.[1] || null;
+  const currentEmployee = currentEmployeeId
+    ? employees.find((e) => e.id === currentEmployeeId) || null
+    : null;
+
   const messagesEndRef = useRef(null);
   const scrollContainerRef = useRef(null);
   const sentinelRefs = useRef(new Map());
@@ -220,6 +232,14 @@ export default function App() {
               : undefined,
           skillIds: selectedSkillIds,
           mountDir: mountDir || undefined,
+          employeeId: currentEmployeeId || undefined,
+          employee: currentEmployee
+            ? {
+                name: currentEmployee.name,
+                position: currentEmployee.position,
+                task: currentEmployee.task,
+              }
+            : undefined,
         },
         (eventType, data) => {
           let msg = null;

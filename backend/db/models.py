@@ -315,6 +315,9 @@ class Employee(Base):
         UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
     )
     name: Mapped[str] = mapped_column(String(40), nullable=False)
+    # Job title / role (e.g. "Equity Research Analyst"). Optional — legacy rows
+    # predate the column and so we default to an empty string rather than NULL.
+    position: Mapped[str] = mapped_column(String(120), nullable=False, default="")
     task: Mapped[str] = mapped_column(Text, nullable=False, default="")
     plugin_ids: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     skill_ids: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)

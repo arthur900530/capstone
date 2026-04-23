@@ -172,6 +172,12 @@ export default function EmployeeChat({ employee, onDesktopEvent }) {
             confidenceThreshold: employee.confidenceThreshold,
             useReflexion: employee.useReflexion,
             skillIds: employee.skillIds,
+            employeeId: employee.id,
+            employee: {
+              name: employee.name,
+              position: employee.position,
+              task: employee.task,
+            },
           },
           handleEvent,
         );

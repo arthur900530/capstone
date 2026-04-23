@@ -224,6 +224,10 @@ app.include_router(employees_router)
 
 _chats: dict[str, dict] = {}
 _upload_dirs: dict[str, str] = {}
+# session_id -> employee_id; populated when a chat turn resolves an employee
+# so subsequent turns on the same session still inject the persona even if the
+# client-side payload drops ``employee_id`` (e.g. stale bundle, page reload).
+_SESSION_EMPLOYEE_IDS: dict[str, str] = {}
 
 
 def _now_iso() -> str:
@@ -1353,6 +1357,7 @@ async def _stream_real_task(
     mount_dir: str | None = None,
     use_reflexion: bool = False,
     skill_ids: list[str] | None = None,
+    employee_profile: dict | None = None,
 ):
     """Run the real OpenHands agent against the shared DockerWorkspace.
 
@@ -1422,6 +1427,7 @@ async def _stream_real_task(
                 use_reflexion=use_reflexion,
                 workspace=_SHARED_WS["workspace"],
                 session_id=session_id,
+                employee_profile=employee_profile,
             )
             if final_answer and not answer_emitted["value"]:
                 answer_emitted["value"] = True
@@ -1527,6 +1533,16 @@ class FileMetadata(BaseModel):
     type: str | None = None
 
 
+class EmployeeProfile(BaseModel):
+    """The subset of an employee's configuration that belongs in the agent's
+    context window: who they are, what their job is, and the standing
+    instruction that frames every turn of this chat."""
+
+    name: str | None = None
+    position: str | None = None
+    task: str | None = None
+
+
 class ChatRequest(BaseModel):
     question: str
     session_id: str | None = None
@@ -1537,6 +1553,16 @@ class ChatRequest(BaseModel):
     files: list[FileMetadata] | None = None
     mount_dir: str | None = None
     skill_ids: list[str] | None = None
+    # Optional persona the frontend forwards from the employee record so the
+    # agent's system prompt can be primed with the employee's name, position,
+    # and standing task instruction for this chat.
+    employee: EmployeeProfile | None = None
+    # Employee UUID — when supplied, the server looks up the employee in the
+    # DB (or in-memory store) and uses that as the source of truth for the
+    # persona. This avoids relying on the browser to ship a non-stale copy
+    # of the profile on every turn; ``employee`` above is retained as a
+    # client-side fallback for environments without DB access.
+    employee_id: str | None = None
 
 
 @app.post("/api/upload")
@@ -1566,6 +1592,104 @@ async def upload_files(
     return {"session_id": sid, "upload_dir": staging, "files": saved}
 
 
+async def _fetch_employee_profile_by_id(employee_id: str) -> dict | None:
+    """Look up an employee row by id and return a persona dict, or ``None``.
+
+    Tries the Postgres-backed ``employees`` table first (when the DB is up),
+    then the in-memory fallback used by ``routers/employees.py`` when the DB
+    isn't available.
+    """
+    try:
+        from routers.employees import _db_available as db_flag
+    except Exception:
+        db_flag = False
+
+    if db_flag:
+        try:
+            from db.engine import async_session
+            from db.models import Employee
+            from sqlalchemy import select
+
+            try:
+                emp_uuid = uuid.UUID(employee_id)
+            except ValueError:
+                logger.warning("[persona] Malformed employee_id=%r — ignoring", employee_id)
+                return None
+
+            async with async_session() as session:
+                row = (
+                    await session.execute(select(Employee).where(Employee.id == emp_uuid))
+                ).scalar_one_or_none()
+                if row is None:
+                    logger.warning(
+                        "[persona] employee_id=%s not found in DB", employee_id
+                    )
+                    return None
+                return {
+                    "name": row.name or "",
+                    "position": getattr(row, "position", "") or "",
+                    "task": row.task or "",
+                }
+        except Exception:
+            logger.exception("[persona] DB lookup for employee_id=%s failed", employee_id)
+            return None
+
+    # In-memory fallback — mirrors the fallback branch in
+    # routers/employees.py so chat still gets a persona in DB-less mode.
+    try:
+        from routers.employees import _memory_store
+
+        emp = next((e for e in _memory_store if e.get("id") == employee_id), None)
+        if emp is None:
+            logger.warning(
+                "[persona] employee_id=%s not found in memory store", employee_id
+            )
+            return None
+        return {
+            "name": emp.get("name") or "",
+            "position": emp.get("position") or "",
+            "task": emp.get("task") or "",
+        }
+    except Exception:
+        logger.exception("[persona] memory-store lookup failed")
+        return None
+
+
+async def _lookup_employee_profile(
+    employee_id: str | None, session_id: str | None = None
+) -> tuple[str | None, dict | None, str]:
+    """Resolve the employee persona for a chat turn.
+
+    Returns ``(resolved_id, profile, source)`` where ``source`` is a short
+    tag describing where the profile came from — useful for debugging stale
+    frontends that forget to send ``employee_id``.
+
+    Resolution order:
+      1. Explicit ``employee_id`` on the request (``source="explicit_id"``).
+      2. Session-cached id from a prior turn on the same ``session_id``
+         (``source="session_cache"``). This keeps the persona stable even
+         when the client drops the id between turns.
+      3. ``(None, None, "none")`` when nothing matches; the caller falls
+         back to any client-supplied ``employee`` payload.
+    """
+    if employee_id:
+        profile = await _fetch_employee_profile_by_id(employee_id)
+        if profile is not None:
+            return employee_id, profile, "explicit_id"
+        # Fall through to the session cache — an explicit id that doesn't
+        # resolve (e.g. DB briefly down) shouldn't also wipe a persona we
+        # already locked in for this session.
+
+    if session_id:
+        cached_id = _SESSION_EMPLOYEE_IDS.get(session_id)
+        if cached_id:
+            profile = await _fetch_employee_profile_by_id(cached_id)
+            if profile is not None:
+                return cached_id, profile, "session_cache"
+
+    return None, None, "none"
+
+
 @app.post("/api/chat")
 async def chat(req: ChatRequest):
     session_id = req.session_id or str(uuid.uuid4())
@@ -1578,6 +1702,41 @@ async def chat(req: ChatRequest):
     if skill_ids:
         _validate_skills_for_runtime(skill_ids)
 
+    # Prefer the server-side lookup (the DB row is the source of truth, and
+    # it survives stale frontend bundles). Fall back to whatever persona the
+    # client embedded in the request so the chat keeps working if the DB is
+    # down or the id is missing.
+    #
+    # ``_lookup_employee_profile`` returns ``(resolved_id, profile, source)``;
+    # unpack it here so we (a) get the dict we actually want for persona
+    # injection and (b) can cache session→employee for later turns. Passing
+    # ``session_id`` enables the session-based recovery path used when the
+    # client bundle is stale and forgot to include ``employee_id``.
+    resolved_id, server_profile, lookup_source = await _lookup_employee_profile(
+        req.employee_id, session_id=session_id
+    )
+    client_profile = (
+        req.employee.model_dump(exclude_none=True) if req.employee else None
+    ) or None
+    employee_profile = server_profile or client_profile or None
+
+    # Remember the session→employee mapping in-process so subsequent turns on
+    # the same uvicorn keep resolving the persona even if the frontend drops
+    # ``employee_id`` later.
+    if resolved_id:
+        _SESSION_EMPLOYEE_IDS[session_id] = resolved_id
+
+    logger.info(
+        "[chat] persona_resolution employee_id=%s resolved_id=%s source=%s "
+        "server_profile=%s client_profile_keys=%s final_profile_keys=%s",
+        req.employee_id,
+        resolved_id,
+        lookup_source,
+        "found" if server_profile else "miss",
+        sorted((client_profile or {}).keys()),
+        sorted((employee_profile or {}).keys()),
+    )
+
     if REAL_AGENT_ENABLED:
         gen = _stream_real_task(
             req.question,
@@ -1586,6 +1745,7 @@ async def chat(req: ChatRequest):
             mount_dir=req.mount_dir,
             use_reflexion=req.use_reflexion,
             skill_ids=skill_ids,
+            employee_profile=employee_profile,
         )
     else:
         gen = _stream_task(

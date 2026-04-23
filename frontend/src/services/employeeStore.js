@@ -27,6 +27,7 @@ export async function getEmployeeById(id) {
 
 export async function createEmployee({
   name,
+  position = "",
   task,
   pluginIds = [],
   skillIds,
@@ -41,6 +42,7 @@ export async function createEmployee({
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       name,
+      position,
       task,
       pluginIds,
       skillIds,
