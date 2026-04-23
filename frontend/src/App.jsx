@@ -17,7 +17,12 @@ import EvaluationLabPage from "./pages/EvaluationLabPage";
 import CreationWizard from "./pages/CreationWizard";
 import EmployeePage from "./pages/EmployeePage";
 import { AppProvider } from "./context/AppContext";
-import { getEmployees } from "./services/employeeStore";
+import {
+  getEmployees,
+  addChatSession,
+  markActive,
+  updateEmployee,
+} from "./services/employeeStore";
 import { restoreMessage } from "./services/messageUtils";
 import {
   streamChat,
@@ -83,6 +88,13 @@ export default function App() {
   // between ChatView's mount effect and the state update from setOpenFiles.
   const onChatCapableRoute =
     pathname === "/chat" || pathname.startsWith("/employee/");
+
+  // The employee (if any) the user is currently talking to. We link each
+  // new chat session to this employee so the sidebar can group the
+  // conversation history under the owning employee.
+  const activeEmployeeId = pathname.startsWith("/employee/")
+    ? pathname.split("/")[2] || null
+    : null;
 
   const messagesEndRef = useRef(null);
   const scrollContainerRef = useRef(null);
@@ -231,6 +243,14 @@ export default function App() {
                 ...prev,
                 sessionId: data.session_id,
               }));
+              if (activeEmployeeId) {
+                Promise.all([
+                  addChatSession(activeEmployeeId, data.session_id),
+                  markActive(activeEmployeeId),
+                ])
+                  .then(() => refreshEmployees())
+                  .catch(() => {});
+              }
               return;
             case "agent":
               setMessages((prev) => [
@@ -437,9 +457,18 @@ export default function App() {
     });
   };
 
+  const ownerEmployeeOf = useCallback(
+    (chatId) =>
+      employees.find((e) => (e.chatSessionIds || []).includes(chatId)) || null,
+    [employees],
+  );
+
   const handleSelectChat = async (chatId) => {
+    const owner = ownerEmployeeOf(chatId);
+    const targetPath = owner ? `/employee/${owner.id}` : "/chat";
+
     if (chatId === sessionId) {
-      navigate("/chat");
+      navigate(targetPath);
       return;
     }
     try {
@@ -475,7 +504,7 @@ export default function App() {
         visibleAgentRef.current = agent.id;
         setVisibleAgent(agent);
       }
-      navigate("/chat");
+      navigate(targetPath);
     } catch {
       /* ignore */
     }
@@ -485,6 +514,16 @@ export default function App() {
     try {
       await apiDeleteChat(chatId);
       setChats((prev) => prev.filter((c) => c.id !== chatId));
+
+      // Detach this session from its owning employee so the sidebar doesn't
+      // keep a dangling id that resolves to 404 on click.
+      const owner = ownerEmployeeOf(chatId);
+      if (owner) {
+        const nextIds = (owner.chatSessionIds || []).filter((id) => id !== chatId);
+        await updateEmployee(owner.id, { chatSessionIds: nextIds });
+        refreshEmployees();
+      }
+
       if (chatId === sessionId) handleNewChat();
     } catch {
       /* ignore */
@@ -591,6 +630,7 @@ export default function App() {
     focusAgentId,
     setFocusAgentId,
     employees,
+    activeEmployeeId,
     refreshEmployees,
     refreshSkills,
     refreshChats,
