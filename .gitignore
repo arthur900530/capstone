@@ -37,6 +37,7 @@ frontend/.env.*.local
 .env.local
 .env.*
 !.env.example
+!.env.template
 *config.py*
 !config.py.example
 

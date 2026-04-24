@@ -3,10 +3,28 @@
 # BNY Digital Employee Platform — startup script
 # =============================================================================
 
-DATABASE_URL=$(python3 -c "from backend.config import DATABASE_URL; print(DATABASE_URL)")
-export DATABASE_URL
-
 set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
+FRONTEND_DIR="$ROOT_DIR/frontend"
+BACKEND_DIR="$ROOT_DIR/backend"
+SKILLSBENCH_DIR="$BACKEND_DIR/skillsbench"
+
+# First-run bootstrap: copy config.py and .env from their templates so a
+# fresh clone doesn't crash on the DATABASE_URL import below, and so the
+# wizard's system-prompt generation has somewhere to read OPENAI_API_KEY from.
+if [[ ! -f "$BACKEND_DIR/config.py" && -f "$BACKEND_DIR/config.py.example" ]]; then
+  cp "$BACKEND_DIR/config.py.example" "$BACKEND_DIR/config.py"
+  echo "Created backend/config.py from template."
+fi
+if [[ ! -f "$ROOT_DIR/.env" && -f "$ROOT_DIR/.env.template" ]]; then
+  cp "$ROOT_DIR/.env.template" "$ROOT_DIR/.env"
+  echo "Created .env from template — edit it and fill in OPENAI_API_KEY before using the wizard."
+fi
+
+# DATABASE_URL is extracted later (after the backend venv is built) via the
+# venv's python, so python-dotenv is guaranteed importable. The system
+# python3 doesn't have our dependencies on a fresh clone.
 
 MOCK_MODE=0
 DEMO_MODE=0
@@ -16,11 +34,6 @@ for arg in "$@"; do
     --demo) DEMO_MODE=1 ;;
   esac
 done
-
-ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
-FRONTEND_DIR="$ROOT_DIR/frontend"
-BACKEND_DIR="$ROOT_DIR/backend"
-SKILLSBENCH_DIR="$BACKEND_DIR/skillsbench"
 
 PIDS=()
 
@@ -197,6 +210,11 @@ else
   "$BACKEND_DIR/.venv/bin/pip" install -r "$BACKEND_DIR/requirements.txt" 2>&1 | pip_filter
 fi
 step "API dependencies ready"
+
+# Read DATABASE_URL from the backend's config via the venv's python (which
+# has python-dotenv and every other dependency installed above).
+DATABASE_URL=$(cd "$BACKEND_DIR" && PYTHONPATH=. .venv/bin/python -c "from config import DATABASE_URL; print(DATABASE_URL)")
+export DATABASE_URL
 
 # ── Skillsbench ───────────────────────────────────────────────────────────────
 

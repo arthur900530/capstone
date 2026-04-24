@@ -318,6 +318,12 @@ class Employee(Base):
     # Job title / role (e.g. "Equity Research Analyst"). Optional — legacy rows
     # predate the column and so we default to an empty string rather than NULL.
     position: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+    # Short free-form hint the user typed in the creation wizard; kept for the
+    # post-creation "System Prompt" tab so they can see and edit the original
+    # intent alongside the LLM-expanded ``task`` it produced.
+    description: Mapped[str] = mapped_column(
+        Text, nullable=False, default="", server_default=""
+    )
     task: Mapped[str] = mapped_column(Text, nullable=False, default="")
     plugin_ids: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     skill_ids: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)

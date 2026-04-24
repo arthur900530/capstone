@@ -61,10 +61,22 @@ def set_db_available(value: bool):
     _db_available = value
 
 
+# Length caps on the free-form text fields. ``description`` is a short hint
+# users type in the wizard — a couple sentences at most — so 2k is generous.
+# ``task`` is the generated (or hand-edited) system prompt; 40k lets users
+# paste a long custom prompt while still bounding a runaway LLM response.
+_MAX_DESCRIPTION_CHARS = 2000
+_MAX_TASK_CHARS = 40000
+
+
 class EmployeeCreate(BaseModel):
     name: str
     position: str = ""
-    task: str = ""
+    # Short free-form hint the user types in the wizard. When present, the
+    # backend expands it into a full system prompt and stores the result in
+    # ``task``. Legacy callers that still send ``task`` directly keep working.
+    description: str = Field(default="", max_length=_MAX_DESCRIPTION_CHARS)
+    task: str = Field(default="", max_length=_MAX_TASK_CHARS)
     pluginIds: list[str] = []
     skillIds: list[str] = []
     model: str = ""
@@ -77,7 +89,8 @@ class EmployeeCreate(BaseModel):
 class EmployeeUpdate(BaseModel):
     name: str | None = None
     position: str | None = None
-    task: str | None = None
+    description: str | None = Field(default=None, max_length=_MAX_DESCRIPTION_CHARS)
+    task: str | None = Field(default=None, max_length=_MAX_TASK_CHARS)
     pluginIds: list[str] | None = None
     skillIds: list[str] | None = None
     model: str | None = None
@@ -87,6 +100,108 @@ class EmployeeUpdate(BaseModel):
     chatSessionIds: list[str] | None = None
     files: list[dict] | None = None
     lastActiveAt: str | None = None
+
+
+# ── System-prompt generation ────────────────────────────────────────────────
+# The wizard's "Describe" step used to flow straight into the system prompt.
+# Now the backend expands that short hint with an OpenAI call so users get a
+# coherent multi-paragraph system prompt by default. They can edit either the
+# description or the generated prompt later from the "System Prompt" tab.
+
+_SYSTEM_PROMPT_META = (
+    "You are writing the system prompt for an AI employee. "
+    "The user has given you a short description of the employee's role. "
+    "Expand it into a clear, professional system prompt (2-4 paragraphs) telling "
+    "the employee who they are, what expertise they have, how they should behave, "
+    "and the kinds of tasks they should excel at. Output only the prompt text — "
+    "no markdown headers, no quotes, no preamble."
+)
+
+# Used when the user's configured chat model isn't an OpenAI model we can call
+# directly (e.g. ``google/gemini-2.5-flash``). Generation goes through OpenAI,
+# while the employee continues to chat with whichever model they picked.
+_FALLBACK_PROMPT_MODEL = "gpt-4o-mini"
+
+
+def _resolve_openai_model(model: str) -> str:
+    """Turn a user-facing model id into something OpenAI's API will accept.
+
+    - ``openai/gpt-5.4`` → ``gpt-5.4`` (strip provider prefix).
+    - ``openai/openai/gpt-4o`` → ``gpt-4o`` (strip repeated prefixes).
+    - ``gpt-5.4-nano-2026-03-17`` → unchanged.
+    - ``google/gemini-2.5-flash`` → ``_FALLBACK_PROMPT_MODEL`` (non-OpenAI).
+    - ``openai/`` or ``/`` or ``""`` / ``None`` → ``_FALLBACK_PROMPT_MODEL``.
+    """
+    raw = (model or "").strip()
+    if not raw:
+        return _FALLBACK_PROMPT_MODEL
+    while "/" in raw:
+        provider, _, bare = raw.partition("/")
+        if provider.lower() != "openai":
+            return _FALLBACK_PROMPT_MODEL
+        raw = bare
+    return raw or _FALLBACK_PROMPT_MODEL
+
+
+async def _generate_system_prompt(description: str, model: str) -> str:
+    """Expand ``description`` into a full system prompt via OpenAI.
+
+    Called by ``create_employee`` so the wizard's short hint becomes a proper
+    persona prompt before it lands on the employee row. Raises 503 when the
+    OpenAI key is missing or the API call fails, so the frontend can surface
+    the error instead of silently writing an empty ``task``.
+    """
+    desc = (description or "").strip()
+    if not desc:
+        return ""
+
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "OPENAI_API_KEY is not configured on the backend — cannot "
+                "generate a system prompt from the description."
+            ),
+        )
+
+    from openai import AsyncOpenAI
+
+    # ``timeout`` bounds a hung OpenAI call so the wizard's submit button
+    # doesn't spin forever on a stalled upstream. ``max_tokens`` bounds the
+    # response size so a runaway model can't produce a 100KB system prompt.
+    client = AsyncOpenAI(api_key=api_key, timeout=30.0)
+    target_model = _resolve_openai_model(model)
+
+    try:
+        resp = await client.chat.completions.create(
+            model=target_model,
+            messages=[
+                {"role": "system", "content": _SYSTEM_PROMPT_META},
+                {"role": "user", "content": desc},
+            ],
+            temperature=0.4,
+            max_tokens=1500,
+        )
+    except Exception as exc:  # noqa: BLE001
+        # Don't leak raw exception strings to the client — they can embed
+        # request ids or organisation metadata from the OpenAI SDK. The
+        # server-side traceback is in ``logger.exception`` if we need it.
+        logger.exception("System-prompt generation failed (model=%s)", target_model)
+        raise HTTPException(
+            status_code=503,
+            detail="System-prompt generation failed. Please try again.",
+        ) from exc
+
+    content = ""
+    if resp.choices and resp.choices[0].message:
+        content = (resp.choices[0].message.content or "").strip()
+    if not content:
+        raise HTTPException(
+            status_code=503,
+            detail="System-prompt generation returned an empty response.",
+        )
+    return content
 
 
 def _parse_uuid(employee_id: str) -> uuid.UUID:
@@ -111,6 +226,7 @@ def _row_to_dict(row) -> dict:
         "id": str(row.id),
         "name": row.name,
         "position": getattr(row, "position", "") or "",
+        "description": getattr(row, "description", "") or "",
         "task": row.task,
         "pluginIds": row.plugin_ids or [],
         "skillIds": row.skill_ids or [],
@@ -165,6 +281,17 @@ async def get_employee(employee_id: str):
 
 @router.post("")
 async def create_employee(body: EmployeeCreate):
+    # Expand the wizard's short description into a full system prompt when the
+    # caller provided one. Legacy callers that pre-compute ``task`` directly
+    # keep working — we only generate when ``task`` wasn't explicitly supplied.
+    # Store the description verbatim; the strip is only to decide whether
+    # there's something meaningful to generate from (PATCH also preserves
+    # whitespace, so CREATE matches that contract).
+    description = body.description or ""
+    task = body.task or ""
+    if description.strip() and not task.strip():
+        task = await _generate_system_prompt(description, body.model)
+
     if _db_available:
         from db.engine import async_session
         from db.models import Employee
@@ -173,7 +300,8 @@ async def create_employee(body: EmployeeCreate):
             emp = Employee(
                 name=body.name,
                 position=body.position,
-                task=body.task,
+                description=description,
+                task=task,
                 plugin_ids=body.pluginIds,
                 skill_ids=body.skillIds,
                 model=body.model,
@@ -191,7 +319,8 @@ async def create_employee(body: EmployeeCreate):
         "id": str(uuid.uuid4()),
         "name": body.name,
         "position": body.position,
-        "task": body.task,
+        "description": description,
+        "task": task,
         "pluginIds": body.pluginIds,
         "skillIds": body.skillIds,
         "model": body.model,
@@ -226,6 +355,8 @@ async def update_employee(employee_id: str, body: EmployeeUpdate):
                 row.name = body.name
             if body.position is not None:
                 row.position = body.position
+            if body.description is not None:
+                row.description = body.description
             if body.task is not None:
                 row.task = body.task
             if body.pluginIds is not None:

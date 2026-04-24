@@ -1,4 +1,5 @@
 import * as Icons from "lucide-react";
+import { Loader2 } from "lucide-react";
 import PLUGINS from "../../data/plugins";
 
 export default function StepLaunch({
@@ -6,11 +7,12 @@ export default function StepLaunch({
   onNameChange,
   position,
   onPositionChange,
-  task,
+  description,
   pluginIds,
   skillIds,
   config,
-  files,
+  creating = false,
+  error = null,
   onBack,
   onCreate,
 }) {
@@ -62,8 +64,13 @@ export default function StepLaunch({
         </div>
 
         <div>
-          <p className="mb-1 text-xs font-medium text-text-muted">Task</p>
-          <p className="text-sm text-text-secondary">{task}</p>
+          <p className="mb-1 text-xs font-medium text-text-muted">Description</p>
+          <p className="text-sm text-text-secondary">{description}</p>
+          <p className="mt-1.5 text-[11px] italic text-text-muted">
+            We&apos;ll expand this into a full system prompt after you create
+            your employee. You can review and edit it from the System Prompt
+            tab.
+          </p>
         </div>
 
         <div>
@@ -83,17 +90,6 @@ export default function StepLaunch({
           </div>
         </div>
 
-        {files.length > 0 && (
-          <div>
-            <p className="mb-1 text-xs font-medium text-text-muted">
-              Files ({files.length})
-            </p>
-            <p className="text-sm text-text-secondary">
-              {files.map((f) => f.name).join(", ")}
-            </p>
-          </div>
-        )}
-
         {config.useReflexion && (
           <p className="text-xs text-accent-teal">
             Reflexion enabled &middot; {config.maxTrials} max trials &middot;{" "}
@@ -102,19 +98,27 @@ export default function StepLaunch({
         )}
       </div>
 
+      {error && (
+        <div className="mt-4 rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-400">
+          {error}
+        </div>
+      )}
+
       <div className="mt-8 flex justify-between">
         <button
           onClick={onBack}
-          className="rounded-lg border border-border/40 px-6 py-2.5 text-sm font-medium text-text-secondary transition-colors hover:bg-surface"
+          disabled={creating}
+          className="rounded-lg border border-border/40 px-6 py-2.5 text-sm font-medium text-text-secondary transition-colors hover:bg-surface disabled:opacity-50 disabled:cursor-not-allowed"
         >
           Back
         </button>
         <button
           onClick={onCreate}
-          disabled={!name.trim()}
-          className="rounded-lg bg-accent-teal px-6 py-2.5 text-sm font-medium text-workspace transition-colors hover:bg-accent-teal/90 disabled:opacity-40 disabled:cursor-not-allowed"
+          disabled={!name.trim() || creating}
+          className="flex items-center gap-2 rounded-lg bg-accent-teal px-6 py-2.5 text-sm font-medium text-workspace transition-colors hover:bg-accent-teal/90 disabled:opacity-40 disabled:cursor-not-allowed"
         >
-          Create Employee
+          {creating && <Loader2 size={14} className="animate-spin" />}
+          {creating ? "Writing system prompt…" : "Create Employee"}
         </button>
       </div>
     </div>

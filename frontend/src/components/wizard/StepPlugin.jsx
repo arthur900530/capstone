@@ -22,13 +22,34 @@ export default function StepPlugin({
   const [newSkillInput, setNewSkillInput] = useState("");
 
   const { agents } = useApp();
-  const availableModels = useMemo(
-    () =>
-      Array.from(
-        new Set((agents ?? []).map((a) => a?.model).filter(Boolean)),
-      ),
-    [agents],
-  );
+  // Suggestions for the model picker: curated defaults union'd with whatever
+  // models are already in use on other employees. We render a free-form
+  // <input> + <datalist> rather than a locked <select> so the user can paste
+  // any model id (useful for testing new snapshots) without having to create
+  // an employee first just to seed the dropdown.
+  const suggestedModels = useMemo(() => {
+    const seen = new Set();
+    const out = [];
+    const push = (m) => {
+      if (!m) return;
+      const s = String(m).trim();
+      if (!s || seen.has(s)) return;
+      seen.add(s);
+      out.push(s);
+    };
+    // Curated defaults. The prefixed entries match what the chat agent
+    // expects via its router; bare OpenAI ids are useful for the backend's
+    // direct-OpenAI system-prompt generation.
+    [
+      "openai/gpt-5.4",
+      "openai/gpt-4o",
+      "openai/gpt-4o-mini",
+      "gpt-5.4-nano-2026-03-17",
+      "google/gemini-2.5-flash",
+    ].forEach(push);
+    (agents ?? []).forEach((a) => push(a?.model));
+    return out;
+  }, [agents]);
 
   const handlePluginToggle = (plugin) => {
     const alreadySelected = selectedPluginIds.includes(plugin.id);
@@ -240,27 +261,26 @@ export default function StepPlugin({
                 Model
               </label>
               <select
-                value={config.model}
+                value={config.model || ""}
                 onChange={(e) =>
                   onConfigChange({ ...config, model: e.target.value })
                 }
-                disabled={availableModels.length === 0}
-                className="w-full rounded-lg border border-border/40 bg-surface px-3 py-2 text-sm text-text-primary focus:border-accent-teal/50 focus:outline-none disabled:opacity-60"
+                className="w-full rounded-lg border border-border/40 bg-surface px-3 py-2 text-sm text-text-primary focus:border-accent-teal/50 focus:outline-none"
               >
-                {availableModels.length === 0 ? (
-                  <option value="">No models available</option>
-                ) : (
-                  <>
-                    {!availableModels.includes(config.model) && config.model && (
-                      <option value={config.model}>{config.model}</option>
-                    )}
-                    {availableModels.map((m) => (
-                      <option key={m} value={m}>
-                        {m}
-                      </option>
-                    ))}
-                  </>
+                {/* Placeholder always rendered so an empty ``config.model``
+                    doesn't silently desync: the <select> would otherwise
+                    display the first real option while state stayed "". */}
+                <option value="" disabled>
+                  Select a model…
+                </option>
+                {config.model && !suggestedModels.includes(config.model) && (
+                  <option value={config.model}>{config.model}</option>
                 )}
+                {suggestedModels.map((m) => (
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
+                ))}
               </select>
             </div>
 
