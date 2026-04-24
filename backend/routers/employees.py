@@ -127,19 +127,20 @@ def _resolve_openai_model(model: str) -> str:
     """Turn a user-facing model id into something OpenAI's API will accept.
 
     - ``openai/gpt-5.4`` → ``gpt-5.4`` (strip provider prefix).
+    - ``openai/openai/gpt-4o`` → ``gpt-4o`` (strip repeated prefixes).
     - ``gpt-5.4-nano-2026-03-17`` → unchanged.
     - ``google/gemini-2.5-flash`` → ``_FALLBACK_PROMPT_MODEL`` (non-OpenAI).
-    - Empty / None → ``_FALLBACK_PROMPT_MODEL``.
+    - ``openai/`` or ``/`` or ``""`` / ``None`` → ``_FALLBACK_PROMPT_MODEL``.
     """
     raw = (model or "").strip()
     if not raw:
         return _FALLBACK_PROMPT_MODEL
-    if "/" in raw:
+    while "/" in raw:
         provider, _, bare = raw.partition("/")
         if provider.lower() != "openai":
             return _FALLBACK_PROMPT_MODEL
-        return bare or _FALLBACK_PROMPT_MODEL
-    return raw
+        raw = bare
+    return raw or _FALLBACK_PROMPT_MODEL
 
 
 async def _generate_system_prompt(description: str, model: str) -> str:
