@@ -147,7 +147,7 @@ function TreeNode({ node, depth = 0, processed = false }) {
 }
 
 export default function TaskTrajectoryDrawer({ employeeId, task, onClose }) {
-  const [view, setView] = useState("hierarchical");
+  const [view, setView] = useState("processed");
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
@@ -157,6 +157,7 @@ export default function TaskTrajectoryDrawer({ employeeId, task, onClose }) {
   useEffect(() => {
     if (!task) return undefined;
     let cancelled = false;
+    setView("processed");
     setLoading(true);
     setError(null);
     setAnnotationError(null);
@@ -245,10 +246,10 @@ export default function TaskTrajectoryDrawer({ employeeId, task, onClose }) {
           </div>
           <div className="mt-4 flex flex-wrap gap-2">
             <ViewButton
-              active={view === "linear"}
-              icon={Rows3}
-              label="Linear"
-              onClick={() => setView("linear")}
+              active={view === "processed"}
+              icon={Sparkles}
+              label={annotated ? "Processed" : "Processed (LLM)"}
+              onClick={() => setView("processed")}
             />
             <ViewButton
               active={view === "hierarchical"}
@@ -257,10 +258,10 @@ export default function TaskTrajectoryDrawer({ employeeId, task, onClose }) {
               onClick={() => setView("hierarchical")}
             />
             <ViewButton
-              active={view === "processed"}
-              icon={Sparkles}
-              label={annotated ? "Processed" : "Processed (LLM)"}
-              onClick={() => setView("processed")}
+              active={view === "linear"}
+              icon={Rows3}
+              label="Linear"
+              onClick={() => setView("linear")}
             />
             <ViewButton
               active={view === "raw"}

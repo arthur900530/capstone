@@ -25,7 +25,7 @@ import logging
 import os
 from typing import Any
 
-from config import API_KEY, AGENT_MODEL, BASE_URL
+from config import API_KEY, VERIFIER_MODEL, BASE_URL
 from trajectory import (
     STATUS_FAILURE,
     STATUS_SUCCESS,
@@ -145,7 +145,7 @@ def _sequence_status_from_children(node: SequenceNode) -> str:
 async def _call_llm(client, system_prompt: str, user_content: str) -> str:
     """Thin wrapper around chat completions with sensible defaults."""
     resp = await client.chat.completions.create(
-        model=AGENT_MODEL,
+        model=VERIFIER_MODEL,
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_content},
