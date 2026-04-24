@@ -34,13 +34,17 @@ export default function EmployeeSystemPromptTab({ employee, onUpdated }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
 
-  // Sync drafts when the parent fetches a fresh employee (e.g. after save).
+  // Sync drafts when the parent fetches a fresh employee — but only refresh
+  // the field that isn't currently being edited. Otherwise an external save
+  // (or a sibling block's save triggering a parent refresh) wipes the user's
+  // in-progress textarea content.
   useEffect(() => {
-    setDraft({
-      description: employee?.description || "",
-      task: employee?.task || "",
-    });
-  }, [employee?.id, employee?.description, employee?.task]);
+    setDraft((d) => ({
+      description:
+        editing === "description" ? d.description : employee?.description || "",
+      task: editing === "task" ? d.task : employee?.task || "",
+    }));
+  }, [employee?.id, employee?.description, employee?.task, editing]);
 
   const beginEdit = (field) => {
     setError(null);
@@ -60,12 +64,14 @@ export default function EmployeeSystemPromptTab({ employee, onUpdated }) {
   const cancelConfirm = () => setPending(null);
 
   const cancelEdit = () => {
+    // Reset only the block being cancelled so the other block's in-progress
+    // draft (if any) stays intact.
+    const field = editing;
     setEditing(null);
     setError(null);
-    setDraft({
-      description: employee?.description || "",
-      task: employee?.task || "",
-    });
+    if (field) {
+      setDraft((d) => ({ ...d, [field]: employee?.[field] || "" }));
+    }
   };
 
   const save = async (field) => {
