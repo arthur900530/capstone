@@ -37,6 +37,8 @@ from sse_starlette.sse import EventSourceResponse
 
 from skills_ingestor.mm_train import MMSkillTrainer
 
+import metrics
+
 dotenv.load_dotenv()
 
 logger = logging.getLogger(__name__)
@@ -224,6 +226,14 @@ app.include_router(employees_router)
 
 _chats: dict[str, dict] = {}
 _upload_dirs: dict[str, str] = {}
+# session_id -> employee_id; populated when a chat turn resolves an employee
+# so subsequent turns on the same session still inject the persona even if the
+# client-side payload drops ``employee_id`` (e.g. stale bundle, page reload).
+_SESSION_EMPLOYEE_IDS: dict[str, str] = {}
+
+# Strong refs for background ``task_runs`` persistence. Without this set the
+# asyncio task could be garbage-collected before it finishes writing.
+_background_metrics_tasks: set[asyncio.Task] = set()
 
 
 def _now_iso() -> str:
@@ -412,6 +422,170 @@ def _append_event(session_id: str, event_type: str, data: dict):
     msg.update(data)
     _chats[session_id]["messages"].append(msg)
     _chats[session_id]["updated_at"] = _now_iso()
+
+
+def _current_task_index(session_id: str) -> int:
+    """Return the 0-based task index for the turn currently in flight.
+
+    Equals the number of user messages already recorded in the session
+    transcript minus 1 (the most recent user message opened *this* turn).
+    Clamped at 0 for safety when the function is called on a session with
+    no user messages yet.
+
+    This matches the indexing used by :func:`_record_task_run_for_session`
+    so SSE consumers can key ratings by ``(session_id, task_index)``
+    immediately without waiting for the row to land in ``task_runs``.
+    """
+    chat = _chats.get(session_id)
+    if not chat:
+        return 0
+    user_count = sum(1 for m in chat.get("messages") or [] if m.get("type") == "user")
+    return max(0, user_count - 1)
+
+
+async def _persist_task_run(employee_id: str, run: dict) -> None:
+    """Insert a single ``task_runs`` row. Idempotent via (session_id, task_index).
+
+    Silent best-effort: metrics should never break the chat stream.
+    """
+    try:
+        from routers.employees import _db_available as db_flag
+    except Exception:
+        db_flag = False
+    if not db_flag:
+        logger.info(
+            "[metrics] persist skipped — DB not available (session=%s)",
+            run.get("session_id"),
+        )
+        return
+    try:
+        from db.engine import async_session
+        from db.models import TaskRun
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+        try:
+            emp_uuid = uuid.UUID(employee_id)
+        except ValueError:
+            logger.info(
+                "[metrics] persist skipped — bad employee_id=%r",
+                employee_id,
+            )
+            return
+
+        async with async_session() as session:
+            stmt = (
+                pg_insert(TaskRun.__table__)
+                .values(
+                    employee_id=emp_uuid,
+                    session_id=run["session_id"],
+                    task_index=run["task_index"],
+                    prompt_preview=run["prompt_preview"],
+                    started_at=run["started_at"],
+                    ended_at=run["ended_at"],
+                    duration_ms=run["duration_ms"],
+                    n_tool_calls=run["n_tool_calls"],
+                    n_trials=run["n_trials"],
+                    n_reflections=run["n_reflections"],
+                    tool_histogram=run["tool_histogram"],
+                    raw_events=run.get("raw_events"),
+                )
+                .on_conflict_do_nothing(
+                    index_elements=["session_id", "task_index"]
+                )
+            )
+            result = await session.execute(stmt)
+            await session.commit()
+            logger.info(
+                "[metrics] persisted task_run session=%s task_index=%s rows=%s",
+                run.get("session_id"),
+                run.get("task_index"),
+                result.rowcount,
+            )
+    except Exception:
+        logger.exception(
+            "Failed to persist task_run session=%s task_index=%s",
+            run.get("session_id"),
+            run.get("task_index"),
+        )
+
+
+async def _record_task_run_for_session(session_id: str) -> None:
+    """Record a task-run row for the most recent turn on ``session_id``.
+
+    Walks the in-memory chat transcript to find the final user message and
+    the events emitted after it, derives a metrics record via
+    :func:`metrics.build_task_run_from_buffer`, and persists it to the
+    ``task_runs`` table when the DB is available.
+
+    No-op for non-employee chats (there's no report card to populate).
+    """
+    try:
+        employee_id = _SESSION_EMPLOYEE_IDS.get(session_id)
+        if not employee_id:
+            logger.info(
+                "[metrics] skip session=%s — no employee mapped", session_id
+            )
+            return
+        chat = _chats.get(session_id)
+        if not chat:
+            logger.info(
+                "[metrics] skip session=%s employee=%s — chat not in _chats",
+                session_id, employee_id,
+            )
+            return
+        messages = chat.get("messages") or []
+
+        last_user_idx = next(
+            (
+                i
+                for i in range(len(messages) - 1, -1, -1)
+                if messages[i].get("type") == "user"
+            ),
+            None,
+        )
+        if last_user_idx is None:
+            logger.info(
+                "[metrics] skip session=%s employee=%s — no user message in %d msgs",
+                session_id, employee_id, len(messages),
+            )
+            return
+        user_msg = messages[last_user_idx]
+        trailing = messages[last_user_idx + 1 :]
+        if not trailing:
+            logger.info(
+                "[metrics] skip session=%s employee=%s — no trailing events after user turn",
+                session_id, employee_id,
+            )
+            return
+
+        # 0-based index of this task within the session.
+        task_index = sum(
+            1 for m in messages[:last_user_idx] if m.get("type") == "user"
+        )
+
+        end_ts = metrics._parse_ts(trailing[-1].get("timestamp")) or datetime.now(
+            timezone.utc
+        )
+        run = metrics.build_task_run_from_buffer(
+            user_msg=user_msg,
+            events=trailing,
+            end_ts=end_ts,
+        )
+        run["session_id"] = session_id
+        run["task_index"] = task_index
+
+        logger.info(
+            "[metrics] recording session=%s employee=%s task_index=%d "
+            "n_tool_calls=%d n_trials=%d duration_ms=%d",
+            session_id, employee_id, task_index,
+            run["n_tool_calls"], run["n_trials"], run["duration_ms"],
+        )
+
+        await _persist_task_run(employee_id, run)
+    except Exception:
+        logger.exception(
+            "Failed to record task_run for session=%s", session_id
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -625,10 +799,22 @@ async def _stream_task(question: str, session_id: str, max_trials: int, confiden
             _append_event(session_id, "reflection", evt)
             await asyncio.sleep(0.5)
 
-    evt = {"text": random.choice(_MOCK_ANSWERS)}
+    evt = {"text": random.choice(_MOCK_ANSWERS), "task_index": _current_task_index(session_id)}
     yield _sse("answer", evt)
     _append_event(session_id, "answer", evt)
     await asyncio.sleep(0.1)
+
+    try:
+        task = asyncio.create_task(
+            _record_task_run_for_session(session_id)
+        )
+        _background_metrics_tasks.add(task)
+        task.add_done_callback(_background_metrics_tasks.discard)
+    except Exception:
+        logger.exception(
+            "Failed to schedule task_run persist for session=%s",
+            session_id,
+        )
 
     yield _sse("done", {"message": "Complete"})
 
@@ -639,7 +825,7 @@ async def _stream_conversation(question: str, session_id: str, agent: dict):
     await asyncio.sleep(0.2)
 
     response_text = random.choice(_CHAT_RESPONSES)
-    evt = {"text": response_text}
+    evt = {"text": response_text, "task_index": _current_task_index(session_id)}
     yield _sse("chat_response", evt)
     _append_event(session_id, "chat_response", evt)
     await asyncio.sleep(0.1)
@@ -696,6 +882,54 @@ def _parse_tool_args(tc: Any) -> tuple[str, dict]:
     return args_str, args_dict
 
 
+# Path segments whose file edits/creations should never be surfaced to the
+# frontend. These are agent-internal scratch areas (conversation transcripts,
+# bash event logs, memory scratchpads, etc.) — matched case-insensitively
+# against any path segment so both "conversation/foo.md" and
+# "/workspace/conversation/foo.md" are suppressed.
+_HIDDEN_FILE_EDIT_SEGMENTS = {
+    "conversation",
+    "bash_events",
+    "memory.md",
+    "agent.md",
+    "agents.md",
+}
+
+
+def _is_hidden_file_edit_path(path: str) -> bool:
+    """Return True if the given path targets a suppressed folder or file."""
+    if not path:
+        return False
+    segments = [seg for seg in path.lower().replace("\\", "/").split("/") if seg]
+    return any(seg in _HIDDEN_FILE_EDIT_SEGMENTS for seg in segments)
+
+
+def _tool_result_mentions_hidden_path(content: str) -> bool:
+    """Detect whether a file_editor tool_result is talking about a hidden path.
+
+    The file_editor surfaces paths like ``/workspace/MEMORY.md`` or
+    ``/workspace/conversation/foo.md`` in both success messages (``File
+    created successfully at: ...``) and error messages (``Invalid `path`
+    parameter: ...``). We do a case-insensitive substring check against each
+    hidden segment so we catch all of them.
+    """
+    if not content:
+        return False
+    text = content.lower()
+    for seg in _HIDDEN_FILE_EDIT_SEGMENTS:
+        # Match as `/seg`, `seg/`, or the bare basename so we don't false-match
+        # substrings inside unrelated words.
+        if (
+            f"/{seg}" in text
+            or f"{seg}/" in text
+            or f" {seg}" in text
+            or text.startswith(seg)
+            or text.endswith(seg)
+        ):
+            return True
+    return False
+
+
 def _map_event_to_sse(event: Any, session_id: str) -> dict | None:
     """Translate an OpenHands Event into the SSE dict format the frontend expects.
 
@@ -741,6 +975,13 @@ def _map_event_to_sse(event: Any, session_id: str) -> dict | None:
                     # Strip Docker workspace prefix → relative path
                     if raw_path.startswith("/workspace/"):
                         raw_path = raw_path[len("/workspace/"):]
+
+                    # Suppress edits in agent-internal folders (e.g.
+                    # conversation transcripts, bash event logs). The agent
+                    # still performs the edit; we just don't notify the UI.
+                    if _is_hidden_file_edit_path(raw_path):
+                        return None
+
                     return _sse("file_edit", {
                         "turn": _turn_counter[session_id],
                         "command": args_dict.get("command", ""),
@@ -759,6 +1000,7 @@ def _map_event_to_sse(event: Any, session_id: str) -> dict | None:
                     "turn": _turn_counter[session_id],
                     "tool": tool_name,
                     "detail": detail or f"Calling {tool_name}",
+                    "args": args_dict,
                 })
 
             # thought is Sequence[TextContent]
@@ -785,6 +1027,16 @@ def _map_event_to_sse(event: Any, session_id: str) -> dict | None:
             # The finish tool's observation carries the agent's final message
             if obs_tool.lower() in ("finish", "finishtool") and content.strip():
                 return _sse("answer", {"text": content})
+
+            # Suppress file_editor observations that talk about agent-internal
+            # paths (MEMORY.md, conversation/, bash_events/, ...). The agent
+            # still receives the observation in its context; we just don't
+            # show the success/error text to the user.
+            if (
+                obs_tool.lower() in ("file_editor", "fileeditortool")
+                and _tool_result_mentions_hidden_path(content)
+            ):
+                return None
 
             return _sse("tool_result", {"text": content[:2000]})
 
@@ -1319,6 +1571,10 @@ def _build_terminal_file_edits(session_id: str, host_dir: str) -> list[dict]:
     for rel in paths:
         if _should_skip_auto_open(rel):
             continue
+        # Skip agent-internal paths (conversation/, bash_events/, MEMORY.md, ...)
+        # so bash-driven writes to these locations don't leak to the UI.
+        if _is_hidden_file_edit_path(rel):
+            continue
         ext = os.path.splitext(rel)[1].lower()
         if ext not in _PREVIEWABLE_EXTS:
             continue
@@ -1353,6 +1609,7 @@ async def _stream_real_task(
     mount_dir: str | None = None,
     use_reflexion: bool = False,
     skill_ids: list[str] | None = None,
+    employee_profile: dict | None = None,
 ):
     """Run the real OpenHands agent against the shared DockerWorkspace.
 
@@ -1422,6 +1679,7 @@ async def _stream_real_task(
                 use_reflexion=use_reflexion,
                 workspace=_SHARED_WS["workspace"],
                 session_id=session_id,
+                employee_profile=employee_profile,
             )
             if final_answer and not answer_emitted["value"]:
                 answer_emitted["value"] = True
@@ -1466,6 +1724,28 @@ async def _stream_real_task(
                 yield _sse("done", {"message": "Complete"})
                 return
 
+            # Stage the employee's Project Files into /workspace/project_files
+            # so the agent's file-editor tool can read them at the stable
+            # paths advertised in its system prompt. Done under the workspace
+            # lock right after priming so mount_dir contents don't overwrite
+            # them, and so a deleted file never survives into the next turn.
+            try:
+                staged = await asyncio.to_thread(
+                    _stage_project_files_into_workspace,
+                    (employee_profile or {}).get("project_files"),
+                    host_dir,
+                )
+                if staged:
+                    logger.info(
+                        "[project_files] staged %d file(s) into /workspace/project_files (session=%s)",
+                        staged, session_id,
+                    )
+            except Exception:
+                logger.exception(
+                    "[project_files] staging failed (session=%s) — continuing",
+                    session_id,
+                )
+
             _pending_bash_writes[session_id] = []
 
             loop.run_in_executor(None, _run_agent)
@@ -1477,6 +1757,13 @@ async def _stream_real_task(
                         break
                     event_type = item["event"]
                     data = json.loads(item["data"])
+                    # Tag terminal events with the task_index the turn belongs
+                    # to, matching what _record_task_run_for_session writes to
+                    # the DB. Lets the frontend key the rating widget on
+                    # (session_id, task_index) without a separate lookup.
+                    if event_type in ("answer", "chat_response", "error"):
+                        data.setdefault("task_index", _current_task_index(session_id))
+                        item = _sse(event_type, data)
                     _append_event(session_id, event_type, data)
 
                     yield item
@@ -1507,12 +1794,29 @@ async def _stream_real_task(
                     logger.exception("Post-turn sync-back failed")
 
         if not got_answer and last_tool_text:
-            evt = {"text": last_tool_text}
+            evt = {"text": last_tool_text, "task_index": _current_task_index(session_id)}
             yield _sse("answer", evt)
             _append_event(session_id, "answer", evt)
 
         yield _sse("done", {"message": "Complete"})
     finally:
+        # Persist task_run metrics in the outer finally so it survives the
+        # very common case where the SSE client disconnects right after the
+        # final "answer" and raises CancelledError mid-stream. We launch as
+        # a background task so cancellation of the request doesn't abort the
+        # DB write (asyncio.shield alone would still drop it if the event
+        # loop is tearing down this coroutine's frame).
+        try:
+            task = asyncio.create_task(
+                _record_task_run_for_session(session_id)
+            )
+            _background_metrics_tasks.add(task)
+            task.add_done_callback(_background_metrics_tasks.discard)
+        except Exception:
+            logger.exception(
+                "Failed to schedule task_run persist for session=%s",
+                session_id,
+            )
         _turn_counter.pop(session_id, None)
         _pending_bash_writes.pop(session_id, None)
 
@@ -1527,6 +1831,16 @@ class FileMetadata(BaseModel):
     type: str | None = None
 
 
+class EmployeeProfile(BaseModel):
+    """The subset of an employee's configuration that belongs in the agent's
+    context window: who they are, what their job is, and the standing
+    instruction that frames every turn of this chat."""
+
+    name: str | None = None
+    position: str | None = None
+    task: str | None = None
+
+
 class ChatRequest(BaseModel):
     question: str
     session_id: str | None = None
@@ -1537,6 +1851,16 @@ class ChatRequest(BaseModel):
     files: list[FileMetadata] | None = None
     mount_dir: str | None = None
     skill_ids: list[str] | None = None
+    # Optional persona the frontend forwards from the employee record so the
+    # agent's system prompt can be primed with the employee's name, position,
+    # and standing task instruction for this chat.
+    employee: EmployeeProfile | None = None
+    # Employee UUID — when supplied, the server looks up the employee in the
+    # DB (or in-memory store) and uses that as the source of truth for the
+    # persona. This avoids relying on the browser to ship a non-stale copy
+    # of the profile on every turn; ``employee`` above is retained as a
+    # client-side fallback for environments without DB access.
+    employee_id: str | None = None
 
 
 @app.post("/api/upload")
@@ -1566,6 +1890,173 @@ async def upload_files(
     return {"session_id": sid, "upload_dir": staging, "files": saved}
 
 
+def _sanitise_project_file_manifest(raw) -> list[dict]:
+    """Normalise the ``Employee.files`` JSONB column into the persona-block
+    manifest shape. Only the fields the agent needs (name, size, mime,
+    storage_uri) survive; everything else is dropped so we don't leak
+    internal metadata (uploaded_at, id) into the system prompt."""
+    if not isinstance(raw, list):
+        return []
+    out: list[dict] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        if not name:
+            continue
+        out.append({
+            "name": name,
+            "size": int(item.get("size") or 0),
+            "mime": str(item.get("mime") or "application/octet-stream"),
+            "storage_uri": str(item.get("storage_uri") or ""),
+        })
+    return out
+
+
+def _stage_project_files_into_workspace(
+    project_files: list[dict] | None,
+    host_dir: str | None,
+) -> int:
+    """Copy the employee's project files into ``<host_dir>/project_files``.
+
+    Called once per turn after the shared workspace has been primed with
+    the user's mount_dir contents. The directory is recreated from scratch
+    each turn so deletions on the Employee page propagate and stale files
+    don't linger across chats. Returns the count of successfully staged
+    files (for logging only).
+    """
+    if not project_files or not host_dir or not os.path.isdir(host_dir):
+        return 0
+
+    target = os.path.join(host_dir, "project_files")
+    # Wipe and recreate so a deleted file never survives into the next turn.
+    shutil.rmtree(target, ignore_errors=True)
+    os.makedirs(target, exist_ok=True)
+
+    ok = 0
+    for meta in project_files:
+        src = (meta or {}).get("storage_uri") or ""
+        name = (meta or {}).get("name") or ""
+        if not src or not name or not os.path.isfile(src):
+            logger.warning(
+                "[project_files] skip missing source for name=%r src=%r",
+                name, src,
+            )
+            continue
+        try:
+            shutil.copy2(src, os.path.join(target, os.path.basename(name)))
+            ok += 1
+        except Exception:
+            logger.exception(
+                "[project_files] failed to stage %s → %s", src, target
+            )
+    return ok
+
+
+async def _fetch_employee_profile_by_id(employee_id: str) -> dict | None:
+    """Look up an employee row by id and return a persona dict, or ``None``.
+
+    Tries the Postgres-backed ``employees`` table first (when the DB is up),
+    then the in-memory fallback used by ``routers/employees.py`` when the DB
+    isn't available.
+    """
+    try:
+        from routers.employees import _db_available as db_flag
+    except Exception:
+        db_flag = False
+
+    if db_flag:
+        try:
+            from db.engine import async_session
+            from db.models import Employee
+            from sqlalchemy import select
+
+            try:
+                emp_uuid = uuid.UUID(employee_id)
+            except ValueError:
+                logger.warning("[persona] Malformed employee_id=%r — ignoring", employee_id)
+                return None
+
+            async with async_session() as session:
+                row = (
+                    await session.execute(select(Employee).where(Employee.id == emp_uuid))
+                ).scalar_one_or_none()
+                if row is None:
+                    logger.warning(
+                        "[persona] employee_id=%s not found in DB", employee_id
+                    )
+                    return None
+                return {
+                    "name": row.name or "",
+                    "position": getattr(row, "position", "") or "",
+                    "task": row.task or "",
+                    # Metadata-only project-file manifest. The agent sees this
+                    # in its system prompt via _format_employee_persona and
+                    # can read each file's bytes from /workspace/project_files
+                    # where _stream_real_task stages them before each turn.
+                    "project_files": _sanitise_project_file_manifest(row.files),
+                }
+        except Exception:
+            logger.exception("[persona] DB lookup for employee_id=%s failed", employee_id)
+            return None
+
+    # In-memory fallback — mirrors the fallback branch in
+    # routers/employees.py so chat still gets a persona in DB-less mode.
+    try:
+        from routers.employees import _memory_store
+
+        emp = next((e for e in _memory_store if e.get("id") == employee_id), None)
+        if emp is None:
+            logger.warning(
+                "[persona] employee_id=%s not found in memory store", employee_id
+            )
+            return None
+        return {
+            "name": emp.get("name") or "",
+            "position": emp.get("position") or "",
+            "task": emp.get("task") or "",
+            "project_files": _sanitise_project_file_manifest(emp.get("files")),
+        }
+    except Exception:
+        logger.exception("[persona] memory-store lookup failed")
+        return None
+
+
+async def _lookup_employee_profile(
+    employee_id: str | None, session_id: str | None = None
+) -> tuple[str | None, dict | None, str]:
+    """Resolve the employee persona for a chat turn.
+
+    Returns ``(resolved_id, profile, source)`` where ``source`` is a short
+    tag describing where the profile came from — useful for debugging stale
+    frontends that forget to send ``employee_id``.
+
+    Resolution order:
+      1. Explicit ``employee_id`` on the request (``source="explicit_id"``).
+      2. Session-cached id from a prior turn on the same ``session_id``
+         (``source="session_cache"``). This keeps the persona stable even
+         when the client drops the id between turns.
+      3. ``(None, None, "none")`` when nothing matches; the caller falls
+         back to any client-supplied ``employee`` payload.
+    """
+    if employee_id:
+        profile = await _fetch_employee_profile_by_id(employee_id)
+        if profile is not None:
+            return employee_id, profile, "explicit_id"
+        # Fall through to the session cache — an explicit id that doesn't
+        # resolve (e.g. DB briefly down) shouldn't also wipe a persona we
+        # already locked in for this session.
+
+    if session_id:
+        cached_id = _SESSION_EMPLOYEE_IDS.get(session_id)
+        if cached_id:
+            profile = await _fetch_employee_profile_by_id(cached_id)
+            if profile is not None:
+                return cached_id, profile, "session_cache"
+
+    return None, None, "none"
+
+
 @app.post("/api/chat")
 async def chat(req: ChatRequest):
     session_id = req.session_id or str(uuid.uuid4())
@@ -1578,6 +2069,41 @@ async def chat(req: ChatRequest):
     if skill_ids:
         _validate_skills_for_runtime(skill_ids)
 
+    # Prefer the server-side lookup (the DB row is the source of truth, and
+    # it survives stale frontend bundles). Fall back to whatever persona the
+    # client embedded in the request so the chat keeps working if the DB is
+    # down or the id is missing.
+    #
+    # ``_lookup_employee_profile`` returns ``(resolved_id, profile, source)``;
+    # unpack it here so we (a) get the dict we actually want for persona
+    # injection and (b) can cache session→employee for later turns. Passing
+    # ``session_id`` enables the session-based recovery path used when the
+    # client bundle is stale and forgot to include ``employee_id``.
+    resolved_id, server_profile, lookup_source = await _lookup_employee_profile(
+        req.employee_id, session_id=session_id
+    )
+    client_profile = (
+        req.employee.model_dump(exclude_none=True) if req.employee else None
+    ) or None
+    employee_profile = server_profile or client_profile or None
+
+    # Remember the session→employee mapping in-process so subsequent turns on
+    # the same uvicorn keep resolving the persona even if the frontend drops
+    # ``employee_id`` later.
+    if resolved_id:
+        _SESSION_EMPLOYEE_IDS[session_id] = resolved_id
+
+    logger.info(
+        "[chat] persona_resolution employee_id=%s resolved_id=%s source=%s "
+        "server_profile=%s client_profile_keys=%s final_profile_keys=%s",
+        req.employee_id,
+        resolved_id,
+        lookup_source,
+        "found" if server_profile else "miss",
+        sorted((client_profile or {}).keys()),
+        sorted((employee_profile or {}).keys()),
+    )
+
     if REAL_AGENT_ENABLED:
         gen = _stream_real_task(
             req.question,
@@ -1586,6 +2112,7 @@ async def chat(req: ChatRequest):
             mount_dir=req.mount_dir,
             use_reflexion=req.use_reflexion,
             skill_ids=skill_ids,
+            employee_profile=employee_profile,
         )
     else:
         gen = _stream_task(
@@ -1655,7 +2182,36 @@ async def list_chats():
 async def get_chat(chat_id: str):
     if chat_id not in _chats:
         raise HTTPException(status_code=404, detail="Chat not found")
-    return _chats[chat_id]
+
+    chat = _chats[chat_id]
+
+    # Hydrate per-turn user ratings from the task_runs table so reopening a
+    # conversation shows the stars the user already selected. The widget keys
+    # on ``task_index``; ``None`` means "not rated yet".
+    ratings: dict[int, int] = {}
+    try:
+        from routers.employees import _db_available as db_flag
+    except Exception:
+        db_flag = False
+    if db_flag:
+        try:
+            from db.engine import async_session
+            from db.models import TaskRun
+            from sqlalchemy import select
+
+            async with async_session() as session:
+                rows = (
+                    await session.execute(
+                        select(TaskRun.task_index, TaskRun.user_rating).where(
+                            TaskRun.session_id == chat_id
+                        )
+                    )
+                ).all()
+            ratings = {int(idx): int(r) for idx, r in rows if r is not None}
+        except Exception:
+            logger.exception("Failed to load ratings for chat=%s", chat_id)
+
+    return {**chat, "ratings": ratings}
 
 
 @app.patch("/api/chats/{chat_id}")

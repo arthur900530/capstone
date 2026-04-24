@@ -1,6 +1,16 @@
 import { useState, useEffect, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { ArrowLeft, MessageSquare, Terminal, BarChart3, Wrench, Trash2, Loader2 } from "lucide-react";
+import {
+  ArrowLeft,
+  MessageSquare,
+  MessageSquarePlus,
+  Terminal,
+  BarChart3,
+  Wrench,
+  Files,
+  Trash2,
+  Loader2,
+} from "lucide-react";
 import ConfirmDialog from "../components/skills/ConfirmDialog";
 import * as Icons from "lucide-react";
 import EmployeeChat from "../components/employee/EmployeeChat";
@@ -13,6 +23,7 @@ const IS_DEMO = import.meta.env.VITE_DEMO === "true";
 const LIVE_BROWSER_ENABLED = import.meta.env.VITE_LIVE_BROWSER !== "false";
 import EmployeeReportCard from "../components/employee/EmployeeReportCard";
 import EmployeeSkillsTab from "../components/employee/EmployeeSkillsTab";
+import EmployeeProjectFilesTab from "../components/employee/EmployeeProjectFilesTab";
 import PLUGINS from "../data/plugins";
 import { getEmployeeById, deleteEmployee } from "../services/employeeStore";
 import { useApp } from "../context/AppContext";
@@ -20,20 +31,30 @@ import { useApp } from "../context/AppContext";
 const TABS = [
   { id: "chat", label: "Chat", icon: MessageSquare },
   { id: "skills", label: "Skills", icon: Wrench },
-  { id: "console", label: "Console", icon: Terminal },
+  { id: "project_files", label: "Project Files", icon: Files },
+  // { id: "console", label: "Console", icon: Terminal },
   { id: "report", label: "Report Card", icon: BarChart3 },
 ];
 
 export default function EmployeePage() {
   const { id } = useParams();
   const navigate = useNavigate();
-  const { refreshEmployees, browserLive, sessionId } = useApp();
+  const {
+    refreshEmployees,
+    browserLive,
+    sessionId,
+    chats,
+    employees,
+    handleSelectChat,
+    handleNewChat,
+  } = useApp();
   const [activeTab, setActiveTab] = useState("chat");
   const [employee, setEmployee] = useState(null);
   const [loading, setLoading] = useState(true);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const desktopEventRef = useRef(null);
+  const restoredForRef = useRef(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -43,6 +64,34 @@ export default function EmployeePage() {
       .catch(() => { if (!cancelled) { setEmployee(null); setLoading(false); } });
     return () => { cancelled = true; };
   }, [id]);
+
+  // Auto-restore chat state when the user lands on a new employee page.
+  // Runs exactly once per employee id to avoid nuking an in-flight chat
+  // when `chats`/`employees` refresh mid-stream:
+  //  * If the current session already belongs to this employee → keep it.
+  //  * Otherwise load the most-recent chat this employee owns.
+  //  * If the employee has no prior chats, reset to a fresh session so the
+  //    next submit links the new conversation to this employee.
+  useEffect(() => {
+    if (!employee) return;
+    if (restoredForRef.current === employee.id) return;
+    restoredForRef.current = employee.id;
+
+    // Prefer the live employees list from context for freshness; fall back
+    // to the locally fetched record.
+    const latest = employees.find((e) => e.id === employee.id) || employee;
+    const ownedIds = new Set(latest.chatSessionIds || []);
+
+    if (sessionId && ownedIds.has(sessionId)) return;
+
+    const mostRecent = chats.find((c) => ownedIds.has(c.id));
+    if (mostRecent) {
+      handleSelectChat(mostRecent.id);
+    } else {
+      handleNewChat();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [employee?.id]);
 
   if (loading) {
     return (
@@ -99,17 +148,28 @@ export default function EmployeePage() {
                 </h1>
               </div>
               <p className="text-xs text-text-muted">
-                {plugins.map((p) => p.name).join(", ") || "Custom Role"}
+                {plugins.map((p) => p.name).join(", ") ||
+                  employee.position?.trim() ||
+                  "Custom Role"}
               </p>
             </div>
           </div>
 
-          <button
-            onClick={() => setShowDeleteConfirm(true)}
-            className="rounded-lg p-2 text-text-muted transition-colors hover:bg-surface hover:text-red-400"
-          >
-            <Trash2 size={16} />
-          </button>
+          <div className="flex items-center gap-1">
+            <button
+              onClick={handleNewChat}
+              title="Start a new chat with this employee"
+              className="rounded-lg p-2 text-text-muted transition-colors hover:bg-surface hover:text-accent-teal"
+            >
+              <MessageSquarePlus size={16} />
+            </button>
+            <button
+              onClick={() => setShowDeleteConfirm(true)}
+              className="rounded-lg p-2 text-text-muted transition-colors hover:bg-surface hover:text-red-400"
+            >
+              <Trash2 size={16} />
+            </button>
+          </div>
         </div>
       </div>
 
@@ -139,7 +199,7 @@ export default function EmployeePage() {
               showBrowserPanel ? "border-r border-border/20 lg:max-w-[50%]" : ""
             }`}
           >
-            <ChatView showWelcome={false} embedded />
+            <ChatView embedded />
           </div>
           {showBrowserPanel && (
             <div className="hidden flex-1 flex-col lg:flex">
@@ -164,6 +224,9 @@ export default function EmployeePage() {
           employee={employee}
           onEmployeeUpdated={(emp) => setEmployee(emp)}
         />
+      )}
+      {activeTab === "project_files" && (
+        <EmployeeProjectFilesTab key={id} employee={employee} />
       )}
       {activeTab === "console" && <EmployeeConsole key={id} employee={employee} />}
       {activeTab === "report" && <EmployeeReportCard key={id} employee={employee} />}

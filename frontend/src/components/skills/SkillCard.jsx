@@ -53,7 +53,7 @@ export default function SkillCard({ skill, isSelected, onClick, viewMode = "grid
   return (
     <button
       onClick={onClick}
-      className={`flex h-full min-w-0 flex-col overflow-hidden rounded-xl border p-4 text-left transition-all ${
+      className={`flex h-[220px] w-full min-w-0 flex-col overflow-hidden rounded-xl border p-4 text-left transition-all ${
         isSelected
           ? "border-accent-teal/40 bg-surface"
           : "border-border/40 bg-surface hover:border-accent-teal/30 hover:bg-surface-hover"
@@ -65,7 +65,9 @@ export default function SkillCard({ skill, isSelected, onClick, viewMode = "grid
             <Wrench size={16} />
           </div>
           <div className="min-w-0">
-            <p className="truncate text-sm font-medium text-text-primary">{skill.name}</p>
+            <p className="line-clamp-2 break-words text-sm font-medium leading-5 text-text-primary">
+              {skill.name}
+            </p>
             <p className="mt-0.5 truncate text-[11px] text-text-muted">{skill.id}</p>
           </div>
         </div>
@@ -79,11 +81,11 @@ export default function SkillCard({ skill, isSelected, onClick, viewMode = "grid
         )}
       </div>
 
-      <p className="mt-2.5 line-clamp-2 text-xs leading-relaxed text-text-secondary">
+      <p className="mt-2.5 min-h-[2.5rem] line-clamp-2 text-xs leading-relaxed text-text-secondary">
         {skill.description || "No description"}
       </p>
 
-      <div className="mt-3 flex flex-wrap items-center gap-1.5">
+      <div className="mt-3 flex min-h-[3rem] flex-wrap content-start items-start gap-1.5 overflow-hidden">
         <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
           typeBadge === "builtin"
             ? "bg-blue-500/10 text-blue-400"
@@ -98,7 +100,7 @@ export default function SkillCard({ skill, isSelected, onClick, viewMode = "grid
         ))}
       </div>
 
-      <div className="mt-3 flex items-center gap-3 text-[10px] text-text-muted">
+      <div className="mt-auto flex items-center gap-3 pt-3 text-[10px] text-text-muted">
         {files.length > 0 && (
           <span className="flex items-center gap-1">
             <Paperclip size={10} />

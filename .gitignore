@@ -52,5 +52,8 @@ frontend/.env.*.local
 # Logs
 *.log
 
+# User-uploaded project files (employee "Project Files" tab + chat uploads)
+backend/uploads/
+
 # Internal docs (not tracked)
 docs/

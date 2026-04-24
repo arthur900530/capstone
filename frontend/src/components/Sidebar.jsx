@@ -12,6 +12,7 @@ import {
   Puzzle,
   FlaskConical,
   MessageSquare,
+  Plus,
 } from "lucide-react";
 import PLUGINS from "../data/plugins";
 
@@ -180,8 +181,8 @@ export default function Sidebar({
                     isActive={emp.id === activeEmployeeId}
                     onNavigate={nav}
                   />
-                  {/* Show chats under active employee */}
-                  {emp.id === activeEmployeeId && (emp.chatSessionIds?.length ?? 0) > 0 && (
+                  {/* Show chats + new-chat action under the active employee */}
+                  {emp.id === activeEmployeeId && (
                     <ul className="ml-6 mt-0.5 space-y-0.5">
                       {chats
                         .filter((c) => employeeChatIds.has(c.id))
@@ -196,6 +197,15 @@ export default function Sidebar({
                             onRename={onRenameChat}
                           />
                         ))}
+                      <li>
+                        <button
+                          onClick={() => { onNewChat?.(); onClose(); }}
+                          className="flex w-full items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs text-text-muted transition-colors hover:bg-surface hover:text-text-primary"
+                        >
+                          <Plus size={12} />
+                          New chat
+                        </button>
+                      </li>
                     </ul>
                   )}
                 </li>
@@ -204,7 +214,7 @@ export default function Sidebar({
           )}
 
           {/* Standalone chat link */}
-          <div className="mt-4">
+          {/* <div className="mt-4">
             <button
               onClick={() => { onNewChat?.(); nav("/chat"); }}
               className={`flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-sm transition-colors ${
@@ -216,10 +226,10 @@ export default function Sidebar({
               <MessageSquare size={15} />
               Quick Chat
             </button>
-          </div>
+          </div> */}
 
           {/* Recent chats (not assigned to employees) */}
-          {chats.length > 0 && !activeEmployeeId && (
+          {/* {chats.length > 0 && !activeEmployeeId && (
             <div className="mt-3 flex-1 overflow-y-auto">
               <p className="mb-1.5 px-3 text-[11px] font-semibold uppercase tracking-wider text-text-muted">
                 Recent Chats
@@ -238,7 +248,7 @@ export default function Sidebar({
                 ))}
               </ul>
             </div>
-          )}
+          )} */}
 
           {/* ADVANCED collapsible section */}
           <div className="mt-auto border-t border-border/20 pt-3">

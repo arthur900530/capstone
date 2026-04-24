@@ -130,7 +130,7 @@ export default function BrowserLiveView({ sessionId }) {
             Live Browser
           </div>
           <div className="flex items-center gap-2">
-            <div className="text-[11px] text-slate-400">noVNC</div>
+            {/* <div className="text-[11px] text-slate-400">noVNC</div> */}
             {setBrowserLive && (
               <button
                 type="button"
@@ -146,9 +146,9 @@ export default function BrowserLiveView({ sessionId }) {
             )}
           </div>
         </div>
-        <div className="truncate rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs text-slate-300">
+        {/* <div className="truncate rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs text-slate-300">
           {iframeReady ? "Streaming agent Chromium" : status}
-        </div>
+        </div> */}
       </div>
 
       <div

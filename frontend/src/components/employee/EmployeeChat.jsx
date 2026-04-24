@@ -55,6 +55,11 @@ export default function EmployeeChat({ employee, onDesktopEvent }) {
   const [visibleAgent, setVisibleAgent] = useState(null);
   const [chatFiles, setChatFiles] = useState([]);
   const [stagedFiles, setStagedFiles] = useState([]);
+  // task_index -> 1..5 rating the user previously set for this session.
+  // Hydrated from the server on chat load; live answers rely on
+  // message.taskIndex (set from the SSE payload) and MessageRating's own
+  // optimistic state, so we don't need to mirror ratings as they change.
+  const [ratings, setRatings] = useState({});
 
   const endRef = useRef(null);
   const scrollRef = useRef(null);
@@ -72,8 +77,11 @@ export default function EmployeeChat({ employee, onDesktopEvent }) {
           setSessionId(lastSid);
           setMessages(chat.messages.map(restoreMessage));
           setChatFiles(chat.files ?? []);
+          setRatings(chat.ratings || {});
         })
         .catch(() => {});
+    } else {
+      setRatings({});
     }
   }, [employee.id]);
 
@@ -135,10 +143,21 @@ export default function EmployeeChat({ employee, onDesktopEvent }) {
           msg = { role: "assistant", type: "reflection", content: data.text };
           break;
         case "answer":
-          msg = { role: "assistant", type: "answer", content: data.text, question };
+          msg = {
+            role: "assistant",
+            type: "answer",
+            content: data.text,
+            question,
+            taskIndex: typeof data.task_index === "number" ? data.task_index : undefined,
+          };
           break;
         case "chat_response":
-          msg = { role: "assistant", type: "chat_response", content: data.text };
+          msg = {
+            role: "assistant",
+            type: "chat_response",
+            content: data.text,
+            taskIndex: typeof data.task_index === "number" ? data.task_index : undefined,
+          };
           break;
         case "error":
           msg = { role: "assistant", type: "error", content: data.message };
@@ -172,6 +191,12 @@ export default function EmployeeChat({ employee, onDesktopEvent }) {
             confidenceThreshold: employee.confidenceThreshold,
             useReflexion: employee.useReflexion,
             skillIds: employee.skillIds,
+            employeeId: employee.id,
+            employee: {
+              name: employee.name,
+              position: employee.position,
+              task: employee.task,
+            },
           },
           handleEvent,
         );
@@ -203,20 +228,55 @@ export default function EmployeeChat({ employee, onDesktopEvent }) {
             />
             <div className="px-4 pt-4 pb-4">
               <div className="mx-auto max-w-2xl space-y-3">
-                {messages.map((msg, i) =>
-                  msg.type === "agent_marker" ? (
-                    <div key={i} className="flex items-center gap-3 py-1">
-                      <div className="h-px flex-1 bg-border/40" />
-                      <span className="flex items-center gap-1.5 text-[10px] font-medium text-text-muted">
-                        <Bot size={11} />
-                        {msg.agent.name}
-                      </span>
-                      <div className="h-px flex-1 bg-border/40" />
-                    </div>
-                  ) : (
-                    <ChatMessage key={i} message={msg} animate={msg.animate !== false} />
-                  ),
-                )}
+                {(() => {
+                  // Count user messages as we walk so each agent answer can
+                  // be keyed to the task it closes, even if the server
+                  // didn't embed ``task_index`` in its event payload.
+                  let userTurns = -1;
+                  return messages.map((msg, i) => {
+                    if (msg.type === "user") userTurns += 1;
+                    if (msg.type === "agent_marker") {
+                      return (
+                        <div key={i} className="flex items-center gap-3 py-1">
+                          <div className="h-px flex-1 bg-border/40" />
+                          <span className="flex items-center gap-1.5 text-[10px] font-medium text-text-muted">
+                            <Bot size={11} />
+                            {msg.agent.name}
+                          </span>
+                          <div className="h-px flex-1 bg-border/40" />
+                        </div>
+                      );
+                    }
+                    const resolvedTaskIndex =
+                      typeof msg.taskIndex === "number"
+                        ? msg.taskIndex
+                        : userTurns >= 0
+                          ? userTurns
+                          : undefined;
+                    const enriched =
+                      msg.type === "answer" || msg.type === "chat_response"
+                        ? { ...msg, taskIndex: resolvedTaskIndex }
+                        : msg;
+                    const ratingForMsg =
+                      Number.isInteger(resolvedTaskIndex)
+                        ? ratings[resolvedTaskIndex] ?? null
+                        : null;
+                    return (
+                      <ChatMessage
+                        key={i}
+                        message={enriched}
+                        animate={msg.animate !== false}
+                        employeeId={employee.id}
+                        sessionId={sessionId}
+                        rating={ratingForMsg}
+                        onRated={(ti, r) => {
+                          if (!Number.isInteger(ti)) return;
+                          setRatings((prev) => ({ ...(prev || {}), [ti]: r }));
+                        }}
+                      />
+                    );
+                  });
+                })()}
                 <div ref={endRef} />
               </div>
             </div>

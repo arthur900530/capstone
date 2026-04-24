@@ -17,7 +17,12 @@ import EvaluationLabPage from "./pages/EvaluationLabPage";
 import CreationWizard from "./pages/CreationWizard";
 import EmployeePage from "./pages/EmployeePage";
 import { AppProvider } from "./context/AppContext";
-import { getEmployees } from "./services/employeeStore";
+import {
+  getEmployees,
+  addChatSession,
+  markActive,
+  updateEmployee,
+} from "./services/employeeStore";
 import { restoreMessage } from "./services/messageUtils";
 import {
   streamChat,
@@ -32,6 +37,13 @@ import {
 } from "./services/api";
 
 const LIVE_BROWSER_ENABLED = import.meta.env.VITE_LIVE_BROWSER !== "false";
+
+function generateOptimisticChatName(question) {
+  const q = question.trim().replace(/[?!.]+$/, "");
+  const words = q.split(/\s+/).filter(Boolean);
+  if (words.length <= 6) return q.slice(0, 50);
+  return words.slice(0, 6).join(" ").slice(0, 50);
+}
 
 /* ── App (layout shell) ───────────────────────────────────────────────── */
 export default function App() {
@@ -53,6 +65,10 @@ export default function App() {
   const [selectedSkillIds, setSelectedSkillIds] = useState([]);
   const [skipSkillConfirm, setSkipSkillConfirm] = useState(false);
   const [employees, setEmployees] = useState([]);
+  // task_index -> 1..5 user rating for the current session, hydrated from
+  // the server on chat load. Live ratings are managed optimistically by the
+  // MessageRating widget; this map feeds the widget's ``initialRating``.
+  const [ratings, setRatings] = useState({});
   const [config, setConfig] = useState({
     model: "",
     maxTrials: 3,
@@ -83,6 +99,25 @@ export default function App() {
   // between ChatView's mount effect and the state update from setOpenFiles.
   const onChatCapableRoute =
     pathname === "/chat" || pathname.startsWith("/employee/");
+
+  // When we're on an employee page, the shared ChatView is the UI — but the
+  // /api/chat payload must still carry persona data so the backend can
+  // inject the employee's identity/role/task into the agent's system prompt.
+  // Derive the current employee from the URL + employees list rather than
+  // wiring new context plumbing; the id is the source of truth and the
+  // server does its own DB lookup from it.
+  const employeeIdMatch = pathname.match(/^\/employee\/([^/]+)/);
+  const currentEmployeeId = employeeIdMatch?.[1] || null;
+  const currentEmployee = currentEmployeeId
+    ? employees.find((e) => e.id === currentEmployeeId) || null
+    : null;
+
+  // The employee (if any) the user is currently talking to. We link each
+  // new chat session to this employee so the sidebar can group the
+  // conversation history under the owning employee.
+  // const activeEmployeeId = pathname.startsWith("/employee/")
+  //   ? pathname.split("/")[2] || null
+  //   : null;
 
   const messagesEndRef = useRef(null);
   const scrollContainerRef = useRef(null);
@@ -179,8 +214,49 @@ export default function App() {
   const handleSubmit = async (question, submittedFiles = []) => {
     if (!question.trim() || isStreaming) return;
 
+    const isNewSession = !sessionId;
     const sid = sessionId || crypto.randomUUID();
+    const now = new Date().toISOString();
     if (!sessionId) setSessionId(sid);
+
+    if (isNewSession) {
+      const optimisticChat = {
+        id: sid,
+        name: generateOptimisticChatName(question),
+        agent_id: null,
+        created_at: now,
+        updated_at: now,
+        message_count: 1,
+      };
+      setChats((prev) => [optimisticChat, ...prev.filter((c) => c.id !== sid)]);
+
+      if (currentEmployeeId) {
+        setEmployees((prev) =>
+          prev.map((emp) =>
+            emp.id !== currentEmployeeId
+              ? emp
+              : {
+                  ...emp,
+                  chatSessionIds: Array.from(
+                    new Set([...(emp.chatSessionIds || []), sid]),
+                  ),
+                },
+          ),
+        );
+      }
+    } else {
+      setChats((prev) =>
+        prev.map((chat) =>
+          chat.id === sid
+            ? {
+                ...chat,
+                updated_at: now,
+                message_count: (chat.message_count || 0) + 1,
+              }
+            : chat,
+        ),
+      );
+    }
 
     if (submittedFiles.length > 0) {
       const fileMeta = submittedFiles.map((f) => ({
@@ -220,6 +296,14 @@ export default function App() {
               : undefined,
           skillIds: selectedSkillIds,
           mountDir: mountDir || undefined,
+          employeeId: currentEmployeeId || undefined,
+          employee: currentEmployee
+            ? {
+                name: currentEmployee.name,
+                position: currentEmployee.position,
+                task: currentEmployee.task,
+              }
+            : undefined,
         },
         (eventType, data) => {
           let msg = null;
@@ -231,6 +315,21 @@ export default function App() {
                 ...prev,
                 sessionId: data.session_id,
               }));
+              setChats((prev) =>
+                prev.map((chat) =>
+                  chat.id === data.session_id
+                    ? { ...chat, updated_at: new Date().toISOString() }
+                    : chat,
+                ),
+              );
+              if (currentEmployeeId) {
+                Promise.all([
+                  addChatSession(currentEmployeeId, data.session_id),
+                  markActive(currentEmployeeId),
+                ])
+                  .then(() => refreshEmployees())
+                  .catch(() => {});
+              }
               return;
             case "agent":
               setMessages((prev) => [
@@ -311,6 +410,10 @@ export default function App() {
                 type: "answer",
                 content: data.text,
                 question,
+                taskIndex:
+                  typeof data.task_index === "number"
+                    ? data.task_index
+                    : undefined,
               };
               break;
             case "chat_response":
@@ -318,6 +421,10 @@ export default function App() {
                 role: "assistant",
                 type: "chat_response",
                 content: data.text,
+                taskIndex:
+                  typeof data.task_index === "number"
+                    ? data.task_index
+                    : undefined,
               };
               break;
             case "error":
@@ -418,6 +525,7 @@ export default function App() {
     setStagedFiles([]);
     setSkipSkillConfirm(false);
     setMountDir("");
+    setRatings({});
     visibleAgentRef.current = null;
     sentinelRefs.current.clear();
     // Reset workspace state
@@ -437,9 +545,18 @@ export default function App() {
     });
   };
 
+  const ownerEmployeeOf = useCallback(
+    (chatId) =>
+      employees.find((e) => (e.chatSessionIds || []).includes(chatId)) || null,
+    [employees],
+  );
+
   const handleSelectChat = async (chatId) => {
+    const owner = ownerEmployeeOf(chatId);
+    const targetPath = owner ? `/employee/${owner.id}` : "/chat";
+
     if (chatId === sessionId) {
-      navigate("/chat");
+      navigate(targetPath);
       return;
     }
     try {
@@ -461,6 +578,7 @@ export default function App() {
       setMessages(restored);
       setChatFiles(chat.files ?? []);
       setStagedFiles([]);
+      setRatings(chat.ratings || {});
       const hasBrowserActivity = chat.messages.some(
         (m) => m.type === "tool_call" && String(m.tool || "").startsWith("browser_"),
       );
@@ -475,7 +593,7 @@ export default function App() {
         visibleAgentRef.current = agent.id;
         setVisibleAgent(agent);
       }
-      navigate("/chat");
+      navigate(targetPath);
     } catch {
       /* ignore */
     }
@@ -485,6 +603,16 @@ export default function App() {
     try {
       await apiDeleteChat(chatId);
       setChats((prev) => prev.filter((c) => c.id !== chatId));
+
+      // Detach this session from its owning employee so the sidebar doesn't
+      // keep a dangling id that resolves to 404 on click.
+      const owner = ownerEmployeeOf(chatId);
+      if (owner) {
+        const nextIds = (owner.chatSessionIds || []).filter((id) => id !== chatId);
+        await updateEmployee(owner.id, { chatSessionIds: nextIds });
+        refreshEmployees();
+      }
+
       if (chatId === sessionId) handleNewChat();
     } catch {
       /* ignore */
@@ -591,6 +719,7 @@ export default function App() {
     focusAgentId,
     setFocusAgentId,
     employees,
+    // activeEmployeeId,
     refreshEmployees,
     refreshSkills,
     refreshChats,
@@ -619,6 +748,10 @@ export default function App() {
     workspacePanelOpen,
     setWorkspacePanelOpen,
     treeRefreshTrigger,
+    // rating plumbing (used by ChatView -> ChatMessage -> MessageRating)
+    ratings,
+    setRatings,
+    currentEmployeeId,
   };
 
   return (

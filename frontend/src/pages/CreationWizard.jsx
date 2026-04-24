@@ -4,14 +4,14 @@ import { ArrowLeft } from "lucide-react";
 import StepDescribe from "../components/wizard/StepDescribe";
 import StepPlugin from "../components/wizard/StepPlugin";
 import StepLearnSkills from "../components/wizard/StepLearnSkills";
-import StepUpload from "../components/wizard/StepUpload";
+// import StepUpload from "../components/wizard/StepUpload";
 import StepLaunch from "../components/wizard/StepLaunch";
 import PLUGINS from "../data/plugins";
 import EMPLOYEE_TEMPLATES from "../data/employeeTemplates";
 import { createEmployee } from "../services/employeeStore";
 import { useApp } from "../context/AppContext";
 
-const STEPS = ["Describe", "Plugin", "Learn Skills", "Upload", "Launch"];
+const STEPS = ["Describe", "Plugin", "Learn Skills", "Launch"];
 
 export default function CreationWizard() {
   const navigate = useNavigate();
@@ -36,13 +36,17 @@ export default function CreationWizard() {
       : [],
   );
   const [config, setConfig] = useState({
-    model: templatePlugins[0]?.defaultModel || "openai/gpt-4o",
+    model: templatePlugins[0]?.defaultModel || "openai/gpt-5.4",
     maxTrials: 3,
     confidenceThreshold: 0.7,
     useReflexion: false,
   });
   const [files, setFiles] = useState([]);
   const [name, setName] = useState(template?.suggestedName || "");
+  // The template's display name doubles as a sensible default job title/role
+  // ("Equity Research Analyst", etc.) — the user can override it on the
+  // Launch step before creating the employee.
+  const [position, setPosition] = useState(template?.name || "");
 
   const [creating, setCreating] = useState(false);
 
@@ -52,6 +56,7 @@ export default function CreationWizard() {
     try {
       const emp = await createEmployee({
         name: name.trim(),
+        position: position.trim(),
         task,
         pluginIds: selectedPluginIds,
         skillIds,
@@ -85,7 +90,7 @@ export default function CreationWizard() {
       </div>
 
       <div className="border-b border-border/20 px-6 py-3">
-        <div className="mx-auto flex max-w-3xl items-center gap-2">
+        <div className="mx-auto flex max-w-3xl items-center justify-center gap-2">
           {STEPS.map((label, i) => (
             <div key={label} className="flex items-center gap-2">
               <div
@@ -145,24 +150,26 @@ export default function CreationWizard() {
             onNext={() => setStep(3)}
           />
         )}
-        {step === 3 && (
+        {/* {step === 3 && (
           <StepUpload
             files={files}
             onFilesChange={setFiles}
             onBack={() => setStep(2)}
             onNext={() => setStep(4)}
           />
-        )}
-        {step === 4 && (
+        )} */}
+        {step === 3 && (
           <StepLaunch
             name={name}
             onNameChange={setName}
+            position={position}
+            onPositionChange={setPosition}
             task={task}
             pluginIds={selectedPluginIds}
             skillIds={skillIds}
             config={config}
             files={files}
-            onBack={() => setStep(3)}
+            onBack={() => setStep(2)}
             onCreate={handleCreate}
           />
         )}

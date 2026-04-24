@@ -1,8 +1,17 @@
 import { useMemo, useState } from "react";
-import { Bot, BarChart3, Database, Globe, GlobeLock } from "lucide-react";
+import {
+  Brain,
+  ChevronDown,
+  ChevronRight,
+  FileCode2,
+  Loader2,
+  RefreshCw,
+  ShieldCheck,
+  Sparkles,
+  Wrench,
+} from "lucide-react";
 import ChatMessage from "./ChatMessage";
 import InputBox from "./InputBox";
-import UploadedDataPanel from "./DataContext";
 import WelcomeHeader from "./WelcomeHeader";
 import BrowserLiveView from "./BrowserLiveView";
 import { useApp } from "../context/AppContext";
@@ -10,89 +19,151 @@ import { useApp } from "../context/AppContext";
 const LIVE_BROWSER_ENABLED = import.meta.env.VITE_LIVE_BROWSER !== "false";
 const IS_DEMO = import.meta.env.VITE_DEMO === "true";
 
-function AgentBanner({
-  agent,
-  onViewEval,
-  files = [],
-  onRemoveFile,
-  showBrowserToggle = false,
-  browserVisible = false,
-  onToggleBrowser,
-}) {
-  const [showData, setShowData] = useState(false);
+// Intermediate agent events that make up the "trajectory" — collapsed per turn
+// behind a per-response toggle so the chat shows only user turns, final
+// answers, and errors by default.
+const TRAJECTORY_TYPES = new Set([
+  "status",
+  "trial_start",
+  "tool_call",
+  "tool_result",
+  "reasoning",
+  "self_eval",
+  "reflection",
+  "file_edit",
+]);
 
-  if (!agent) return null;
+const TOOL_LABELS = {
+  web_search: "Web Search",
+  edgar_search: "SEC Filing Search",
+  parse_html: "Reading Page",
+  retrieve_info: "Analyzing Documents",
+  retrieve_information: "Analyzing Documents",
+  submit_result: "Submitting Answer",
+  submit_final_result: "Submitting Answer",
+  finish: "Task Complete",
+  FinishTool: "Task Complete",
+  terminal: "Terminal",
+  file_editor: "File Editor",
+  task_tracker: "Task Tracker",
+  delegate: "Delegate",
+};
+
+// Given a trajectory message, return an icon + short title suitable for the
+// collapsed group header.
+function describeStep(msg) {
+  switch (msg?.type) {
+    case "status":
+      return { Icon: Loader2, label: msg.content || "Working" };
+    case "trial_start":
+      return {
+        Icon: RefreshCw,
+        label: `Trial ${msg.trial}/${msg.maxTrials}`,
+      };
+    case "tool_call": {
+      const name = TOOL_LABELS[msg.tool] || msg.tool || "tool";
+      return { Icon: Wrench, label: `Using ${name}` };
+    }
+    case "tool_result":
+      return { Icon: Wrench, label: "Processing tool result" };
+    case "reasoning":
+      return { Icon: Brain, label: "Reasoning" };
+    case "self_eval":
+      return { Icon: ShieldCheck, label: "Self-evaluating" };
+    case "reflection":
+      return { Icon: RefreshCw, label: "Reflecting" };
+    case "file_edit": {
+      const fname = msg.path?.split("/").pop() || "file";
+      const action =
+        msg.command === "create"
+          ? "Creating"
+          : msg.command === "view"
+            ? "Viewing"
+            : msg.command === "undo_edit"
+              ? "Reverting"
+              : "Editing";
+      return { Icon: FileCode2, label: `${action} ${fname}` };
+    }
+    default:
+      return { Icon: Sparkles, label: "Working" };
+  }
+}
+
+function TypingIndicator() {
   return (
-    <div className="sticky top-0 z-20 border-b border-border/30 bg-workspace/95 backdrop-blur-sm">
-      <div className="mx-auto flex max-w-2xl items-center justify-between px-4 py-2.5">
-        <div className="flex items-center gap-2 text-sm">
-          <Bot size={15} className="text-accent-teal" />
-          <span className="font-medium text-text-primary">{agent.name}</span>
-          <span className="text-text-muted">&middot;</span>
-          <span className="text-xs text-text-muted">
-            {agent.model?.split("/").pop()}
-          </span>
-        </div>
-        <div className="flex items-center gap-2">
-          {files.length > 0 && (
-            <button
-              onClick={() => setShowData((v) => !v)}
-              className={`flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
-                showData
-                  ? "bg-accent-teal/20 text-accent-teal"
-                  : "bg-surface-hover text-text-secondary hover:text-text-primary"
-              }`}
-            >
-              <Database size={13} />
-              Uploaded Data
-              <span className="rounded-full bg-accent-teal/15 px-1.5 py-0.5 text-[10px] font-semibold text-accent-teal">
-                {files.length}
-              </span>
-            </button>
-          )}
-          {showBrowserToggle && (
-            <button
-              onClick={onToggleBrowser}
-              className={`flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
-                browserVisible
-                  ? "bg-cyan-500/20 text-cyan-300 hover:bg-cyan-500/30"
-                  : "bg-surface-hover text-text-secondary hover:text-text-primary"
-              }`}
-              title={
-                browserVisible ? "Hide live browser" : "Show live browser"
-              }
-            >
-              {browserVisible ? <Globe size={13} /> : <GlobeLock size={13} />}
-              Live Browser
-            </button>
-          )}
-          {onViewEval && (
-            <button
-              onClick={onViewEval}
-              className="flex items-center gap-1.5 rounded-md bg-accent-teal/10 px-2.5 py-1 text-xs font-medium text-accent-teal transition-colors hover:bg-accent-teal/20"
-            >
-              <BarChart3 size={13} />
-              Evaluation
-            </button>
-          )}
-        </div>
+    <div className="flex">
+      <div className="flex items-center gap-1 rounded-2xl rounded-bl-sm bg-surface px-4 py-3">
+        <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-accent-teal/80 [animation-delay:-0.3s]" />
+        <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-accent-teal/80 [animation-delay:-0.15s]" />
+        <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-accent-teal/80" />
       </div>
-      {showData && (
-        <UploadedDataPanel files={files} onRemoveFile={onRemoveFile} />
-      )}
     </div>
   );
 }
 
-function AgentDivider({ agent, sentinelRef }) {
+function TrajectoryGroup({
+  items,
+  sessionId,
+  isActive,
+  settled,
+  onFileEditClick,
+}) {
+  const [open, setOpen] = useState(false);
+  const count = items.length;
+  const latest = items[items.length - 1]?.msg;
+  const { Icon, label } = describeStep(latest);
+
+  // Once the final response has arrived, the header collapses back to a
+  // static "Show agent steps" label. Until then, show the live step title.
+  const HeaderIcon = settled ? Sparkles : Icon;
+
   return (
-    <div ref={sentinelRef} className="flex items-center gap-3 py-1">
-      <div className="h-px flex-1 bg-border/40" />
-      <span className="flex items-center gap-1.5 text-[10px] font-medium text-text-muted">
-        <Bot size={11} />
-        {agent.name}
-      </span>
-      <div className="h-px flex-1 bg-border/40" />
+    <div className="rounded-lg border border-border/40 bg-charcoal/30">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-text-secondary transition-colors hover:text-text-primary"
+      >
+        {open ? (
+          <ChevronDown size={14} className="shrink-0" />
+        ) : (
+          <ChevronRight size={14} className="shrink-0" />
+        )}
+        <HeaderIcon
+          size={13}
+          className={`shrink-0 text-accent-teal/80 ${
+            isActive ? "animate-spin" : ""
+          }`}
+        />
+        {open ? (
+          <span className="font-medium">Hide agent steps</span>
+        ) : settled ? (
+          <span className="flex min-w-0 items-center gap-1.5">
+            <span className="font-medium text-text-primary">
+              Show agent steps
+            </span>
+            <span className="shrink-0 text-text-muted">· {count}</span>
+          </span>
+        ) : (
+          <span className="flex min-w-0 items-center gap-1.5">
+            <span className="truncate font-medium text-text-primary">
+              {label}
+            </span>
+            <span className="shrink-0 text-text-muted">· {count}</span>
+          </span>
+        )}
+      </button>
+      {open && (
+        <div className="space-y-3 border-t border-border/30 px-3 py-3">
+          {items.map(({ msg, idx }) => (
+            <ChatMessage
+              key={`${sessionId}-${idx}`}
+              message={msg}
+              animate={msg.animate !== false}
+              onFileEditClick={onFileEditClick}
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -102,9 +173,6 @@ export default function ChatView({ showWelcome = true, embedded = false }) {
     messages,
     isStreaming,
     sessionId,
-    visibleAgent,
-    chatFiles,
-    setChatFiles,
     stagedFiles,
     setStagedFiles,
     config,
@@ -120,13 +188,24 @@ export default function ChatView({ showWelcome = true, embedded = false }) {
     browserLive,
     setBrowserLive,
     handleSubmit,
-    handleViewEval,
     scrollContainerRef,
-    updateVisibleAgent,
     messagesEndRef,
-    registerSentinel,
     handleCanvasSelectFile,
+    ratings,
+    setRatings,
+    currentEmployeeId,
+    chatFiles,
+    setChatFiles,
   } = useApp();
+
+  const handleRemoveChatFile = (index) => {
+    setChatFiles?.((prev) => (prev ?? []).filter((_, i) => i !== index));
+  };
+
+  const handleRated = (taskIndex, rating) => {
+    if (!Number.isInteger(taskIndex)) return;
+    setRatings?.((prev) => ({ ...(prev || {}), [taskIndex]: rating }));
+  };
 
   const liveBrowserAvailable = LIVE_BROWSER_ENABLED && !IS_DEMO;
 
@@ -150,44 +229,108 @@ export default function ChatView({ showWelcome = true, embedded = false }) {
     [agents]
   );
 
+  // Walk the message list and collapse consecutive trajectory messages into
+  // a single collapsible group, so each response gets its own toggle. A group
+  // is "settled" once a final answer / chat_response / error has been emitted
+  // for its turn (we use that to swap the header copy).
+  //
+  // We also count user turns inline so each answer can be keyed to the task
+  // it closes even when the SSE payload didn't embed ``task_index`` (e.g.
+  // legacy chat history). This lets MessageRating persist / rehydrate.
+  const renderItems = useMemo(() => {
+    const items = [];
+    let currentGroup = null;
+    let userTurns = -1;
+    messages.forEach((msg, idx) => {
+      if (msg.type === "agent_marker") return;
+      if (TRAJECTORY_TYPES.has(msg.type)) {
+        if (!currentGroup) {
+          currentGroup = {
+            kind: "group",
+            startIdx: idx,
+            items: [],
+            settled: false,
+          };
+          items.push(currentGroup);
+        }
+        currentGroup.items.push({ msg, idx });
+      } else {
+        if (msg.type === "user" || msg.role === "user") userTurns += 1;
+        let taskIndex;
+        if (msg.type === "answer" || msg.type === "chat_response") {
+          taskIndex =
+            typeof msg.taskIndex === "number"
+              ? msg.taskIndex
+              : userTurns >= 0
+                ? userTurns
+                : undefined;
+        }
+        if (
+          currentGroup &&
+          ["answer", "chat_response", "error"].includes(msg.type)
+        ) {
+          currentGroup.settled = true;
+        }
+        currentGroup = null;
+        items.push({ kind: "single", msg, idx, taskIndex });
+      }
+    });
+    return items;
+  }, [messages]);
+
+  const handleFileEditClick = (m) => {
+    if (m.path) handleCanvasSelectFile(m.path);
+  };
+
+  // Show the typing indicator while the agent is working but hasn't started
+  // emitting the final answer yet (the answer has its own typing cursor).
+  const lastMessage = messages[messages.length - 1];
+  const showTypingIndicator =
+    isStreaming &&
+    (!lastMessage ||
+      !["answer", "chat_response", "error"].includes(lastMessage.type));
+
   const chatColumn = hasMessages ? (
     <>
-      <div
-        ref={scrollContainerRef}
-        onScroll={updateVisibleAgent}
-        className="flex-1 overflow-y-auto"
-      >
-        <AgentBanner
-          agent={visibleAgent}
-          onViewEval={() => handleViewEval(visibleAgent?.id)}
-          files={chatFiles}
-          onRemoveFile={(i) =>
-            setChatFiles((prev) => prev.filter((_, idx) => idx !== i))
-          }
-          showBrowserToggle={liveBrowserAvailable}
-          browserVisible={Boolean(browserLive?.visible)}
-          onToggleBrowser={toggleBrowserVisible}
-        />
+      <div ref={scrollContainerRef} className="flex-1 overflow-y-auto">
         <div className="px-4 pt-4 pb-4">
-          <div className="mx-auto max-w-2xl space-y-3">
-            {messages.map((msg, i) =>
-              msg.type === "agent_marker" ? (
-                <AgentDivider
-                  key={`${sessionId}-${i}`}
-                  agent={msg.agent}
-                  sentinelRef={(el) => registerSentinel(i, el, msg.agent)}
+          <div className="mx-auto max-w-5xl space-y-3">
+            {renderItems.map((item, i) =>
+              item.kind === "group" ? (
+                <TrajectoryGroup
+                  key={`${sessionId}-group-${item.startIdx}`}
+                  items={item.items}
+                  sessionId={sessionId}
+                  isActive={
+                    isStreaming &&
+                    i === renderItems.length - 1 &&
+                    !item.settled
+                  }
+                  settled={item.settled}
+                  onFileEditClick={handleFileEditClick}
                 />
               ) : (
                 <ChatMessage
-                  key={`${sessionId}-${i}`}
-                  message={msg}
-                  animate={msg.animate !== false}
-                  onFileEditClick={(m) => {
-                    if (m.path) handleCanvasSelectFile(m.path);
-                  }}
+                  key={`${sessionId}-${item.idx}`}
+                  message={
+                    Number.isInteger(item.taskIndex)
+                      ? { ...item.msg, taskIndex: item.taskIndex }
+                      : item.msg
+                  }
+                  animate={item.msg.animate !== false}
+                  onFileEditClick={handleFileEditClick}
+                  employeeId={currentEmployeeId}
+                  sessionId={sessionId}
+                  rating={
+                    Number.isInteger(item.taskIndex)
+                      ? (ratings?.[item.taskIndex] ?? null)
+                      : null
+                  }
+                  onRated={handleRated}
                 />
               ),
             )}
+            {showTypingIndicator && <TypingIndicator />}
             <div ref={messagesEndRef} />
           </div>
         </div>
@@ -208,6 +351,11 @@ export default function ChatView({ showWelcome = true, embedded = false }) {
           mountDir={mountDir}
           onMountDirChange={setMountDir}
           models={availableModels}
+          showBrowserToggle={liveBrowserAvailable}
+          browserVisible={Boolean(browserLive?.visible)}
+          onToggleBrowser={toggleBrowserVisible}
+          chatFiles={chatFiles}
+          onRemoveChatFile={handleRemoveChatFile}
         />
       </div>
     </>
@@ -231,6 +379,8 @@ export default function ChatView({ showWelcome = true, embedded = false }) {
             mountDir={mountDir}
             onMountDirChange={setMountDir}
             models={availableModels}
+            chatFiles={chatFiles}
+            onRemoveChatFile={handleRemoveChatFile}
           />
         </div>
       </div>

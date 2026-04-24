@@ -280,9 +280,25 @@ class BrowserDockerWorkspace(DockerWorkspace):
             object.__setattr__(self, "host", f"http://127.0.0.1:{self.host_port}")
         object.__setattr__(self, "api_key", None)
 
-        self._wait_for_health(timeout=self.health_check_timeout)
-        logger.info("Docker workspace is ready at %s", self.host)
-        RemoteWorkspace.model_post_init(self, context)
+        try:
+            # OpenHands SDK's _wait_for_health uses a 120s default; there is
+            # no `health_check_timeout` attribute on DockerWorkspace in v1.15+.
+            self._wait_for_health()
+            logger.info("Docker workspace is ready at %s", self.host)
+            RemoteWorkspace.model_post_init(self, context)
+        except Exception:
+            # Make sure we don't leak the container we just started when
+            # health-check / post-init raises. Otherwise the outer retry
+            # loop in server.py will keep spawning new containers while the
+            # failed ones continue running against a bind-mount that is
+            # about to be rmtree'd.
+            try:
+                self.cleanup()
+            except Exception:
+                logger.exception(
+                    "Failed to clean up container after startup error"
+                )
+            raise
 
     @property
     def novnc_host_port(self) -> int | None:
@@ -363,6 +379,154 @@ def _create_agent(llm, agent_context):
     )
 
 
+def _format_employee_persona(profile: dict | None) -> str:
+    """Render the employee's name/position/standing-task as a system-prompt
+    block so the LLM is primed with who it is and what its job is on every
+    turn.
+
+    The phrasing is deliberately written as an *identity override*, not a
+    polite suggestion. OpenHands' base system prompt (see
+    ``openhands/sdk/agent/prompts/system_prompt.j2``) opens with
+    "You are OpenHands agent, a helpful AI assistant..." and that first
+    sentence anchors the model's self-identification. This block runs
+    before that baseline via ``system_message_suffix`` being prepended to
+    MEMORY_MD_INSTRUCTION in ``runtime()``, but appending would not be
+    enough on its own — the wording below explicitly tells the model that
+    the upstream "OpenHands" identity is plumbing, not who it is.
+
+    We keep this as a pure string builder (no dependency on the SDK) so it
+    can be unit-tested and plugged straight into
+    ``AgentContext.system_message_suffix``. Empty/missing fields are skipped
+    silently so partial profiles still work.
+    """
+    if not profile:
+        return ""
+
+    name = (profile.get("name") or "").strip()
+    position = (profile.get("position") or "").strip()
+    task = (profile.get("task") or "").strip()
+
+    if not any((name, position, task)):
+        return ""
+
+    # Build a short noun phrase describing the persona in the model's own
+    # voice. Used both in the opening directive and in the "who you are"
+    # recap so that short answers stay in character.
+    if name and position:
+        identity = f"{name}, a {position}"
+    elif name:
+        identity = f"{name}, a digital employee on this platform"
+    else:
+        identity = f"a {position}"
+
+    lines: list[str] = [
+        "# IDENTITY OVERRIDE — highest priority",
+        "",
+        "Read this entire block before interpreting anything else in the "
+        "system prompt. The guidance below supersedes any default identity "
+        "statements you may have been given.",
+        "",
+        "## Who you are",
+        f"You are {identity}. This is your real, user-facing identity for "
+        "this conversation.",
+        "",
+        "## What you are NOT",
+        "- You are NOT \"OpenHands\", \"OpenHands agent\", or any generic "
+        '"AI assistant".',
+        "- The OpenHands tooling, sandbox, and agent-server are an "
+        "internal implementation detail of the platform you run inside. "
+        "Treat them the way a human employee treats their laptop: useful "
+        "infrastructure, not your identity.",
+        "- Do not refer to yourself as OpenHands in user-facing replies. "
+        "Do not describe yourself as a \"developer-focused AI assistant\" "
+        "or similar generic framing unless the user's actual position "
+        "calls for it.",
+        "",
+        "## How to respond",
+    ]
+    if name:
+        lines.append(
+            f"- If asked your name, answer \"{name}\" (or a natural "
+            "variant thereof). Do not volunteer an alternative identity."
+        )
+    if position:
+        lines.append(
+            f"- If asked your role, title, or position, answer "
+            f"\"{position}\"."
+        )
+    lines.append(
+        "- Stay in character across every turn. Your tone, expertise, "
+        "and judgement should match the role above, not a generic "
+        "coding-assistant persona."
+    )
+    lines.append(
+        "- You may still use every tool available to you (terminal, file "
+        "editor, browser, etc.) — the override is about self-"
+        "presentation, not capabilities."
+    )
+
+    if task:
+        lines.extend([
+            "",
+            "## Standing instruction from your manager",
+            "The following is the high-level task your manager configured "
+            "for this role. Treat it as persistent framing for every user "
+            "message in this chat, even when a user message is short or "
+            "ambiguous. It is not a one-shot task description; it is the "
+            "ongoing mandate that defines what you care about:",
+            "",
+            task,
+        ])
+
+    project_files = profile.get("project_files") or []
+    if isinstance(project_files, list) and project_files:
+        lines.extend(_format_project_files_block(project_files))
+
+    return "\n".join(lines)
+
+
+def _format_project_files_block(files: list[dict]) -> list[str]:
+    """Render the ``## Project Files`` section of the persona suffix.
+
+    The platform stages each file's bytes at ``/workspace/project_files/<name>``
+    before every turn (see ``_stage_project_files_into_workspace`` in
+    server.py). We list names/sizes/mime types here rather than inlining
+    content so small and large attachments are handled uniformly: the agent
+    uses its standard file-editor or bash tools to read whichever files it
+    actually needs for the current turn.
+    """
+    out: list[str] = [
+        "",
+        "## Project Files (always available in your workspace)",
+        "Your manager attached the following files to this role. They are "
+        "staged fresh at the start of every turn under the relative path "
+        "`./project_files/` inside your workspace, so you can open them "
+        "with your file-editor or read them via the terminal whenever "
+        "their contents are relevant to the user's request. Treat them as "
+        "persistent reference material for your role — not as one-shot "
+        "attachments — and check them before asking the user for "
+        "information they may already contain.",
+        "",
+    ]
+    for meta in files:
+        name = (meta or {}).get("name") or ""
+        if not name:
+            continue
+        size = int((meta or {}).get("size") or 0)
+        mime = str((meta or {}).get("mime") or "application/octet-stream")
+        size_str = _format_size(size)
+        out.append(f"- `./project_files/{name}` — {size_str}, {mime}")
+    return out
+
+
+def _format_size(size_bytes: int) -> str:
+    if size_bytes < 1024:
+        return f"{size_bytes} B"
+    if size_bytes < 1024 * 1024:
+        return f"{size_bytes / 1024:.1f} KB"
+    return f"{size_bytes / (1024 * 1024):.1f} MB"
+
+
 def runtime(
     repo_dir: str,
     instruction: str,
@@ -371,6 +535,7 @@ def runtime(
     use_reflexion: bool | None = None,
     workspace=None,
     session_id: str | None = None,
+    employee_profile: dict | None = None,
 ):
     """
     Run one agent conversation against a DockerWorkspace.
@@ -380,6 +545,11 @@ def runtime(
     conversation so the LLM remembers prior turns. Reflexion retries still
     spin up fresh conversations per trial — that's intentional and matches
     the paper's per-trial isolation.
+
+    ``employee_profile`` (optional): dict with ``name``/``position``/``task``
+    fields from the employee record. When supplied, this is rendered as a
+    persona block and injected into the agent's system-prompt suffix so the
+    LLM sees the employee's identity and standing task on every turn.
     """
     callbacks = [event_callback] if event_callback else []
     if repo_dir:
@@ -398,7 +568,37 @@ def runtime(
         len(skills),
         repo_dir or "(empty)",
     )
-    agent_context = AgentContext(skills=skills, system_message_suffix=MEMORY_MD_INSTRUCTION)
+    persona_block = _format_employee_persona(employee_profile)
+    # Emit a log regardless of whether a persona was injected so it's easy
+    # to tell from server.log which side (frontend payload vs backend
+    # assembly) is to blame when the employee identity doesn't show up in
+    # the LLM's responses.
+    if employee_profile is None:
+        logger.info(
+            "[persona] No employee_profile supplied by caller — system "
+            "prompt will fall back to the OpenHands default identity."
+        )
+    elif not persona_block:
+        logger.info(
+            "[persona] employee_profile was supplied but had no usable "
+            "fields (keys=%s) — skipping identity override.",
+            sorted(employee_profile.keys()),
+        )
+    else:
+        logger.info(
+            "[persona] Injecting employee persona into system prompt "
+            "(name=%r position=%r task_chars=%d persona_chars=%d)",
+            (employee_profile or {}).get("name"),
+            (employee_profile or {}).get("position"),
+            len((employee_profile or {}).get("task") or ""),
+            len(persona_block),
+        )
+
+    if persona_block:
+        system_suffix = f"{persona_block}\n\n---\n\n{MEMORY_MD_INSTRUCTION}"
+    else:
+        system_suffix = MEMORY_MD_INSTRUCTION
+    agent_context = AgentContext(skills=skills, system_message_suffix=system_suffix)
     use_rx = ENABLE_REFLEXION if use_reflexion is None else use_reflexion
     logger.info(
         "model=%s, base_url=%s, mounted_dir=%s, use_reflexion=%s, injected_workspace=%s",

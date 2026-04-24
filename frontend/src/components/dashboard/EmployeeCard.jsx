@@ -22,7 +22,9 @@ export default function EmployeeCard({ employee }) {
           <div>
             <h3 className="font-semibold text-text-primary">{employee.name}</h3>
             <p className="text-xs text-text-muted">
-              {plugins.map((p) => p.name).join(", ") || "Custom Role"}
+              {plugins.map((p) => p.name).join(", ") ||
+                employee.position?.trim() ||
+                "Custom Role"}
             </p>
           </div>
         </div>
