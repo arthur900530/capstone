@@ -18,8 +18,8 @@ dotenv.load_dotenv(Path(__file__).with_name(".env"))
 
 BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
 API_KEY = os.getenv("OPENAI_API_KEY", "PASTE-YOUR-OPENAI-KEY-HERE")
-AGENT_MODEL = "gpt-5-mini"
-SKILL_MODEL = "gpt-5-mini"
+AGENT_MODEL = "gpt-5.4"
+VERIFIER_MODEL = "gpt-5.4"
 
 OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "PASTE-YOUR-OPENROUTER-KEY-HERE")
