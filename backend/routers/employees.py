@@ -283,9 +283,12 @@ async def create_employee(body: EmployeeCreate):
     # Expand the wizard's short description into a full system prompt when the
     # caller provided one. Legacy callers that pre-compute ``task`` directly
     # keep working — we only generate when ``task`` wasn't explicitly supplied.
-    description = (body.description or "").strip()
+    # Store the description verbatim; the strip is only to decide whether
+    # there's something meaningful to generate from (PATCH also preserves
+    # whitespace, so CREATE matches that contract).
+    description = body.description or ""
     task = body.task or ""
-    if description and not task.strip():
+    if description.strip() and not task.strip():
         task = await _generate_system_prompt(description, body.model)
 
     if _db_available:
