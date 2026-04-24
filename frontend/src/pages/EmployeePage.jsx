@@ -20,7 +20,7 @@ import { useApp } from "../context/AppContext";
 const TABS = [
   { id: "chat", label: "Chat", icon: MessageSquare },
   { id: "skills", label: "Skills", icon: Wrench },
-  { id: "console", label: "Console", icon: Terminal },
+  // { id: "console", label: "Console", icon: Terminal },
   { id: "report", label: "Report Card", icon: BarChart3 },
 ];
 

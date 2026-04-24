@@ -194,7 +194,13 @@ export default function ChatView({ showWelcome = true, embedded = false }) {
     ratings,
     setRatings,
     currentEmployeeId,
+    chatFiles,
+    setChatFiles,
   } = useApp();
+
+  const handleRemoveChatFile = (index) => {
+    setChatFiles?.((prev) => (prev ?? []).filter((_, i) => i !== index));
+  };
 
   const handleRated = (taskIndex, rating) => {
     if (!Number.isInteger(taskIndex)) return;
@@ -227,9 +233,14 @@ export default function ChatView({ showWelcome = true, embedded = false }) {
   // a single collapsible group, so each response gets its own toggle. A group
   // is "settled" once a final answer / chat_response / error has been emitted
   // for its turn (we use that to swap the header copy).
+  //
+  // We also count user turns inline so each answer can be keyed to the task
+  // it closes even when the SSE payload didn't embed ``task_index`` (e.g.
+  // legacy chat history). This lets MessageRating persist / rehydrate.
   const renderItems = useMemo(() => {
     const items = [];
     let currentGroup = null;
+    let userTurns = -1;
     messages.forEach((msg, idx) => {
       if (msg.type === "agent_marker") return;
       if (TRAJECTORY_TYPES.has(msg.type)) {
@@ -244,6 +255,16 @@ export default function ChatView({ showWelcome = true, embedded = false }) {
         }
         currentGroup.items.push({ msg, idx });
       } else {
+        if (msg.type === "user" || msg.role === "user") userTurns += 1;
+        let taskIndex;
+        if (msg.type === "answer" || msg.type === "chat_response") {
+          taskIndex =
+            typeof msg.taskIndex === "number"
+              ? msg.taskIndex
+              : userTurns >= 0
+                ? userTurns
+                : undefined;
+        }
         if (
           currentGroup &&
           ["answer", "chat_response", "error"].includes(msg.type)
@@ -251,7 +272,7 @@ export default function ChatView({ showWelcome = true, embedded = false }) {
           currentGroup.settled = true;
         }
         currentGroup = null;
-        items.push({ kind: "single", msg, idx });
+        items.push({ kind: "single", msg, idx, taskIndex });
       }
     });
     return items;
@@ -291,9 +312,21 @@ export default function ChatView({ showWelcome = true, embedded = false }) {
               ) : (
                 <ChatMessage
                   key={`${sessionId}-${item.idx}`}
-                  message={item.msg}
+                  message={
+                    Number.isInteger(item.taskIndex)
+                      ? { ...item.msg, taskIndex: item.taskIndex }
+                      : item.msg
+                  }
                   animate={item.msg.animate !== false}
                   onFileEditClick={handleFileEditClick}
+                  employeeId={currentEmployeeId}
+                  sessionId={sessionId}
+                  rating={
+                    Number.isInteger(item.taskIndex)
+                      ? (ratings?.[item.taskIndex] ?? null)
+                      : null
+                  }
+                  onRated={handleRated}
                 />
               ),
             )}
@@ -321,6 +354,8 @@ export default function ChatView({ showWelcome = true, embedded = false }) {
           showBrowserToggle={liveBrowserAvailable}
           browserVisible={Boolean(browserLive?.visible)}
           onToggleBrowser={toggleBrowserVisible}
+          chatFiles={chatFiles}
+          onRemoveChatFile={handleRemoveChatFile}
         />
       </div>
     </>
@@ -344,6 +379,8 @@ export default function ChatView({ showWelcome = true, embedded = false }) {
             mountDir={mountDir}
             onMountDirChange={setMountDir}
             models={availableModels}
+            chatFiles={chatFiles}
+            onRemoveChatFile={handleRemoveChatFile}
           />
         </div>
       </div>

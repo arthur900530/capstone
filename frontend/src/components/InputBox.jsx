@@ -11,6 +11,7 @@ import {
   FolderOpen,
   Globe,
   GlobeLock,
+  Database,
 } from "lucide-react";
 import { fetchAgents, pickWorkspaceDirectory } from "../services/api";
 
@@ -34,6 +35,8 @@ export default function InputBox({
   showBrowserToggle = false,
   browserVisible = false,
   onToggleBrowser,
+  chatFiles = [],
+  onRemoveChatFile,
 }) {
   const [text, setText] = useState("");
   const [isFocused, setIsFocused] = useState(false);
@@ -209,18 +212,28 @@ export default function InputBox({
           </div>
         )}
 
-        {mountDir && (
+        {chatFiles.length > 0 && (
           <div className="flex flex-wrap gap-1.5 px-5 pt-3">
-            <span className="flex items-center gap-1.5 rounded-md bg-accent-deep/15 px-2.5 py-1 text-[11px] font-medium text-accent-deep">
-              <FolderOpen size={11} />
-              {mountDir}
-              <button
-                onClick={() => onMountDirChange?.("")}
-                className="ml-0.5 text-accent-deep/60 hover:text-accent-deep"
+            {chatFiles.map((file, i) => (
+              <span
+                key={`chat-file-${i}-${file?.name ?? "unnamed"}`}
+                className="flex items-center gap-1.5 rounded-md bg-amber-500/15 px-2.5 py-1 text-[11px] font-medium text-amber-300"
+                title={file?.name}
               >
-                <X size={11} />
-              </button>
-            </span>
+                <Database size={11} />
+                <span className="max-w-[180px] truncate">
+                  {file?.name ?? "unnamed"}
+                </span>
+                {onRemoveChatFile && (
+                  <button
+                    onClick={() => onRemoveChatFile(i)}
+                    className="ml-0.5 text-amber-300/60 hover:text-amber-300"
+                  >
+                    <X size={11} />
+                  </button>
+                )}
+              </span>
+            ))}
           </div>
         )}
 
@@ -326,14 +339,24 @@ export default function InputBox({
                   setShowSkillPicker(false);
                   if (!showWorkspacePicker) setWorkspaceInput(mountDir);
                 }}
-                className={`flex h-8 items-center gap-1 rounded-lg px-2 transition-colors hover:bg-surface-hover ${
+                title={mountDir ? `Workspace: ${mountDir}` : "Mount a workspace directory"}
+                className={`flex h-8 max-w-[500px] items-center gap-1 rounded-lg px-2 transition-colors hover:bg-surface-hover ${
                   mountDir
                     ? "text-accent-deep"
                     : "text-text-muted hover:text-text-secondary"
                 }`}
               >
-                <FolderOpen size={14} />
-                <span className="text-xs">Workspace</span>
+                <FolderOpen size={14} className="shrink-0" />
+                <span className=" min-w-0 truncate text-xs">
+                  {mountDir ? (
+                    <>
+                      {/* Workspace:{" "} */}
+                      <span className="font-medium">{mountDir}</span>
+                    </>
+                  ) : (
+                    "Workspace"
+                  )}
+                </span>
               </button>
 
               {showWorkspacePicker && (
