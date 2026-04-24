@@ -61,14 +61,22 @@ def set_db_available(value: bool):
     _db_available = value
 
 
+# Length caps on the free-form text fields. ``description`` is a short hint
+# users type in the wizard — a couple sentences at most — so 2k is generous.
+# ``task`` is the generated (or hand-edited) system prompt; 40k lets users
+# paste a long custom prompt while still bounding a runaway LLM response.
+_MAX_DESCRIPTION_CHARS = 2000
+_MAX_TASK_CHARS = 40000
+
+
 class EmployeeCreate(BaseModel):
     name: str
     position: str = ""
     # Short free-form hint the user types in the wizard. When present, the
     # backend expands it into a full system prompt and stores the result in
     # ``task``. Legacy callers that still send ``task`` directly keep working.
-    description: str = ""
-    task: str = ""
+    description: str = Field(default="", max_length=_MAX_DESCRIPTION_CHARS)
+    task: str = Field(default="", max_length=_MAX_TASK_CHARS)
     pluginIds: list[str] = []
     skillIds: list[str] = []
     model: str = ""
@@ -81,8 +89,8 @@ class EmployeeCreate(BaseModel):
 class EmployeeUpdate(BaseModel):
     name: str | None = None
     position: str | None = None
-    description: str | None = None
-    task: str | None = None
+    description: str | None = Field(default=None, max_length=_MAX_DESCRIPTION_CHARS)
+    task: str | None = Field(default=None, max_length=_MAX_TASK_CHARS)
     pluginIds: list[str] | None = None
     skillIds: list[str] | None = None
     model: str | None = None
@@ -156,9 +164,12 @@ async def _generate_system_prompt(description: str, model: str) -> str:
             ),
         )
 
-    from openai import AsyncOpenAI  # lazy: keep import cost off the hot path
+    from openai import AsyncOpenAI
 
-    client = AsyncOpenAI(api_key=api_key)
+    # ``timeout`` bounds a hung OpenAI call so the wizard's submit button
+    # doesn't spin forever on a stalled upstream. ``max_tokens`` bounds the
+    # response size so a runaway model can't produce a 100KB system prompt.
+    client = AsyncOpenAI(api_key=api_key, timeout=30.0)
     target_model = _resolve_openai_model(model)
 
     try:
@@ -169,12 +180,16 @@ async def _generate_system_prompt(description: str, model: str) -> str:
                 {"role": "user", "content": desc},
             ],
             temperature=0.4,
+            max_tokens=1500,
         )
     except Exception as exc:  # noqa: BLE001
+        # Don't leak raw exception strings to the client — they can embed
+        # request ids or organisation metadata from the OpenAI SDK. The
+        # server-side traceback is in ``logger.exception`` if we need it.
         logger.exception("System-prompt generation failed (model=%s)", target_model)
         raise HTTPException(
             status_code=503,
-            detail=f"System-prompt generation failed: {exc}",
+            detail="System-prompt generation failed. Please try again.",
         ) from exc
 
     content = ""
