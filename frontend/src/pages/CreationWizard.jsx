@@ -4,7 +4,6 @@ import { ArrowLeft } from "lucide-react";
 import StepDescribe from "../components/wizard/StepDescribe";
 import StepPlugin from "../components/wizard/StepPlugin";
 import StepLearnSkills from "../components/wizard/StepLearnSkills";
-// import StepUpload from "../components/wizard/StepUpload";
 import StepLaunch from "../components/wizard/StepLaunch";
 import PLUGINS from "../data/plugins";
 import EMPLOYEE_TEMPLATES from "../data/employeeTemplates";
@@ -26,7 +25,7 @@ export default function CreationWizard() {
     : [];
 
   const [step, setStep] = useState(0);
-  const [task, setTask] = useState("");
+  const [description, setDescription] = useState("");
   const [selectedPluginIds, setSelectedPluginIds] = useState(
     template?.pluginIds || [],
   );
@@ -41,7 +40,6 @@ export default function CreationWizard() {
     confidenceThreshold: 0.7,
     useReflexion: false,
   });
-  const [files, setFiles] = useState([]);
   const [name, setName] = useState(template?.suggestedName || "");
   // The template's display name doubles as a sensible default job title/role
   // ("Equity Research Analyst", etc.) — the user can override it on the
@@ -49,27 +47,29 @@ export default function CreationWizard() {
   const [position, setPosition] = useState(template?.name || "");
 
   const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState(null);
 
   const handleCreate = async () => {
     if (creating) return;
     setCreating(true);
+    setCreateError(null);
     try {
       const emp = await createEmployee({
         name: name.trim(),
         position: position.trim(),
-        task,
+        description,
         pluginIds: selectedPluginIds,
         skillIds,
         model: config.model,
         useReflexion: config.useReflexion,
         maxTrials: config.maxTrials,
         confidenceThreshold: config.confidenceThreshold,
-        files: files.map((f) => ({ name: f.name, size: f.size, type: f.type })),
       });
       await refreshEmployees();
       navigate(`/employee/${emp.id}`);
-    } catch {
+    } catch (err) {
       setCreating(false);
+      setCreateError(err?.message || "Failed to create employee.");
     }
   };
 
@@ -124,8 +124,8 @@ export default function CreationWizard() {
       <div className="flex-1 px-6 py-8">
         {step === 0 && (
           <StepDescribe
-            task={task}
-            onChange={setTask}
+            description={description}
+            onChange={setDescription}
             onNext={() => setStep(1)}
           />
         )}
@@ -150,25 +150,18 @@ export default function CreationWizard() {
             onNext={() => setStep(3)}
           />
         )}
-        {/* {step === 3 && (
-          <StepUpload
-            files={files}
-            onFilesChange={setFiles}
-            onBack={() => setStep(2)}
-            onNext={() => setStep(4)}
-          />
-        )} */}
         {step === 3 && (
           <StepLaunch
             name={name}
             onNameChange={setName}
             position={position}
             onPositionChange={setPosition}
-            task={task}
+            description={description}
             pluginIds={selectedPluginIds}
             skillIds={skillIds}
             config={config}
-            files={files}
+            creating={creating}
+            error={createError}
             onBack={() => setStep(2)}
             onCreate={handleCreate}
           />
