@@ -115,9 +115,9 @@ export default function App() {
   // The employee (if any) the user is currently talking to. We link each
   // new chat session to this employee so the sidebar can group the
   // conversation history under the owning employee.
-  const activeEmployeeId = pathname.startsWith("/employee/")
-    ? pathname.split("/")[2] || null
-    : null;
+  // const activeEmployeeId = pathname.startsWith("/employee/")
+  //   ? pathname.split("/")[2] || null
+  //   : null;
 
   const messagesEndRef = useRef(null);
   const scrollContainerRef = useRef(null);
@@ -230,10 +230,10 @@ export default function App() {
       };
       setChats((prev) => [optimisticChat, ...prev.filter((c) => c.id !== sid)]);
 
-      if (activeEmployeeId) {
+      if (currentEmployeeId) {
         setEmployees((prev) =>
           prev.map((emp) =>
-            emp.id !== activeEmployeeId
+            emp.id !== currentEmployeeId
               ? emp
               : {
                   ...emp,
@@ -322,10 +322,10 @@ export default function App() {
                     : chat,
                 ),
               );
-              if (activeEmployeeId) {
+              if (currentEmployeeId) {
                 Promise.all([
-                  addChatSession(activeEmployeeId, data.session_id),
-                  markActive(activeEmployeeId),
+                  addChatSession(currentEmployeeId, data.session_id),
+                  markActive(currentEmployeeId),
                 ])
                   .then(() => refreshEmployees())
                   .catch(() => {});
@@ -719,7 +719,7 @@ export default function App() {
     focusAgentId,
     setFocusAgentId,
     employees,
-    activeEmployeeId,
+    // activeEmployeeId,
     refreshEmployees,
     refreshSkills,
     refreshChats,
