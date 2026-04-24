@@ -8,6 +8,7 @@ import {
   BarChart3,
   Wrench,
   Files,
+  Sparkles,
   Trash2,
   Loader2,
 } from "lucide-react";
@@ -24,6 +25,7 @@ const LIVE_BROWSER_ENABLED = import.meta.env.VITE_LIVE_BROWSER !== "false";
 import EmployeeReportCard from "../components/employee/EmployeeReportCard";
 import EmployeeSkillsTab from "../components/employee/EmployeeSkillsTab";
 import EmployeeProjectFilesTab from "../components/employee/EmployeeProjectFilesTab";
+import EmployeeSystemPromptTab from "../components/employee/EmployeeSystemPromptTab";
 import PLUGINS from "../data/plugins";
 import { getEmployeeById, deleteEmployee } from "../services/employeeStore";
 import { useApp } from "../context/AppContext";
@@ -32,6 +34,7 @@ const TABS = [
   { id: "chat", label: "Chat", icon: MessageSquare },
   { id: "skills", label: "Skills", icon: Wrench },
   { id: "project_files", label: "Project Files", icon: Files },
+  { id: "system_prompt", label: "System Prompt", icon: Sparkles },
   // { id: "console", label: "Console", icon: Terminal },
   { id: "report", label: "Report Card", icon: BarChart3 },
 ];
@@ -227,6 +230,16 @@ export default function EmployeePage() {
       )}
       {activeTab === "project_files" && (
         <EmployeeProjectFilesTab key={id} employee={employee} />
+      )}
+      {activeTab === "system_prompt" && (
+        <EmployeeSystemPromptTab
+          key={id}
+          employee={employee}
+          onUpdated={(emp) => {
+            setEmployee(emp);
+            refreshEmployees?.();
+          }}
+        />
       )}
       {activeTab === "console" && <EmployeeConsole key={id} employee={employee} />}
       {activeTab === "report" && <EmployeeReportCard key={id} employee={employee} />}
