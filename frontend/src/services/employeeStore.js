@@ -28,32 +28,42 @@ export async function getEmployeeById(id) {
 export async function createEmployee({
   name,
   position = "",
-  task,
+  description = "",
   pluginIds = [],
   skillIds,
   model,
   useReflexion = false,
   maxTrials = 3,
   confidenceThreshold = 0.7,
-  files = [],
 }) {
+  // The wizard sends a short ``description``; the backend expands it into
+  // the full system prompt (``task``) via an LLM call. We intentionally don't
+  // send ``task`` from the client so the generation is fire-and-forget.
   const res = await fetch(API, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       name,
       position,
-      task,
+      description,
       pluginIds,
       skillIds,
       model,
       useReflexion,
       maxTrials,
       confidenceThreshold,
-      files,
     }),
   });
-  if (!res.ok) throw new Error("Failed to create employee");
+  if (!res.ok) {
+    let detail = `Failed to create employee (${res.status})`;
+    try {
+      const body = await res.json();
+      if (body?.detail) detail = body.detail;
+    } catch {
+      /* keep default */
+    }
+    throw new Error(detail);
+  }
   return await res.json();
 }
 
