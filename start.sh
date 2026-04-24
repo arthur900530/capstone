@@ -3,6 +3,23 @@
 # BNY Digital Employee Platform — startup script
 # =============================================================================
 
+ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
+FRONTEND_DIR="$ROOT_DIR/frontend"
+BACKEND_DIR="$ROOT_DIR/backend"
+SKILLSBENCH_DIR="$BACKEND_DIR/skillsbench"
+
+# First-run bootstrap: copy config.py and .env from their templates so a
+# fresh clone doesn't crash on the DATABASE_URL import below, and so the
+# wizard's system-prompt generation has somewhere to read OPENAI_API_KEY from.
+if [[ ! -f "$BACKEND_DIR/config.py" && -f "$BACKEND_DIR/config.py.example" ]]; then
+  cp "$BACKEND_DIR/config.py.example" "$BACKEND_DIR/config.py"
+  echo "Created backend/config.py from template."
+fi
+if [[ ! -f "$ROOT_DIR/.env" && -f "$ROOT_DIR/.env.template" ]]; then
+  cp "$ROOT_DIR/.env.template" "$ROOT_DIR/.env"
+  echo "Created .env from template — edit it and fill in OPENAI_API_KEY before using the wizard."
+fi
+
 DATABASE_URL=$(python3 -c "from backend.config import DATABASE_URL; print(DATABASE_URL)")
 export DATABASE_URL
 
@@ -16,11 +33,6 @@ for arg in "$@"; do
     --demo) DEMO_MODE=1 ;;
   esac
 done
-
-ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
-FRONTEND_DIR="$ROOT_DIR/frontend"
-BACKEND_DIR="$ROOT_DIR/backend"
-SKILLSBENCH_DIR="$BACKEND_DIR/skillsbench"
 
 PIDS=()
 
