@@ -148,7 +148,9 @@ export default function EmployeePage() {
                 </h1>
               </div>
               <p className="text-xs text-text-muted">
-                {plugins.map((p) => p.name).join(", ") || "Custom Role"}
+                {plugins.map((p) => p.name).join(", ") ||
+                  employee.position?.trim() ||
+                  "Custom Role"}
               </p>
             </div>
           </div>
