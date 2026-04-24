@@ -36,7 +36,7 @@ export default function EmployeeCard({ employee }) {
       </div>
 
       <p className="line-clamp-2 text-sm text-text-secondary">
-        {employee.task}
+        {employee.description?.trim() || employee.task}
       </p>
 
       <div className="flex items-center justify-between text-xs text-text-muted">
