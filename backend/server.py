@@ -696,6 +696,54 @@ def _parse_tool_args(tc: Any) -> tuple[str, dict]:
     return args_str, args_dict
 
 
+# Path segments whose file edits/creations should never be surfaced to the
+# frontend. These are agent-internal scratch areas (conversation transcripts,
+# bash event logs, memory scratchpads, etc.) — matched case-insensitively
+# against any path segment so both "conversation/foo.md" and
+# "/workspace/conversation/foo.md" are suppressed.
+_HIDDEN_FILE_EDIT_SEGMENTS = {
+    "conversation",
+    "bash_events",
+    "memory.md",
+    "agent.md",
+    "agents.md",
+}
+
+
+def _is_hidden_file_edit_path(path: str) -> bool:
+    """Return True if the given path targets a suppressed folder or file."""
+    if not path:
+        return False
+    segments = [seg for seg in path.lower().replace("\\", "/").split("/") if seg]
+    return any(seg in _HIDDEN_FILE_EDIT_SEGMENTS for seg in segments)
+
+
+def _tool_result_mentions_hidden_path(content: str) -> bool:
+    """Detect whether a file_editor tool_result is talking about a hidden path.
+
+    The file_editor surfaces paths like ``/workspace/MEMORY.md`` or
+    ``/workspace/conversation/foo.md`` in both success messages (``File
+    created successfully at: ...``) and error messages (``Invalid `path`
+    parameter: ...``). We do a case-insensitive substring check against each
+    hidden segment so we catch all of them.
+    """
+    if not content:
+        return False
+    text = content.lower()
+    for seg in _HIDDEN_FILE_EDIT_SEGMENTS:
+        # Match as `/seg`, `seg/`, or the bare basename so we don't false-match
+        # substrings inside unrelated words.
+        if (
+            f"/{seg}" in text
+            or f"{seg}/" in text
+            or f" {seg}" in text
+            or text.startswith(seg)
+            or text.endswith(seg)
+        ):
+            return True
+    return False
+
+
 def _map_event_to_sse(event: Any, session_id: str) -> dict | None:
     """Translate an OpenHands Event into the SSE dict format the frontend expects.
 
@@ -741,6 +789,13 @@ def _map_event_to_sse(event: Any, session_id: str) -> dict | None:
                     # Strip Docker workspace prefix → relative path
                     if raw_path.startswith("/workspace/"):
                         raw_path = raw_path[len("/workspace/"):]
+
+                    # Suppress edits in agent-internal folders (e.g.
+                    # conversation transcripts, bash event logs). The agent
+                    # still performs the edit; we just don't notify the UI.
+                    if _is_hidden_file_edit_path(raw_path):
+                        return None
+
                     return _sse("file_edit", {
                         "turn": _turn_counter[session_id],
                         "command": args_dict.get("command", ""),
@@ -785,6 +840,16 @@ def _map_event_to_sse(event: Any, session_id: str) -> dict | None:
             # The finish tool's observation carries the agent's final message
             if obs_tool.lower() in ("finish", "finishtool") and content.strip():
                 return _sse("answer", {"text": content})
+
+            # Suppress file_editor observations that talk about agent-internal
+            # paths (MEMORY.md, conversation/, bash_events/, ...). The agent
+            # still receives the observation in its context; we just don't
+            # show the success/error text to the user.
+            if (
+                obs_tool.lower() in ("file_editor", "fileeditortool")
+                and _tool_result_mentions_hidden_path(content)
+            ):
+                return None
 
             return _sse("tool_result", {"text": content[:2000]})
 
@@ -1318,6 +1383,10 @@ def _build_terminal_file_edits(session_id: str, host_dir: str) -> list[dict]:
     payloads: list[dict] = []
     for rel in paths:
         if _should_skip_auto_open(rel):
+            continue
+        # Skip agent-internal paths (conversation/, bash_events/, MEMORY.md, ...)
+        # so bash-driven writes to these locations don't leak to the UI.
+        if _is_hidden_file_edit_path(rel):
             continue
         ext = os.path.splitext(rel)[1].lower()
         if ext not in _PREVIEWABLE_EXTS:

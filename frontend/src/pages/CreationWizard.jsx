@@ -36,7 +36,7 @@ export default function CreationWizard() {
       : [],
   );
   const [config, setConfig] = useState({
-    model: templatePlugins[0]?.defaultModel || "openai/gpt-4o",
+    model: templatePlugins[0]?.defaultModel || "openai/gpt-5.4",
     maxTrials: 3,
     confidenceThreshold: 0.7,
     useReflexion: false,
