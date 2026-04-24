@@ -191,7 +191,15 @@ export default function ChatView({ showWelcome = true, embedded = false }) {
     scrollContainerRef,
     messagesEndRef,
     handleCanvasSelectFile,
+    ratings,
+    setRatings,
+    currentEmployeeId,
   } = useApp();
+
+  const handleRated = (taskIndex, rating) => {
+    if (!Number.isInteger(taskIndex)) return;
+    setRatings?.((prev) => ({ ...(prev || {}), [taskIndex]: rating }));
+  };
 
   const liveBrowserAvailable = LIVE_BROWSER_ENABLED && !IS_DEMO;
 

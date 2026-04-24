@@ -2,12 +2,8 @@
 
 import os
 
+from config import DATABASE_URL
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-
-DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "postgresql+asyncpg://postgres:postgres@localhost:5432/skillmarket",
-)
 
 engine = create_async_engine(
     DATABASE_URL,

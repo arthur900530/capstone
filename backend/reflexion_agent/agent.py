@@ -379,6 +379,108 @@ def _create_agent(llm, agent_context):
     )
 
 
+def _format_employee_persona(profile: dict | None) -> str:
+    """Render the employee's name/position/standing-task as a system-prompt
+    block so the LLM is primed with who it is and what its job is on every
+    turn.
+
+    The phrasing is deliberately written as an *identity override*, not a
+    polite suggestion. OpenHands' base system prompt (see
+    ``openhands/sdk/agent/prompts/system_prompt.j2``) opens with
+    "You are OpenHands agent, a helpful AI assistant..." and that first
+    sentence anchors the model's self-identification. This block runs
+    before that baseline via ``system_message_suffix`` being prepended to
+    MEMORY_MD_INSTRUCTION in ``runtime()``, but appending would not be
+    enough on its own — the wording below explicitly tells the model that
+    the upstream "OpenHands" identity is plumbing, not who it is.
+
+    We keep this as a pure string builder (no dependency on the SDK) so it
+    can be unit-tested and plugged straight into
+    ``AgentContext.system_message_suffix``. Empty/missing fields are skipped
+    silently so partial profiles still work.
+    """
+    if not profile:
+        return ""
+
+    name = (profile.get("name") or "").strip()
+    position = (profile.get("position") or "").strip()
+    task = (profile.get("task") or "").strip()
+
+    if not any((name, position, task)):
+        return ""
+
+    # Build a short noun phrase describing the persona in the model's own
+    # voice. Used both in the opening directive and in the "who you are"
+    # recap so that short answers stay in character.
+    if name and position:
+        identity = f"{name}, a {position}"
+    elif name:
+        identity = f"{name}, a digital employee on this platform"
+    else:
+        identity = f"a {position}"
+
+    lines: list[str] = [
+        "# IDENTITY OVERRIDE — highest priority",
+        "",
+        "Read this entire block before interpreting anything else in the "
+        "system prompt. The guidance below supersedes any default identity "
+        "statements you may have been given.",
+        "",
+        "## Who you are",
+        f"You are {identity}. This is your real, user-facing identity for "
+        "this conversation.",
+        "",
+        "## What you are NOT",
+        "- You are NOT \"OpenHands\", \"OpenHands agent\", or any generic "
+        '"AI assistant".',
+        "- The OpenHands tooling, sandbox, and agent-server are an "
+        "internal implementation detail of the platform you run inside. "
+        "Treat them the way a human employee treats their laptop: useful "
+        "infrastructure, not your identity.",
+        "- Do not refer to yourself as OpenHands in user-facing replies. "
+        "Do not describe yourself as a \"developer-focused AI assistant\" "
+        "or similar generic framing unless the user's actual position "
+        "calls for it.",
+        "",
+        "## How to respond",
+    ]
+    if name:
+        lines.append(
+            f"- If asked your name, answer \"{name}\" (or a natural "
+            "variant thereof). Do not volunteer an alternative identity."
+        )
+    if position:
+        lines.append(
+            f"- If asked your role, title, or position, answer "
+            f"\"{position}\"."
+        )
+    lines.append(
+        "- Stay in character across every turn. Your tone, expertise, "
+        "and judgement should match the role above, not a generic "
+        "coding-assistant persona."
+    )
+    lines.append(
+        "- You may still use every tool available to you (terminal, file "
+        "editor, browser, etc.) — the override is about self-"
+        "presentation, not capabilities."
+    )
+
+    if task:
+        lines.extend([
+            "",
+            "## Standing instruction from your manager",
+            "The following is the high-level task your manager configured "
+            "for this role. Treat it as persistent framing for every user "
+            "message in this chat, even when a user message is short or "
+            "ambiguous. It is not a one-shot task description; it is the "
+            "ongoing mandate that defines what you care about:",
+            "",
+            task,
+        ])
+
+    return "\n".join(lines)
+
+
 def runtime(
     repo_dir: str,
     instruction: str,
@@ -387,6 +489,7 @@ def runtime(
     use_reflexion: bool | None = None,
     workspace=None,
     session_id: str | None = None,
+    employee_profile: dict | None = None,
 ):
     """
     Run one agent conversation against a DockerWorkspace.
@@ -396,6 +499,11 @@ def runtime(
     conversation so the LLM remembers prior turns. Reflexion retries still
     spin up fresh conversations per trial — that's intentional and matches
     the paper's per-trial isolation.
+
+    ``employee_profile`` (optional): dict with ``name``/``position``/``task``
+    fields from the employee record. When supplied, this is rendered as a
+    persona block and injected into the agent's system-prompt suffix so the
+    LLM sees the employee's identity and standing task on every turn.
     """
     callbacks = [event_callback] if event_callback else []
     if repo_dir:
@@ -414,7 +522,37 @@ def runtime(
         len(skills),
         repo_dir or "(empty)",
     )
-    agent_context = AgentContext(skills=skills, system_message_suffix=MEMORY_MD_INSTRUCTION)
+    persona_block = _format_employee_persona(employee_profile)
+    # Emit a log regardless of whether a persona was injected so it's easy
+    # to tell from server.log which side (frontend payload vs backend
+    # assembly) is to blame when the employee identity doesn't show up in
+    # the LLM's responses.
+    if employee_profile is None:
+        logger.info(
+            "[persona] No employee_profile supplied by caller — system "
+            "prompt will fall back to the OpenHands default identity."
+        )
+    elif not persona_block:
+        logger.info(
+            "[persona] employee_profile was supplied but had no usable "
+            "fields (keys=%s) — skipping identity override.",
+            sorted(employee_profile.keys()),
+        )
+    else:
+        logger.info(
+            "[persona] Injecting employee persona into system prompt "
+            "(name=%r position=%r task_chars=%d persona_chars=%d)",
+            (employee_profile or {}).get("name"),
+            (employee_profile or {}).get("position"),
+            len((employee_profile or {}).get("task") or ""),
+            len(persona_block),
+        )
+
+    if persona_block:
+        system_suffix = f"{persona_block}\n\n---\n\n{MEMORY_MD_INSTRUCTION}"
+    else:
+        system_suffix = MEMORY_MD_INSTRUCTION
+    agent_context = AgentContext(skills=skills, system_message_suffix=system_suffix)
     use_rx = ENABLE_REFLEXION if use_reflexion is None else use_reflexion
     logger.info(
         "model=%s, base_url=%s, mounted_dir=%s, use_reflexion=%s, injected_workspace=%s",

@@ -3,6 +3,9 @@
 # BNY Digital Employee Platform — startup script
 # =============================================================================
 
+DATABASE_URL=$(python3 -c "from backend.config import DATABASE_URL; print(DATABASE_URL)")
+export DATABASE_URL
+
 set -euo pipefail
 
 MOCK_MODE=0

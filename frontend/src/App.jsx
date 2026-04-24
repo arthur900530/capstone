@@ -65,6 +65,10 @@ export default function App() {
   const [selectedSkillIds, setSelectedSkillIds] = useState([]);
   const [skipSkillConfirm, setSkipSkillConfirm] = useState(false);
   const [employees, setEmployees] = useState([]);
+  // task_index -> 1..5 user rating for the current session, hydrated from
+  // the server on chat load. Live ratings are managed optimistically by the
+  // MessageRating widget; this map feeds the widget's ``initialRating``.
+  const [ratings, setRatings] = useState({});
   const [config, setConfig] = useState({
     model: "",
     maxTrials: 3,
@@ -95,6 +99,18 @@ export default function App() {
   // between ChatView's mount effect and the state update from setOpenFiles.
   const onChatCapableRoute =
     pathname === "/chat" || pathname.startsWith("/employee/");
+
+  // When we're on an employee page, the shared ChatView is the UI — but the
+  // /api/chat payload must still carry persona data so the backend can
+  // inject the employee's identity/role/task into the agent's system prompt.
+  // Derive the current employee from the URL + employees list rather than
+  // wiring new context plumbing; the id is the source of truth and the
+  // server does its own DB lookup from it.
+  const employeeIdMatch = pathname.match(/^\/employee\/([^/]+)/);
+  const currentEmployeeId = employeeIdMatch?.[1] || null;
+  const currentEmployee = currentEmployeeId
+    ? employees.find((e) => e.id === currentEmployeeId) || null
+    : null;
 
   // The employee (if any) the user is currently talking to. We link each
   // new chat session to this employee so the sidebar can group the
@@ -280,6 +296,14 @@ export default function App() {
               : undefined,
           skillIds: selectedSkillIds,
           mountDir: mountDir || undefined,
+          employeeId: currentEmployeeId || undefined,
+          employee: currentEmployee
+            ? {
+                name: currentEmployee.name,
+                position: currentEmployee.position,
+                task: currentEmployee.task,
+              }
+            : undefined,
         },
         (eventType, data) => {
           let msg = null;
@@ -386,6 +410,10 @@ export default function App() {
                 type: "answer",
                 content: data.text,
                 question,
+                taskIndex:
+                  typeof data.task_index === "number"
+                    ? data.task_index
+                    : undefined,
               };
               break;
             case "chat_response":
@@ -393,6 +421,10 @@ export default function App() {
                 role: "assistant",
                 type: "chat_response",
                 content: data.text,
+                taskIndex:
+                  typeof data.task_index === "number"
+                    ? data.task_index
+                    : undefined,
               };
               break;
             case "error":
@@ -493,6 +525,7 @@ export default function App() {
     setStagedFiles([]);
     setSkipSkillConfirm(false);
     setMountDir("");
+    setRatings({});
     visibleAgentRef.current = null;
     sentinelRefs.current.clear();
     // Reset workspace state
@@ -545,6 +578,7 @@ export default function App() {
       setMessages(restored);
       setChatFiles(chat.files ?? []);
       setStagedFiles([]);
+      setRatings(chat.ratings || {});
       const hasBrowserActivity = chat.messages.some(
         (m) => m.type === "tool_call" && String(m.tool || "").startsWith("browser_"),
       );
@@ -714,6 +748,10 @@ export default function App() {
     workspacePanelOpen,
     setWorkspacePanelOpen,
     treeRefreshTrigger,
+    // rating plumbing (used by ChatView -> ChatMessage -> MessageRating)
+    ratings,
+    setRatings,
+    currentEmployeeId,
   };
 
   return (

@@ -6,7 +6,15 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+from metrics import (
+    aggregate_task_runs,
+    serialize_task_run,
+    task_runs_from_chat,
+)
+from trajectory import build_nodes_from_events, flatten_action_nodes, segment_nodes, to_dict
+from trajectory_llm import annotate_tree, apply_annotations
 
 router = APIRouter(prefix="/api/employees", tags=["employees"])
 
@@ -21,6 +29,7 @@ def set_db_available(value: bool):
 
 class EmployeeCreate(BaseModel):
     name: str
+    position: str = ""
     task: str = ""
     pluginIds: list[str] = []
     skillIds: list[str] = []
@@ -33,6 +42,7 @@ class EmployeeCreate(BaseModel):
 
 class EmployeeUpdate(BaseModel):
     name: str | None = None
+    position: str | None = None
     task: str | None = None
     pluginIds: list[str] | None = None
     skillIds: list[str] | None = None
@@ -66,6 +76,7 @@ def _row_to_dict(row) -> dict:
     return {
         "id": str(row.id),
         "name": row.name,
+        "position": getattr(row, "position", "") or "",
         "task": row.task,
         "pluginIds": row.plugin_ids or [],
         "skillIds": row.skill_ids or [],
@@ -127,6 +138,7 @@ async def create_employee(body: EmployeeCreate):
         async with async_session() as session:
             emp = Employee(
                 name=body.name,
+                position=body.position,
                 task=body.task,
                 plugin_ids=body.pluginIds,
                 skill_ids=body.skillIds,
@@ -144,6 +156,7 @@ async def create_employee(body: EmployeeCreate):
     emp = {
         "id": str(uuid.uuid4()),
         "name": body.name,
+        "position": body.position,
         "task": body.task,
         "pluginIds": body.pluginIds,
         "skillIds": body.skillIds,
@@ -177,6 +190,8 @@ async def update_employee(employee_id: str, body: EmployeeUpdate):
 
             if body.name is not None:
                 row.name = body.name
+            if body.position is not None:
+                row.position = body.position
             if body.task is not None:
                 row.task = body.task
             if body.pluginIds is not None:
@@ -230,3 +245,577 @@ async def delete_employee(employee_id: str):
     global _memory_store
     _memory_store = [e for e in _memory_store if e["id"] != employee_id]
     return {"ok": True}
+
+
+# ── Metrics / Report Card ────────────────────────────────────────────────────
+
+
+_RECENT_TASK_LIMIT = 20
+
+
+def _fallback_metrics_from_memory(employee_id: str, limit: int = _RECENT_TASK_LIMIT) -> dict:
+    """Derive metrics from the in-memory chat store.
+
+    Used when the DB is unavailable (or for very old sessions predating the
+    ``task_runs`` table). Imports ``_chats`` lazily because ``server.py``
+    imports this module during app setup.
+    """
+    try:
+        from server import _chats  # type: ignore
+    except Exception:
+        _chats = {}
+
+    emp = next((e for e in _memory_store if e.get("id") == employee_id), None)
+    session_ids = (emp or {}).get("chatSessionIds") or []
+    runs: list[dict] = []
+    for sid in session_ids:
+        chat = _chats.get(sid)
+        if chat:
+            runs.extend(task_runs_from_chat(chat))
+
+    def _sort_key(run):
+        ts = run.get("started_at")
+        if isinstance(ts, datetime):
+            return ts
+        return datetime.min.replace(tzinfo=timezone.utc)
+
+    runs.sort(key=_sort_key, reverse=True)
+
+    def _iso(ts):
+        return ts.isoformat() if isinstance(ts, datetime) else ts
+
+    return {
+        "employee_id": employee_id,
+        "aggregate": aggregate_task_runs(runs),
+        "recent": [
+            {**r, "started_at": _iso(r.get("started_at")), "ended_at": _iso(r.get("ended_at"))}
+            for r in runs[:limit]
+        ],
+        "recent_limit": limit,
+        "source": "memory",
+    }
+
+
+def _task_run_prompt_from_chat(session_id: str, task_index: int) -> str | None:
+    try:
+        from server import _chats  # type: ignore
+    except Exception:
+        return None
+
+    chat = _chats.get(session_id)
+    if not chat:
+        return None
+
+    current_index = -1
+    for message in chat.get("messages") or []:
+        if message.get("type") == "user":
+            current_index += 1
+            if current_index == task_index:
+                return message.get("content")
+    return None
+
+
+def _trajectory_summary(run: dict, tree) -> dict:
+    flat = flatten_action_nodes(tree)
+    answer_nodes = [
+        node for node in flat
+        if node.state.extra.get("event_type") in {"answer", "chat_response", "error"}
+    ]
+    final_status = answer_nodes[-1].status if answer_nodes else tree.status
+    return {
+        "n_tool_calls": int(run.get("n_tool_calls") or 0),
+        "n_trials": int(run.get("n_trials") or 1),
+        "duration_ms": int(run.get("duration_ms") or 0),
+        "tool_histogram": run.get("tool_histogram") or {},
+        "status": final_status or "unknown",
+    }
+
+
+@router.get("/{employee_id}/metrics")
+async def employee_metrics(employee_id: str, limit: int = _RECENT_TASK_LIMIT):
+    """Return aggregate + recent task-run metrics for the report card.
+
+    Reads from the ``task_runs`` table when the DB is available; otherwise
+    falls back to deriving runs from the in-memory chat transcript so older
+    sessions and DB-less dev environments still render a useful card.
+    The ``limit`` query param controls how many recent runs are returned
+    alongside the aggregate (the aggregate always spans every run).
+    """
+    limit = max(1, min(int(limit), 100))
+
+    if _db_available:
+        from db.engine import async_session
+        from db.models import Employee, TaskRun
+        from sqlalchemy import select
+
+        emp_uuid = _parse_uuid(employee_id)
+        async with async_session() as session:
+            emp_row = (
+                await session.execute(
+                    select(Employee).where(Employee.id == emp_uuid)
+                )
+            ).scalar_one_or_none()
+            if emp_row is None:
+                raise HTTPException(404, "Employee not found")
+
+            rows = (
+                await session.execute(
+                    select(TaskRun)
+                    .where(TaskRun.employee_id == emp_uuid)
+                    .order_by(TaskRun.started_at.desc())
+                )
+            ).scalars().all()
+
+        runs = [serialize_task_run(r) for r in rows]
+        return {
+            "employee_id": employee_id,
+            "aggregate": aggregate_task_runs(runs),
+            "recent": runs[:limit],
+            "recent_limit": limit,
+            "source": "db",
+        }
+
+    emp = next((e for e in _memory_store if e.get("id") == employee_id), None)
+    if emp is None:
+        raise HTTPException(404, "Employee not found")
+    return _fallback_metrics_from_memory(employee_id, limit=limit)
+
+
+@router.get("/{employee_id}/task_runs/{session_id}/{task_index}/trajectory")
+async def employee_task_trajectory(employee_id: str, session_id: str, task_index: int):
+    if _db_available:
+        from db.engine import async_session
+        from db.models import Employee, TaskRun
+        from sqlalchemy import select
+
+        emp_uuid = _parse_uuid(employee_id)
+        async with async_session() as session:
+            emp_row = (
+                await session.execute(
+                    select(Employee).where(Employee.id == emp_uuid)
+                )
+            ).scalar_one_or_none()
+            if emp_row is None:
+                raise HTTPException(404, "Employee not found")
+
+            row = (
+                await session.execute(
+                    select(TaskRun).where(
+                        TaskRun.employee_id == emp_uuid,
+                        TaskRun.session_id == session_id,
+                        TaskRun.task_index == task_index,
+                    )
+                )
+            ).scalar_one_or_none()
+
+        if row is None:
+            raise HTTPException(404, "Task run not found")
+
+        run = serialize_task_run(row)
+        raw_events = run.get("raw_events") or []
+        if not raw_events:
+            try:
+                from server import _chats  # type: ignore
+            except Exception:
+                _chats = {}
+
+            chat = _chats.get(session_id)
+            if chat is not None:
+                live_run = next(
+                    (
+                        r for r in task_runs_from_chat(chat)
+                        if r.get("session_id") == session_id and r.get("task_index") == task_index
+                    ),
+                    None,
+                )
+                if live_run is not None:
+                    run = live_run
+                    raw_events = live_run.get("raw_events") or []
+
+        if not raw_events:
+            raise HTTPException(
+                status_code=410,
+                detail={
+                    "available": False,
+                    "reason": "trajectory_not_persisted",
+                },
+            )
+
+        action_nodes, trial_boundaries = build_nodes_from_events(raw_events)
+        tree = segment_nodes(action_nodes, trial_boundaries)
+        prompt = (
+            run.get("full_prompt")
+            or _task_run_prompt_from_chat(session_id, task_index)
+            or run.get("prompt_preview")
+            or ""
+        )
+
+        annotations = run.get("trajectory_annotations") or {}
+        tree_dict = apply_annotations(to_dict(tree), annotations)
+
+        return {
+            "available": True,
+            "session_id": session_id,
+            "task_index": task_index,
+            "prompt": prompt,
+            "summary": _trajectory_summary(run, tree),
+            "tree": tree_dict,
+            "raw_events": raw_events,
+            "annotations": annotations,
+            "annotated": bool(annotations),
+        }
+
+    emp = next((e for e in _memory_store if e.get("id") == employee_id), None)
+    if emp is None:
+        raise HTTPException(404, "Employee not found")
+
+    try:
+        from server import _chats  # type: ignore
+    except Exception:
+        _chats = {}
+
+    chat = _chats.get(session_id)
+    if chat is None:
+        raise HTTPException(404, "Task run not found")
+
+    runs = task_runs_from_chat(chat)
+    run = next(
+        (r for r in runs if r.get("session_id") == session_id and r.get("task_index") == task_index),
+        None,
+    )
+    if run is None:
+        raise HTTPException(404, "Task run not found")
+
+    raw_events = run.get("raw_events") or []
+    action_nodes, trial_boundaries = build_nodes_from_events(raw_events)
+    tree = segment_nodes(action_nodes, trial_boundaries)
+    return {
+        "available": True,
+        "session_id": session_id,
+        "task_index": task_index,
+        "prompt": run.get("full_prompt") or run.get("prompt_preview") or "",
+        "summary": _trajectory_summary(run, tree),
+        "tree": to_dict(tree),
+        "raw_events": raw_events,
+        "annotations": {},
+        "annotated": False,
+    }
+
+
+@router.post("/{employee_id}/task_runs/{session_id}/{task_index}/trajectory/annotate")
+async def annotate_task_trajectory(
+    employee_id: str,
+    session_id: str,
+    task_index: int,
+    force: bool = False,
+):
+    """Run LLM goal/status annotation on the task's trajectory tree.
+
+    Mirrors the ``induce.py`` step of ai4work-resources/profiling: for every
+    ``SequenceNode`` in the segmented tree we ask the LLM to summarize a goal
+    from child subgoals and judge whether the action sequence achieved it.
+    Results are cached in ``task_runs.trajectory_annotations`` so subsequent
+    opens of the "Processed" view are free. Pass ``?force=true`` to recompute.
+    """
+    if not _db_available:
+        raise HTTPException(
+            503, "Trajectory annotation requires the database to be available."
+        )
+
+    from db.engine import async_session
+    from db.models import Employee, TaskRun
+    from sqlalchemy import select, update
+
+    emp_uuid = _parse_uuid(employee_id)
+    async with async_session() as session:
+        emp_row = (
+            await session.execute(select(Employee).where(Employee.id == emp_uuid))
+        ).scalar_one_or_none()
+        if emp_row is None:
+            raise HTTPException(404, "Employee not found")
+
+        row = (
+            await session.execute(
+                select(TaskRun).where(
+                    TaskRun.employee_id == emp_uuid,
+                    TaskRun.session_id == session_id,
+                    TaskRun.task_index == task_index,
+                )
+            )
+        ).scalar_one_or_none()
+        if row is None:
+            raise HTTPException(404, "Task run not found")
+
+        run = serialize_task_run(row)
+        cached = run.get("trajectory_annotations") or {}
+        raw_events = run.get("raw_events") or []
+
+    # Fall back to in-memory chat if the DB row predates raw-event persistence.
+    if not raw_events:
+        try:
+            from server import _chats  # type: ignore
+        except Exception:
+            _chats = {}
+        chat = _chats.get(session_id)
+        if chat is not None:
+            live_run = next(
+                (
+                    r for r in task_runs_from_chat(chat)
+                    if r.get("session_id") == session_id and r.get("task_index") == task_index
+                ),
+                None,
+            )
+            if live_run is not None:
+                raw_events = live_run.get("raw_events") or []
+
+    if not raw_events:
+        raise HTTPException(
+            status_code=410,
+            detail={"available": False, "reason": "trajectory_not_persisted"},
+        )
+
+    action_nodes, trial_boundaries = build_nodes_from_events(raw_events)
+    tree = segment_nodes(action_nodes, trial_boundaries)
+
+    if cached and not force:
+        annotations = cached
+    else:
+        try:
+            annotations = await annotate_tree(tree)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(
+                status_code=502,
+                detail=f"LLM annotation failed: {exc}",
+            ) from exc
+
+        # Write-through cache so we only pay once per task.
+        async with async_session() as session:
+            await session.execute(
+                update(TaskRun)
+                .where(
+                    TaskRun.employee_id == emp_uuid,
+                    TaskRun.session_id == session_id,
+                    TaskRun.task_index == task_index,
+                )
+                .values(trajectory_annotations=annotations)
+            )
+            await session.commit()
+
+    tree_dict = apply_annotations(to_dict(tree), annotations)
+    prompt = (
+        run.get("full_prompt")
+        or _task_run_prompt_from_chat(session_id, task_index)
+        or run.get("prompt_preview")
+        or ""
+    )
+
+    return {
+        "available": True,
+        "session_id": session_id,
+        "task_index": task_index,
+        "prompt": prompt,
+        "summary": _trajectory_summary(run, tree),
+        "tree": tree_dict,
+        "raw_events": raw_events,
+        "annotations": annotations,
+        "annotated": True,
+        "source": "cache" if (cached and not force) else "llm",
+    }
+
+
+@router.post("/{employee_id}/task_runs/annotate_recent")
+async def annotate_recent_task_runs(
+    employee_id: str,
+    limit: int = _RECENT_TASK_LIMIT,
+    force: bool = False,
+):
+    """Backfill LLM goal annotations for this employee's recent task runs.
+
+    Walks the N most recent ``task_runs``, runs :func:`annotate_tree` on any
+    that lack cached annotations (or all of them when ``force=true``), and
+    writes the results through to the ``trajectory_annotations`` column so
+    the report card's goal-oriented KPIs populate. Runs concurrently with a
+    small fan-out ceiling to avoid spamming the LLM endpoint.
+    """
+    if not _db_available:
+        raise HTTPException(
+            503, "Trajectory annotation requires the database to be available."
+        )
+
+    import asyncio
+
+    from db.engine import async_session
+    from db.models import Employee, TaskRun
+    from sqlalchemy import select, update
+
+    limit = max(1, min(int(limit), 50))
+    emp_uuid = _parse_uuid(employee_id)
+
+    async with async_session() as session:
+        emp_row = (
+            await session.execute(select(Employee).where(Employee.id == emp_uuid))
+        ).scalar_one_or_none()
+        if emp_row is None:
+            raise HTTPException(404, "Employee not found")
+
+        rows = (
+            await session.execute(
+                select(TaskRun)
+                .where(TaskRun.employee_id == emp_uuid)
+                .order_by(TaskRun.started_at.desc())
+                .limit(limit)
+            )
+        ).scalars().all()
+
+    targets = [
+        row for row in rows
+        if (row.raw_events and (force or not (row.trajectory_annotations or {})))
+    ]
+
+    if not targets:
+        return {
+            "employee_id": employee_id,
+            "scanned": len(rows),
+            "annotated": 0,
+            "skipped_unpersisted": sum(1 for r in rows if not r.raw_events),
+            "already_cached": sum(
+                1 for r in rows if (r.trajectory_annotations or {}) and not force
+            ),
+        }
+
+    semaphore = asyncio.Semaphore(3)  # cap LLM fan-out
+
+    async def _one(row) -> tuple[str, int, bool, str | None]:
+        async with semaphore:
+            try:
+                action_nodes, trial_boundaries = build_nodes_from_events(row.raw_events or [])
+                tree = segment_nodes(action_nodes, trial_boundaries)
+                annotations = await annotate_tree(tree)
+            except Exception as exc:  # noqa: BLE001
+                return row.session_id, row.task_index, False, str(exc)[:200]
+
+        try:
+            async with async_session() as session:
+                await session.execute(
+                    update(TaskRun)
+                    .where(
+                        TaskRun.employee_id == emp_uuid,
+                        TaskRun.session_id == row.session_id,
+                        TaskRun.task_index == row.task_index,
+                    )
+                    .values(trajectory_annotations=annotations)
+                )
+                await session.commit()
+        except Exception as exc:  # noqa: BLE001
+            return row.session_id, row.task_index, False, f"db write failed: {exc}"[:200]
+
+        return row.session_id, row.task_index, True, None
+
+    results = await asyncio.gather(*(_one(row) for row in targets))
+
+    succeeded = [r for r in results if r[2]]
+    failed = [{"session_id": r[0], "task_index": r[1], "error": r[3]} for r in results if not r[2]]
+
+    return {
+        "employee_id": employee_id,
+        "scanned": len(rows),
+        "annotated": len(succeeded),
+        "failed": failed,
+        "skipped_unpersisted": sum(1 for r in rows if not r.raw_events),
+    }
+
+
+# ── User rating (passive 1–5 per answer) ─────────────────────────────────────
+
+
+class RatingUpdate(BaseModel):
+    # Passive widget sends a 1–5 integer. ``None`` clears a previous rating.
+    rating: int | None = Field(default=None, ge=1, le=5)
+
+
+@router.put("/{employee_id}/task_runs/{session_id}/{task_index}/rating")
+async def rate_task_run(
+    employee_id: str,
+    session_id: str,
+    task_index: int,
+    body: RatingUpdate,
+):
+    """Set (or clear) the user's 1–5 rating on a specific task run.
+
+    Idempotent: re-rating overwrites. Returns 404 when the task_run row
+    doesn't yet exist (the persist is async — frontend should retry briefly
+    after a fresh answer). Returns 503 when the DB is unavailable because
+    ratings are only meaningful with durable storage.
+    """
+    if not _db_available:
+        raise HTTPException(
+            503, "User ratings require the database to be available."
+        )
+
+    from db.engine import async_session
+    from db.models import Employee, TaskRun
+    from sqlalchemy import select, update
+
+    emp_uuid = _parse_uuid(employee_id)
+    rated_at = datetime.now(timezone.utc) if body.rating is not None else None
+
+    async with async_session() as session:
+        emp_row = (
+            await session.execute(select(Employee).where(Employee.id == emp_uuid))
+        ).scalar_one_or_none()
+        if emp_row is None:
+            raise HTTPException(404, "Employee not found")
+
+        result = await session.execute(
+            update(TaskRun)
+            .where(
+                TaskRun.employee_id == emp_uuid,
+                TaskRun.session_id == session_id,
+                TaskRun.task_index == task_index,
+            )
+            .values(user_rating=body.rating, user_rating_at=rated_at)
+        )
+        if result.rowcount == 0:
+            raise HTTPException(404, "Task run not found")
+        await session.commit()
+
+    return {
+        "employee_id": employee_id,
+        "session_id": session_id,
+        "task_index": task_index,
+        "user_rating": body.rating,
+        "user_rating_at": rated_at.isoformat() if rated_at else None,
+    }
+
+
+@router.get("/{employee_id}/task_runs/ratings")
+async def list_session_ratings(employee_id: str, session_id: str):
+    """Return a ``{task_index: rating}`` map for a session.
+
+    Used by the chat view to hydrate the passive rating widget when a user
+    reopens a past conversation. Cheap read — one indexed scan.
+    """
+    if not _db_available:
+        return {"employee_id": employee_id, "session_id": session_id, "ratings": {}}
+
+    from db.engine import async_session
+    from db.models import TaskRun
+    from sqlalchemy import select
+
+    emp_uuid = _parse_uuid(employee_id)
+    async with async_session() as session:
+        rows = (
+            await session.execute(
+                select(TaskRun.task_index, TaskRun.user_rating)
+                .where(
+                    TaskRun.employee_id == emp_uuid,
+                    TaskRun.session_id == session_id,
+                )
+            )
+        ).all()
+
+    return {
+        "employee_id": employee_id,
+        "session_id": session_id,
+        "ratings": {int(idx): int(r) for idx, r in rows if r is not None},
+    }

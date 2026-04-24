@@ -55,6 +55,100 @@ export async function deleteChat(chatId) {
   return res.json();
 }
 
+export async function fetchEmployeeMetrics(employeeId, { limit } = {}) {
+  const query = Number.isFinite(limit) ? `?limit=${encodeURIComponent(limit)}` : "";
+  const res = await fetch(`${API_BASE}/employees/${employeeId}/metrics${query}`);
+  if (!res.ok) throw new Error(`Failed to load employee metrics: ${res.status}`);
+  return res.json();
+}
+
+export async function backfillRecentAnnotations(
+  employeeId,
+  { limit, force = false } = {},
+) {
+  const params = new URLSearchParams();
+  if (Number.isFinite(limit)) params.set("limit", String(limit));
+  if (force) params.set("force", "true");
+  const query = params.toString() ? `?${params.toString()}` : "";
+  const res = await fetch(
+    `${API_BASE}/employees/${employeeId}/task_runs/annotate_recent${query}`,
+    { method: "POST" },
+  );
+  if (!res.ok) {
+    let detail = `${res.status}`;
+    try {
+      const body = await res.json();
+      detail = body?.detail || detail;
+    } catch {
+      // keep default
+    }
+    throw new Error(`Failed to backfill annotations: ${detail}`);
+  }
+  return res.json();
+}
+
+export async function fetchTaskTrajectory(employeeId, sessionId, taskIndex) {
+  const res = await fetch(
+    `${API_BASE}/employees/${employeeId}/task_runs/${encodeURIComponent(sessionId)}/${encodeURIComponent(taskIndex)}/trajectory`,
+  );
+  if (res.status === 410) {
+    const body = await res.json();
+    return body?.detail || body;
+  }
+  if (!res.ok) throw new Error(`Failed to load task trajectory: ${res.status}`);
+  return res.json();
+}
+
+export async function rateTaskRun(employeeId, sessionId, taskIndex, rating) {
+  const res = await fetch(
+    `${API_BASE}/employees/${employeeId}/task_runs/${encodeURIComponent(sessionId)}/${encodeURIComponent(taskIndex)}/rating`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rating }),
+    },
+  );
+  if (res.status === 404) {
+    const err = new Error("Task run not yet persisted");
+    err.code = "TASK_RUN_NOT_FOUND";
+    throw err;
+  }
+  if (!res.ok) {
+    let detail = `${res.status}`;
+    try {
+      const body = await res.json();
+      detail = body?.detail || detail;
+    } catch {
+      // keep default
+    }
+    throw new Error(`Failed to save rating: ${detail}`);
+  }
+  return res.json();
+}
+
+export async function annotateTaskTrajectory(employeeId, sessionId, taskIndex, { force = false } = {}) {
+  const query = force ? "?force=true" : "";
+  const res = await fetch(
+    `${API_BASE}/employees/${employeeId}/task_runs/${encodeURIComponent(sessionId)}/${encodeURIComponent(taskIndex)}/trajectory/annotate${query}`,
+    { method: "POST" },
+  );
+  if (res.status === 410) {
+    const body = await res.json();
+    return body?.detail || body;
+  }
+  if (!res.ok) {
+    let detail = `${res.status}`;
+    try {
+      const body = await res.json();
+      detail = body?.detail || detail;
+    } catch {
+      // keep default
+    }
+    throw new Error(`Failed to annotate trajectory: ${detail}`);
+  }
+  return res.json();
+}
+
 export async function fetchAgents() {
   const res = await fetch(`${API_BASE}/agents`);
   if (!res.ok) throw new Error(`Failed to load agents: ${res.status}`);
@@ -169,9 +263,25 @@ export async function streamChat(
     files,
     skillIds,
     mountDir,
+    employeeId,
+    employee,
   },
   onEvent,
 ) {
+  // Only forward employee persona fields that are actually set so the backend
+  // never sees a payload like {name: undefined, position: "", task: ""}.
+  // The backend prefers its own DB lookup via employee_id; this client-side
+  // copy is a fallback for DB-less setups.
+  const employeePayload = employee
+    ? Object.fromEntries(
+        Object.entries({
+          name: employee.name,
+          position: employee.position,
+          task: employee.task,
+        }).filter(([, v]) => typeof v === "string" && v.trim() !== ""),
+      )
+    : null;
+
   const res = await fetch(`${API_BASE}/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -185,6 +295,11 @@ export async function streamChat(
       files: files || undefined,
       skill_ids: skillIds?.length ? skillIds : undefined,
       mount_dir: mountDir || undefined,
+      employee_id: employeeId || undefined,
+      employee:
+        employeePayload && Object.keys(employeePayload).length > 0
+          ? employeePayload
+          : undefined,
     }),
   });
 

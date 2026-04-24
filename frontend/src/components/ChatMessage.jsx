@@ -13,6 +13,7 @@ import {
   CheckCircle2,
   FileCode2,
 } from "lucide-react";
+import MessageRating from "./MessageRating";
 
 
 function useTypingEffect(text, { speed = 18, enabled = true } = {}) {
@@ -89,7 +90,7 @@ function CollapsibleBlock({ icon: Icon, title, badge, children, defaultOpen = fa
   );
 }
 
-function AnswerBlock({ message, animate }) {
+function AnswerBlock({ message, animate, rating, onRated }) {
   const { displayed, done: typingDone } = useTypingEffect(message.content, { enabled: animate });
 
   return (
@@ -136,11 +137,20 @@ function AnswerBlock({ message, animate }) {
           <span className="inline-block h-4 w-0.5 animate-pulse bg-accent-teal/70" />
         )}
       </div>
+      {typingDone && rating ? (
+        <MessageRating
+          employeeId={rating.employeeId}
+          sessionId={rating.sessionId}
+          taskIndex={rating.taskIndex}
+          initialRating={rating.initialRating ?? null}
+          onRated={onRated}
+        />
+      ) : null}
     </div>
   );
 }
 
-function TypedBubble({ text, animate }) {
+function TypedBubble({ text, animate, rating, onRated }) {
   const { displayed, done } = useTypingEffect(text, { enabled: animate });
   return (
     <div className="max-w-[80%] rounded-2xl rounded-bl-sm bg-surface px-4 py-3 text-sm leading-relaxed text-text-primary">
@@ -148,13 +158,48 @@ function TypedBubble({ text, animate }) {
       {!done && (
         <span className="ml-0.5 inline-block h-4 w-0.5 animate-pulse bg-accent-teal/70" />
       )}
+      {done && rating ? (
+        <MessageRating
+          employeeId={rating.employeeId}
+          sessionId={rating.sessionId}
+          taskIndex={rating.taskIndex}
+          initialRating={rating.initialRating ?? null}
+          onRated={onRated}
+        />
+      ) : null}
     </div>
   );
 }
 
 
-export default function ChatMessage({ message, animate = true, onFileEditClick }) {
+export default function ChatMessage({
+  message,
+  animate = true,
+  onFileEditClick,
+  employeeId,
+  sessionId,
+  rating,
+  onRated,
+}) {
   const { role, type, content } = message;
+
+  // Only surface the rating widget when the caller provided enough context
+  // to persist it (employee-scoped chats), we know which task this answer
+  // closes, and it isn't an error/unfinished turn. ``rating`` here is either
+  // an initial integer 1..5 hydrated from the server, or ``null`` /
+  // ``undefined`` when the user hasn't rated yet.
+  const ratingContext =
+    employeeId &&
+    sessionId &&
+    Number.isInteger(message?.taskIndex) &&
+    (type === "answer" || type === "chat_response")
+      ? {
+          employeeId,
+          sessionId,
+          taskIndex: message.taskIndex,
+          initialRating: typeof rating === "number" ? rating : null,
+        }
+      : null;
 
   if (role === "user") {
     return (
@@ -299,11 +344,25 @@ export default function ChatMessage({ message, animate = true, onFileEditClick }
   }
 
   if (type === "answer") {
-    return <AnswerBlock message={message} animate={animate} />;
+    return (
+      <AnswerBlock
+        message={message}
+        animate={animate}
+        rating={ratingContext}
+        onRated={onRated}
+      />
+    );
   }
 
   if (type === "chat_response") {
-    return <TypedBubble text={content} animate={animate} />;
+    return (
+      <TypedBubble
+        text={content}
+        animate={animate}
+        rating={ratingContext}
+        onRated={onRated}
+      />
+    );
   }
 
   return (

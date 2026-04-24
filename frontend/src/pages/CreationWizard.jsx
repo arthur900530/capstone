@@ -43,6 +43,10 @@ export default function CreationWizard() {
   });
   const [files, setFiles] = useState([]);
   const [name, setName] = useState(template?.suggestedName || "");
+  // The template's display name doubles as a sensible default job title/role
+  // ("Equity Research Analyst", etc.) — the user can override it on the
+  // Launch step before creating the employee.
+  const [position, setPosition] = useState(template?.name || "");
 
   const [creating, setCreating] = useState(false);
 
@@ -52,6 +56,7 @@ export default function CreationWizard() {
     try {
       const emp = await createEmployee({
         name: name.trim(),
+        position: position.trim(),
         task,
         pluginIds: selectedPluginIds,
         skillIds,
@@ -157,6 +162,8 @@ export default function CreationWizard() {
           <StepLaunch
             name={name}
             onNameChange={setName}
+            position={position}
+            onPositionChange={setPosition}
             task={task}
             pluginIds={selectedPluginIds}
             skillIds={skillIds}
