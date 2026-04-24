@@ -1,3 +1,10 @@
+import os
+from pathlib import Path
+
+import dotenv
+
+dotenv.load_dotenv(Path(__file__).with_name(".env"))
+
 # Copy to config.py. Optional Reflexion defaults via .env (see reflexion_agent/agent.py):
 #   ENABLE_REFLEXION=true|false — used when running the agent CLI without an explicit flag.
 #   MAX_REFLEXION_ATTEMPTS=3
@@ -9,17 +16,14 @@
 # The web UI sends use_reflexion on each POST /api/chat request (default false); that
 # overrides the env default for that run.
 
-BASE_URL = "https://openrouter.ai/api/v1"
-API_KEY = "PASTE-YOUR-KEY-HERE"
-AGENT_MODEL = "openrouter/minimax/minimax-m2.7"
-SKILL_MODEL = "google/gemini-2.5-flash"
+BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+API_KEY = os.getenv("OPENAI_API_KEY", "PASTE-YOUR-OPENAI-KEY-HERE")
+AGENT_MODEL = "gpt-5-mini"
+SKILL_MODEL = "gpt-5-mini"
 
-# Optional: skill training can use OpenRouter even when the main agent uses
-# OpenAI directly. If unset, skill training falls back to the legacy
-# BASE_URL/API_KEY only when BASE_URL points to OpenRouter.
-OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-OPENROUTER_API_KEY = "PASTE-YOUR-OPENROUTER-KEY-HERE"
-OPENROUTER_SKILL_MODEL = "google/gemini-2.5-flash"
+OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "PASTE-YOUR-OPENROUTER-KEY-HERE")
+OPENROUTER_SKILL_MODEL = os.getenv("OPENROUTER_SKILL_MODEL", "google/gemini-2.5-flash")
 
 # PostgreSQL — used by the skill marketplace.
 # Local dev default: postgresql+asyncpg://postgres:postgres@localhost:5432/skillmarket
