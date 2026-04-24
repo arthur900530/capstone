@@ -9,6 +9,7 @@ import {
   AlertCircle,
   ListChecks,
   ChevronRight,
+  Star,
 } from "lucide-react";
 import { fetchEmployeeMetrics } from "../../services/api";
 import TaskTrajectoryDrawer from "./TaskTrajectoryDrawer";
@@ -28,9 +29,11 @@ function KpiCard({ label, value, sub }) {
   );
 }
 
-function MetricCard({ icon: Icon, label, children }) {
+function MetricCard({ icon: Icon, label, children, className = "" }) {
   return (
-    <div className="rounded-lg border border-border/60 bg-[#2a2c31] p-4 shadow-[0_2px_12px_rgba(0,0,0,0.25)]">
+    <div
+      className={`rounded-lg border border-border/60 bg-[#2a2c31] p-4 shadow-[0_2px_12px_rgba(0,0,0,0.25)] ${className}`}
+    >
       <div className="mb-3 flex items-center gap-2">
         <Icon size={15} className="text-accent-teal" />
         <h4 className="text-xs font-semibold uppercase tracking-wider text-text-secondary">
@@ -300,6 +303,55 @@ export default function EmployeeReportCard({ employee }) {
               label="Unique tools used"
               value={a.tool_mix.length}
             />
+          </MetricCard>
+
+          <MetricCard
+            icon={Star}
+            label="User ratings distribution"
+            className="lg:col-span-2"
+          >
+            {a.rated_tasks === 0 ? (
+              <p className="text-xs text-text-muted">
+                No ratings yet. Rate an answer inline to populate this card.
+              </p>
+            ) : (
+              <div className="grid gap-6 md:grid-cols-[minmax(0,220px)_minmax(0,1fr)] md:items-center">
+                <div>
+                  <Row
+                    label="Average"
+                    value={`${a.avg_user_rating.toFixed(2)} / 5`}
+                  />
+                  <Row
+                    label="Rated tasks"
+                    value={`${a.rated_tasks} / ${a.tasks}`}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  {[5, 4, 3, 2, 1].map((stars) => {
+                    const count = a.rating_distribution?.[stars] || 0;
+                    const pct = a.rated_tasks
+                      ? (count / a.rated_tasks) * 100
+                      : 0;
+                    return (
+                      <div key={stars} className="flex items-center gap-2">
+                        <span className="w-6 shrink-0 text-[11px] text-text-muted tabular-nums">
+                          {stars}★
+                        </span>
+                        <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-border/50">
+                          <div
+                            className="h-full rounded-full bg-amber-300 transition-all duration-500"
+                            style={{ width: `${pct}%` }}
+                          />
+                        </div>
+                        <span className="w-8 shrink-0 text-right text-[11px] text-text-muted tabular-nums">
+                          {count}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </MetricCard>
         </div>
 

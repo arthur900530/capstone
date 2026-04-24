@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from metrics import (
     aggregate_task_runs,
@@ -722,4 +722,100 @@ async def annotate_recent_task_runs(
         "annotated": len(succeeded),
         "failed": failed,
         "skipped_unpersisted": sum(1 for r in rows if not r.raw_events),
+    }
+
+
+# ── User rating (passive 1–5 per answer) ─────────────────────────────────────
+
+
+class RatingUpdate(BaseModel):
+    # Passive widget sends a 1–5 integer. ``None`` clears a previous rating.
+    rating: int | None = Field(default=None, ge=1, le=5)
+
+
+@router.put("/{employee_id}/task_runs/{session_id}/{task_index}/rating")
+async def rate_task_run(
+    employee_id: str,
+    session_id: str,
+    task_index: int,
+    body: RatingUpdate,
+):
+    """Set (or clear) the user's 1–5 rating on a specific task run.
+
+    Idempotent: re-rating overwrites. Returns 404 when the task_run row
+    doesn't yet exist (the persist is async — frontend should retry briefly
+    after a fresh answer). Returns 503 when the DB is unavailable because
+    ratings are only meaningful with durable storage.
+    """
+    if not _db_available:
+        raise HTTPException(
+            503, "User ratings require the database to be available."
+        )
+
+    from db.engine import async_session
+    from db.models import Employee, TaskRun
+    from sqlalchemy import select, update
+
+    emp_uuid = _parse_uuid(employee_id)
+    rated_at = datetime.now(timezone.utc) if body.rating is not None else None
+
+    async with async_session() as session:
+        emp_row = (
+            await session.execute(select(Employee).where(Employee.id == emp_uuid))
+        ).scalar_one_or_none()
+        if emp_row is None:
+            raise HTTPException(404, "Employee not found")
+
+        result = await session.execute(
+            update(TaskRun)
+            .where(
+                TaskRun.employee_id == emp_uuid,
+                TaskRun.session_id == session_id,
+                TaskRun.task_index == task_index,
+            )
+            .values(user_rating=body.rating, user_rating_at=rated_at)
+        )
+        if result.rowcount == 0:
+            raise HTTPException(404, "Task run not found")
+        await session.commit()
+
+    return {
+        "employee_id": employee_id,
+        "session_id": session_id,
+        "task_index": task_index,
+        "user_rating": body.rating,
+        "user_rating_at": rated_at.isoformat() if rated_at else None,
+    }
+
+
+@router.get("/{employee_id}/task_runs/ratings")
+async def list_session_ratings(employee_id: str, session_id: str):
+    """Return a ``{task_index: rating}`` map for a session.
+
+    Used by the chat view to hydrate the passive rating widget when a user
+    reopens a past conversation. Cheap read — one indexed scan.
+    """
+    if not _db_available:
+        return {"employee_id": employee_id, "session_id": session_id, "ratings": {}}
+
+    from db.engine import async_session
+    from db.models import TaskRun
+    from sqlalchemy import select
+
+    emp_uuid = _parse_uuid(employee_id)
+    async with async_session() as session:
+        rows = (
+            await session.execute(
+                select(TaskRun.task_index, TaskRun.user_rating)
+                .where(
+                    TaskRun.employee_id == emp_uuid,
+                    TaskRun.session_id == session_id,
+                )
+            )
+        ).all()
+
+    return {
+        "employee_id": employee_id,
+        "session_id": session_id,
+        "ratings": {int(idx): int(r) for idx, r in rows if r is not None},
     }

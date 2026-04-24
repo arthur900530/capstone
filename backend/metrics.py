@@ -269,6 +269,10 @@ def aggregate_task_runs(runs: Iterable[dict]) -> dict:
             "top_level_fully_achieved": 0,
             "annotated_tasks": 0,
             "unannotated_tasks": 0,
+            "avg_user_rating": 0.0,
+            "rated_tasks": 0,
+            "unrated_tasks": 0,
+            "rating_distribution": {k: 0 for k in range(1, 6)},
         }
 
     n = len(runs)
@@ -314,6 +318,18 @@ def aggregate_task_runs(runs: Iterable[dict]) -> dict:
         int((r.get("top_level_summary") or {}).get("fully_achieved") or 0) for r in runs
     )
     annotated = sum(1 for r in runs if r.get("annotated"))
+
+    # User-submitted 1–5 ratings. Un-rated runs are excluded from the mean so
+    # a backlog of unrated turns doesn't drag the average down — the report
+    # card renders ``rated_tasks`` alongside the avg as the honest denominator.
+    user_ratings = [
+        int(r["user_rating"])
+        for r in runs
+        if r.get("user_rating") is not None
+    ]
+    rating_distribution: dict[int, int] = {k: 0 for k in range(1, 6)}
+    for r in user_ratings:
+        rating_distribution[r] = rating_distribution.get(r, 0) + 1
     # "Tasks achieved" uses the LLM's top-level (root) verdict directly:
     # the session is achieved iff the root annotation says ``success``.
     # The earlier strict-1.0 rule punished every imperfect leaf trace
@@ -354,6 +370,13 @@ def aggregate_task_runs(runs: Iterable[dict]) -> dict:
         "top_level_fully_achieved": total_top_level_fully,
         "annotated_tasks": annotated,
         "unannotated_tasks": n - annotated,
+        # Passive user-rating rollups.
+        "avg_user_rating":
+            round(sum(user_ratings) / len(user_ratings), 2)
+            if user_ratings else 0.0,
+        "rated_tasks": len(user_ratings),
+        "unrated_tasks": n - len(user_ratings),
+        "rating_distribution": rating_distribution,
     }
 
 
@@ -372,6 +395,12 @@ def serialize_task_run(row) -> dict:
         "tool_histogram": row.tool_histogram or {},
         "raw_events": row.raw_events or [],
         "trajectory_annotations": getattr(row, "trajectory_annotations", None) or {},
+        "user_rating": getattr(row, "user_rating", None),
+        "user_rating_at": (
+            row.user_rating_at.isoformat()
+            if getattr(row, "user_rating_at", None)
+            else None
+        ),
     }
     _attach_goal_fields(run)
     return run

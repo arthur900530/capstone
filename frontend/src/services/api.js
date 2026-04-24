@@ -99,6 +99,33 @@ export async function fetchTaskTrajectory(employeeId, sessionId, taskIndex) {
   return res.json();
 }
 
+export async function rateTaskRun(employeeId, sessionId, taskIndex, rating) {
+  const res = await fetch(
+    `${API_BASE}/employees/${employeeId}/task_runs/${encodeURIComponent(sessionId)}/${encodeURIComponent(taskIndex)}/rating`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rating }),
+    },
+  );
+  if (res.status === 404) {
+    const err = new Error("Task run not yet persisted");
+    err.code = "TASK_RUN_NOT_FOUND";
+    throw err;
+  }
+  if (!res.ok) {
+    let detail = `${res.status}`;
+    try {
+      const body = await res.json();
+      detail = body?.detail || detail;
+    } catch {
+      // keep default
+    }
+    throw new Error(`Failed to save rating: ${detail}`);
+  }
+  return res.json();
+}
+
 export async function annotateTaskTrajectory(employeeId, sessionId, taskIndex, { force = false } = {}) {
   const query = force ? "?force=true" : "";
   const res = await fetch(

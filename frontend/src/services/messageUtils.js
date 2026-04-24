@@ -27,8 +27,13 @@ export function restoreMessage(m) {
     case "tool_result":
     case "reasoning":
     case "reflection":
-    case "chat_response":
       return { ...base, content: m.text ?? m.content };
+    case "chat_response":
+      return {
+        ...base,
+        content: m.text ?? m.content,
+        taskIndex: typeof m.task_index === "number" ? m.task_index : undefined,
+      };
     case "self_eval":
       return {
         ...base,
@@ -37,7 +42,11 @@ export function restoreMessage(m) {
         isConfident: m.is_confident,
       };
     case "answer":
-      return { ...base, content: m.text ?? m.content };
+      return {
+        ...base,
+        content: m.text ?? m.content,
+        taskIndex: typeof m.task_index === "number" ? m.task_index : undefined,
+      };
     case "status":
       return { ...base, content: m.message ?? m.content, done: true };
     default:

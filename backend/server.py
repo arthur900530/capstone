@@ -424,6 +424,25 @@ def _append_event(session_id: str, event_type: str, data: dict):
     _chats[session_id]["updated_at"] = _now_iso()
 
 
+def _current_task_index(session_id: str) -> int:
+    """Return the 0-based task index for the turn currently in flight.
+
+    Equals the number of user messages already recorded in the session
+    transcript minus 1 (the most recent user message opened *this* turn).
+    Clamped at 0 for safety when the function is called on a session with
+    no user messages yet.
+
+    This matches the indexing used by :func:`_record_task_run_for_session`
+    so SSE consumers can key ratings by ``(session_id, task_index)``
+    immediately without waiting for the row to land in ``task_runs``.
+    """
+    chat = _chats.get(session_id)
+    if not chat:
+        return 0
+    user_count = sum(1 for m in chat.get("messages") or [] if m.get("type") == "user")
+    return max(0, user_count - 1)
+
+
 async def _persist_task_run(employee_id: str, run: dict) -> None:
     """Insert a single ``task_runs`` row. Idempotent via (session_id, task_index).
 
@@ -780,7 +799,7 @@ async def _stream_task(question: str, session_id: str, max_trials: int, confiden
             _append_event(session_id, "reflection", evt)
             await asyncio.sleep(0.5)
 
-    evt = {"text": random.choice(_MOCK_ANSWERS)}
+    evt = {"text": random.choice(_MOCK_ANSWERS), "task_index": _current_task_index(session_id)}
     yield _sse("answer", evt)
     _append_event(session_id, "answer", evt)
     await asyncio.sleep(0.1)
@@ -806,7 +825,7 @@ async def _stream_conversation(question: str, session_id: str, agent: dict):
     await asyncio.sleep(0.2)
 
     response_text = random.choice(_CHAT_RESPONSES)
-    evt = {"text": response_text}
+    evt = {"text": response_text, "task_index": _current_task_index(session_id)}
     yield _sse("chat_response", evt)
     _append_event(session_id, "chat_response", evt)
     await asyncio.sleep(0.1)
@@ -1647,6 +1666,13 @@ async def _stream_real_task(
                         break
                     event_type = item["event"]
                     data = json.loads(item["data"])
+                    # Tag terminal events with the task_index the turn belongs
+                    # to, matching what _record_task_run_for_session writes to
+                    # the DB. Lets the frontend key the rating widget on
+                    # (session_id, task_index) without a separate lookup.
+                    if event_type in ("answer", "chat_response", "error"):
+                        data.setdefault("task_index", _current_task_index(session_id))
+                        item = _sse(event_type, data)
                     _append_event(session_id, event_type, data)
 
                     yield item
@@ -1677,7 +1703,7 @@ async def _stream_real_task(
                     logger.exception("Post-turn sync-back failed")
 
         if not got_answer and last_tool_text:
-            evt = {"text": last_tool_text}
+            evt = {"text": last_tool_text, "task_index": _current_task_index(session_id)}
             yield _sse("answer", evt)
             _append_event(session_id, "answer", evt)
 
@@ -1996,7 +2022,36 @@ async def list_chats():
 async def get_chat(chat_id: str):
     if chat_id not in _chats:
         raise HTTPException(status_code=404, detail="Chat not found")
-    return _chats[chat_id]
+
+    chat = _chats[chat_id]
+
+    # Hydrate per-turn user ratings from the task_runs table so reopening a
+    # conversation shows the stars the user already selected. The widget keys
+    # on ``task_index``; ``None`` means "not rated yet".
+    ratings: dict[int, int] = {}
+    try:
+        from routers.employees import _db_available as db_flag
+    except Exception:
+        db_flag = False
+    if db_flag:
+        try:
+            from db.engine import async_session
+            from db.models import TaskRun
+            from sqlalchemy import select
+
+            async with async_session() as session:
+                rows = (
+                    await session.execute(
+                        select(TaskRun.task_index, TaskRun.user_rating).where(
+                            TaskRun.session_id == chat_id
+                        )
+                    )
+                ).all()
+            ratings = {int(idx): int(r) for idx, r in rows if r is not None}
+        except Exception:
+            logger.exception("Failed to load ratings for chat=%s", chat_id)
+
+    return {**chat, "ratings": ratings}
 
 
 @app.patch("/api/chats/{chat_id}")

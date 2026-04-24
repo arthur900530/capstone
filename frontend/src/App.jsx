@@ -53,6 +53,10 @@ export default function App() {
   const [selectedSkillIds, setSelectedSkillIds] = useState([]);
   const [skipSkillConfirm, setSkipSkillConfirm] = useState(false);
   const [employees, setEmployees] = useState([]);
+  // task_index -> 1..5 user rating for the current session, hydrated from
+  // the server on chat load. Live ratings are managed optimistically by the
+  // MessageRating widget; this map feeds the widget's ``initialRating``.
+  const [ratings, setRatings] = useState({});
   const [config, setConfig] = useState({
     model: "",
     maxTrials: 3,
@@ -331,6 +335,10 @@ export default function App() {
                 type: "answer",
                 content: data.text,
                 question,
+                taskIndex:
+                  typeof data.task_index === "number"
+                    ? data.task_index
+                    : undefined,
               };
               break;
             case "chat_response":
@@ -338,6 +346,10 @@ export default function App() {
                 role: "assistant",
                 type: "chat_response",
                 content: data.text,
+                taskIndex:
+                  typeof data.task_index === "number"
+                    ? data.task_index
+                    : undefined,
               };
               break;
             case "error":
@@ -438,6 +450,7 @@ export default function App() {
     setStagedFiles([]);
     setSkipSkillConfirm(false);
     setMountDir("");
+    setRatings({});
     visibleAgentRef.current = null;
     sentinelRefs.current.clear();
     // Reset workspace state
@@ -481,6 +494,7 @@ export default function App() {
       setMessages(restored);
       setChatFiles(chat.files ?? []);
       setStagedFiles([]);
+      setRatings(chat.ratings || {});
       const hasBrowserActivity = chat.messages.some(
         (m) => m.type === "tool_call" && String(m.tool || "").startsWith("browser_"),
       );
@@ -639,6 +653,9 @@ export default function App() {
     workspacePanelOpen,
     setWorkspacePanelOpen,
     treeRefreshTrigger,
+    // rating plumbing (used by ChatView -> ChatMessage -> MessageRating)
+    ratings,
+    currentEmployeeId,
   };
 
   return (

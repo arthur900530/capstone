@@ -376,6 +376,12 @@ class TaskRun(Base):
     tool_histogram: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     raw_events: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     trajectory_annotations: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # Passive 1–5 rating the user can leave on the agent's terminal answer.
+    # Nullable so "unrated" is distinct from any numeric score.
+    user_rating: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    user_rating_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow
     )

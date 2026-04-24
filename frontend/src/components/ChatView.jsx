@@ -126,6 +126,8 @@ export default function ChatView({ showWelcome = true, embedded = false }) {
     messagesEndRef,
     registerSentinel,
     handleCanvasSelectFile,
+    ratings,
+    currentEmployeeId,
   } = useApp();
 
   const liveBrowserAvailable = LIVE_BROWSER_ENABLED && !IS_DEMO;
@@ -170,24 +172,51 @@ export default function ChatView({ showWelcome = true, embedded = false }) {
         />
         <div className="px-4 pt-4 pb-4">
           <div className="mx-auto max-w-2xl space-y-3">
-            {messages.map((msg, i) =>
-              msg.type === "agent_marker" ? (
-                <AgentDivider
-                  key={`${sessionId}-${i}`}
-                  agent={msg.agent}
-                  sentinelRef={(el) => registerSentinel(i, el, msg.agent)}
-                />
-              ) : (
-                <ChatMessage
-                  key={`${sessionId}-${i}`}
-                  message={msg}
-                  animate={msg.animate !== false}
-                  onFileEditClick={(m) => {
-                    if (m.path) handleCanvasSelectFile(m.path);
-                  }}
-                />
-              ),
-            )}
+            {(() => {
+              // Walk user turns so each answer can be keyed to the task it
+              // closes, even if the server didn't embed ``task_index`` in
+              // the SSE payload (e.g. legacy chat history).
+              let userTurns = -1;
+              return messages.map((msg, i) => {
+                if (msg.type === "user") userTurns += 1;
+                if (msg.type === "agent_marker") {
+                  return (
+                    <AgentDivider
+                      key={`${sessionId}-${i}`}
+                      agent={msg.agent}
+                      sentinelRef={(el) => registerSentinel(i, el, msg.agent)}
+                    />
+                  );
+                }
+                const resolvedTaskIndex =
+                  typeof msg.taskIndex === "number"
+                    ? msg.taskIndex
+                    : userTurns >= 0
+                      ? userTurns
+                      : undefined;
+                const enriched =
+                  msg.type === "answer" || msg.type === "chat_response"
+                    ? { ...msg, taskIndex: resolvedTaskIndex }
+                    : msg;
+                const ratingForMsg =
+                  currentEmployeeId && Number.isInteger(resolvedTaskIndex)
+                    ? (ratings && ratings[resolvedTaskIndex]) ?? null
+                    : null;
+                return (
+                  <ChatMessage
+                    key={`${sessionId}-${i}`}
+                    message={enriched}
+                    animate={msg.animate !== false}
+                    onFileEditClick={(m) => {
+                      if (m.path) handleCanvasSelectFile(m.path);
+                    }}
+                    employeeId={currentEmployeeId || undefined}
+                    sessionId={sessionId || undefined}
+                    rating={ratingForMsg}
+                  />
+                );
+              });
+            })()}
             <div ref={messagesEndRef} />
           </div>
         </div>
