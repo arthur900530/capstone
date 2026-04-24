@@ -38,6 +38,13 @@ import {
 
 const LIVE_BROWSER_ENABLED = import.meta.env.VITE_LIVE_BROWSER !== "false";
 
+function generateOptimisticChatName(question) {
+  const q = question.trim().replace(/[?!.]+$/, "");
+  const words = q.split(/\s+/).filter(Boolean);
+  if (words.length <= 6) return q.slice(0, 50);
+  return words.slice(0, 6).join(" ").slice(0, 50);
+}
+
 /* ── App (layout shell) ───────────────────────────────────────────────── */
 export default function App() {
   const navigate = useNavigate();
@@ -191,8 +198,49 @@ export default function App() {
   const handleSubmit = async (question, submittedFiles = []) => {
     if (!question.trim() || isStreaming) return;
 
+    const isNewSession = !sessionId;
     const sid = sessionId || crypto.randomUUID();
+    const now = new Date().toISOString();
     if (!sessionId) setSessionId(sid);
+
+    if (isNewSession) {
+      const optimisticChat = {
+        id: sid,
+        name: generateOptimisticChatName(question),
+        agent_id: null,
+        created_at: now,
+        updated_at: now,
+        message_count: 1,
+      };
+      setChats((prev) => [optimisticChat, ...prev.filter((c) => c.id !== sid)]);
+
+      if (activeEmployeeId) {
+        setEmployees((prev) =>
+          prev.map((emp) =>
+            emp.id !== activeEmployeeId
+              ? emp
+              : {
+                  ...emp,
+                  chatSessionIds: Array.from(
+                    new Set([...(emp.chatSessionIds || []), sid]),
+                  ),
+                },
+          ),
+        );
+      }
+    } else {
+      setChats((prev) =>
+        prev.map((chat) =>
+          chat.id === sid
+            ? {
+                ...chat,
+                updated_at: now,
+                message_count: (chat.message_count || 0) + 1,
+              }
+            : chat,
+        ),
+      );
+    }
 
     if (submittedFiles.length > 0) {
       const fileMeta = submittedFiles.map((f) => ({
@@ -243,6 +291,13 @@ export default function App() {
                 ...prev,
                 sessionId: data.session_id,
               }));
+              setChats((prev) =>
+                prev.map((chat) =>
+                  chat.id === data.session_id
+                    ? { ...chat, updated_at: new Date().toISOString() }
+                    : chat,
+                ),
+              );
               if (activeEmployeeId) {
                 Promise.all([
                   addChatSession(activeEmployeeId, data.session_id),
