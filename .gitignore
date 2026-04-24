@@ -37,7 +37,12 @@ frontend/.env.*.local
 .env.local
 .env.*
 !.env.example
+!.env.template
+# backend/config.py is tracked: it reads values from .env with safe defaults,
+# so the file itself carries no secrets. Ad-hoc local variants (config.py.bak,
+# config.local.py, etc.) stay ignored.
 *config.py*
+!backend/config.py
 !config.py.example
 
 # macOS
