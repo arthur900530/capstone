@@ -261,12 +261,18 @@ export default function StepPlugin({
                 Model
               </label>
               <select
-                value={config.model}
+                value={config.model || ""}
                 onChange={(e) =>
                   onConfigChange({ ...config, model: e.target.value })
                 }
                 className="w-full rounded-lg border border-border/40 bg-surface px-3 py-2 text-sm text-text-primary focus:border-accent-teal/50 focus:outline-none"
               >
+                {/* Placeholder always rendered so an empty ``config.model``
+                    doesn't silently desync: the <select> would otherwise
+                    display the first real option while state stayed "". */}
+                <option value="" disabled>
+                  Select a model…
+                </option>
                 {config.model && !suggestedModels.includes(config.model) && (
                   <option value={config.model}>{config.model}</option>
                 )}
