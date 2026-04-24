@@ -269,6 +269,10 @@ export default function EmployeeChat({ employee, onDesktopEvent }) {
                         employeeId={employee.id}
                         sessionId={sessionId}
                         rating={ratingForMsg}
+                        onRated={(ti, r) => {
+                          if (!Number.isInteger(ti)) return;
+                          setRatings((prev) => ({ ...(prev || {}), [ti]: r }));
+                        }}
                       />
                     );
                   });

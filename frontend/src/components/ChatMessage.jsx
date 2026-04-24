@@ -90,7 +90,7 @@ function CollapsibleBlock({ icon: Icon, title, badge, children, defaultOpen = fa
   );
 }
 
-function AnswerBlock({ message, animate, rating }) {
+function AnswerBlock({ message, animate, rating, onRated }) {
   const { displayed, done: typingDone } = useTypingEffect(message.content, { enabled: animate });
 
   return (
@@ -143,13 +143,14 @@ function AnswerBlock({ message, animate, rating }) {
           sessionId={rating.sessionId}
           taskIndex={rating.taskIndex}
           initialRating={rating.initialRating ?? null}
+          onRated={onRated}
         />
       ) : null}
     </div>
   );
 }
 
-function TypedBubble({ text, animate, rating }) {
+function TypedBubble({ text, animate, rating, onRated }) {
   const { displayed, done } = useTypingEffect(text, { enabled: animate });
   return (
     <div className="max-w-[80%] rounded-2xl rounded-bl-sm bg-surface px-4 py-3 text-sm leading-relaxed text-text-primary">
@@ -163,6 +164,7 @@ function TypedBubble({ text, animate, rating }) {
           sessionId={rating.sessionId}
           taskIndex={rating.taskIndex}
           initialRating={rating.initialRating ?? null}
+          onRated={onRated}
         />
       ) : null}
     </div>
@@ -177,6 +179,7 @@ export default function ChatMessage({
   employeeId,
   sessionId,
   rating,
+  onRated,
 }) {
   const { role, type, content } = message;
 
@@ -342,13 +345,23 @@ export default function ChatMessage({
 
   if (type === "answer") {
     return (
-      <AnswerBlock message={message} animate={animate} rating={ratingContext} />
+      <AnswerBlock
+        message={message}
+        animate={animate}
+        rating={ratingContext}
+        onRated={onRated}
+      />
     );
   }
 
   if (type === "chat_response") {
     return (
-      <TypedBubble text={content} animate={animate} rating={ratingContext} />
+      <TypedBubble
+        text={content}
+        animate={animate}
+        rating={ratingContext}
+        onRated={onRated}
+      />
     );
   }
 

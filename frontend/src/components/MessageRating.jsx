@@ -18,6 +18,7 @@ export default function MessageRating({
   taskIndex,
   initialRating = null,
   disabled = false,
+  onRated,
 }) {
   const [rating, setRating] = useState(initialRating ?? null);
   const [hover, setHover] = useState(0);
@@ -51,6 +52,14 @@ export default function MessageRating({
         await rateTaskRun(employeeId, sessionId, taskIndex, next);
         committed.current = next;
         setStatus("idle");
+        // Lift the rating up so parents (App/ChatView) can keep their
+        // context map in sync across tab switches + re-mounts. Fire-and-
+        // forget — ignore errors from parent handlers.
+        try {
+          onRated?.(taskIndex, next);
+        } catch {
+          // noop
+        }
         return;
       } catch (err) {
         if (err?.code === "TASK_RUN_NOT_FOUND" && i < attempts.length - 1) {

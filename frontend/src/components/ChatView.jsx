@@ -127,8 +127,14 @@ export default function ChatView({ showWelcome = true, embedded = false }) {
     registerSentinel,
     handleCanvasSelectFile,
     ratings,
+    setRatings,
     currentEmployeeId,
   } = useApp();
+
+  const handleRated = (taskIndex, rating) => {
+    if (!Number.isInteger(taskIndex)) return;
+    setRatings?.((prev) => ({ ...(prev || {}), [taskIndex]: rating }));
+  };
 
   const liveBrowserAvailable = LIVE_BROWSER_ENABLED && !IS_DEMO;
 
@@ -213,6 +219,7 @@ export default function ChatView({ showWelcome = true, embedded = false }) {
                     employeeId={currentEmployeeId || undefined}
                     sessionId={sessionId || undefined}
                     rating={ratingForMsg}
+                    onRated={handleRated}
                   />
                 );
               });

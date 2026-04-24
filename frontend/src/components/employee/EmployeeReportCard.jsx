@@ -317,10 +317,15 @@ export default function EmployeeReportCard({ employee }) {
             ) : (
               <div className="grid gap-6 md:grid-cols-[minmax(0,220px)_minmax(0,1fr)] md:items-center">
                 <div>
-                  <Row
-                    label="Average"
-                    value={`${a.avg_user_rating.toFixed(2)} / 5`}
-                  />
+                  <div className="flex items-baseline justify-between py-1">
+                    <span className="text-xs text-text-muted">Average</span>
+                    <span className="flex items-baseline gap-1 font-semibold text-text-primary">
+                      <span className="text-3xl tabular-nums">
+                        {a.avg_user_rating.toFixed(2)}
+                      </span>
+                      <span className="text-sm text-text-muted">/ 5</span>
+                    </span>
+                  </div>
                   <Row
                     label="Rated tasks"
                     value={`${a.rated_tasks} / ${a.tasks}`}

@@ -1,6 +1,7 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
   Loader2,
   Sparkles,
@@ -790,6 +791,26 @@ export default function TaskPerformanceSection({
   const [expanded, setExpanded] = useState(() => new Set());
   const [backfilling, setBackfilling] = useState(false);
   const [backfillError, setBackfillError] = useState(null);
+  const [page, setPage] = useState(0);
+  // null = "All". `recent` is newest-first, so slicing from the head
+  // keeps the chart focused on the most recent N sessions.
+  const [trendWindow, setTrendWindow] = useState(10);
+
+  const trendTasks = useMemo(() => {
+    if (trendWindow == null) return recent;
+    return recent.slice(0, trendWindow);
+  }, [recent, trendWindow]);
+
+  const PAGE_SIZE = 5;
+  const pageCount = Math.max(1, Math.ceil(recent.length / PAGE_SIZE));
+  // Clamp the current page if the underlying list shrinks (e.g. filters
+  // applied upstream) so we don't end up stranded on an empty page.
+  useEffect(() => {
+    if (page > pageCount - 1) setPage(pageCount - 1);
+  }, [pageCount, page]);
+  const pageStart = page * PAGE_SIZE;
+  const pageEnd = Math.min(pageStart + PAGE_SIZE, recent.length);
+  const pageItems = recent.slice(pageStart, pageEnd);
 
   const unannotated = aggregate?.unannotated_tasks ?? 0;
   const annotated = aggregate?.annotated_tasks ?? 0;
@@ -935,19 +956,55 @@ export default function TaskPerformanceSection({
       {/* Goal achievement trend (T1 = oldest → Tn = newest) */}
       {recent.length > 0 ? (
         <div className="rounded-lg border border-border/60 bg-[#2a2c31] p-4 shadow-[0_2px_12px_rgba(0,0,0,0.25)]">
-          <div className="mb-1 flex items-center gap-2">
-            <TrendingUp size={14} className="text-accent-teal" />
-            <h3 className="text-xs font-semibold uppercase tracking-wider text-text-secondary">
-              Goal achievement trend
-            </h3>
+          <div className="mb-1 flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <TrendingUp size={14} className="text-accent-teal" />
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-text-secondary">
+                Goal achievement trend
+              </h3>
+            </div>
+            <div
+              className="flex items-center gap-1"
+              role="group"
+              aria-label="Trend window"
+            >
+              {[
+                { label: "5", value: 5 },
+                { label: "10", value: 10 },
+                { label: "All", value: null },
+              ].map((opt) => {
+                const active = trendWindow === opt.value;
+                const disabled =
+                  opt.value != null && opt.value >= recent.length;
+                return (
+                  <button
+                    key={opt.label}
+                    type="button"
+                    onClick={() => setTrendWindow(opt.value)}
+                    disabled={disabled && !active}
+                    className={`rounded border px-2 py-0.5 text-[11px] tabular-nums transition-colors ${
+                      active
+                        ? "border-accent-teal/50 bg-accent-teal/15 text-accent-teal"
+                        : "border-border/50 bg-surface/60 text-text-muted hover:border-accent-teal/30 hover:text-text-primary"
+                    } ${
+                      disabled && !active
+                        ? "cursor-not-allowed opacity-40 hover:border-border/50 hover:text-text-muted"
+                        : ""
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                );
+              })}
+            </div>
           </div>
           <p className="mb-1 text-[11px] text-text-muted">
-            Leaf-step achievement across the most recent {recent.length} task
-            {recent.length !== 1 ? "s" : ""} · dots colored by bucket · hover for details
+            Leaf-step achievement across the most recent {trendTasks.length} task
+            {trendTasks.length !== 1 ? "s" : ""} · dots colored by bucket · hover for details
             {onOpenTrajectory ? " · click a point to open" : ""}
           </p>
           <TrendChart
-            tasks={recent}
+            tasks={trendTasks}
             onPointClick={
               onOpenTrajectory
                 ? (task) =>
@@ -981,27 +1038,63 @@ export default function TaskPerformanceSection({
             No recent tasks recorded.
           </p>
         ) : (
-          <ul className="space-y-2">
-            {recent.map((run, i) => {
-              const key = `${run.session_id}-${run.task_index}`;
-              return (
-                <TaskRow
-                  key={key}
-                  index={i}
-                  run={run}
-                  expanded={expanded.has(key)}
-                  onToggle={() => toggle(key)}
-                  onOpenTrajectory={() =>
-                    onOpenTrajectory?.({
-                      sessionId: run.session_id,
-                      taskIndex: run.task_index,
-                      run,
-                    })
-                  }
-                />
-              );
-            })}
-          </ul>
+          <>
+            <ul className="space-y-2">
+              {pageItems.map((run, i) => {
+                const key = `${run.session_id}-${run.task_index}`;
+                return (
+                  <TaskRow
+                    key={key}
+                    index={pageStart + i}
+                    run={run}
+                    expanded={expanded.has(key)}
+                    onToggle={() => toggle(key)}
+                    onOpenTrajectory={() =>
+                      onOpenTrajectory?.({
+                        sessionId: run.session_id,
+                        taskIndex: run.task_index,
+                        run,
+                      })
+                    }
+                  />
+                );
+              })}
+            </ul>
+            {pageCount > 1 ? (
+              <div className="mt-3 flex items-center justify-between text-[11px] text-text-muted">
+                <span className="tabular-nums">
+                  Showing {pageStart + 1}–{pageEnd} of {recent.length}
+                </span>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setPage((p) => Math.max(0, p - 1))}
+                    disabled={page === 0}
+                    className="inline-flex items-center gap-1 rounded border border-border/50 bg-surface/60 px-2 py-1 text-[11px] text-text-secondary hover:border-accent-teal/40 hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40"
+                    aria-label="Previous page"
+                  >
+                    <ChevronLeft size={12} />
+                    Prev
+                  </button>
+                  <span className="tabular-nums">
+                    Page {page + 1} / {pageCount}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setPage((p) => Math.min(pageCount - 1, p + 1))
+                    }
+                    disabled={page >= pageCount - 1}
+                    className="inline-flex items-center gap-1 rounded border border-border/50 bg-surface/60 px-2 py-1 text-[11px] text-text-secondary hover:border-accent-teal/40 hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40"
+                    aria-label="Next page"
+                  >
+                    Next
+                    <ChevronRight size={12} />
+                  </button>
+                </div>
+              </div>
+            ) : null}
+          </>
         )}
       </div>
     </div>

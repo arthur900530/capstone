@@ -655,6 +655,7 @@ export default function App() {
     treeRefreshTrigger,
     // rating plumbing (used by ChatView -> ChatMessage -> MessageRating)
     ratings,
+    setRatings,
     currentEmployeeId,
   };
 
