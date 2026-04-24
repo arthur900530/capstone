@@ -1,6 +1,16 @@
 import { useState, useEffect, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { ArrowLeft, MessageSquare, MessageSquarePlus, Terminal, BarChart3, Wrench, Trash2, Loader2 } from "lucide-react";
+import {
+  ArrowLeft,
+  MessageSquare,
+  MessageSquarePlus,
+  Terminal,
+  BarChart3,
+  Wrench,
+  Files,
+  Trash2,
+  Loader2,
+} from "lucide-react";
 import ConfirmDialog from "../components/skills/ConfirmDialog";
 import * as Icons from "lucide-react";
 import EmployeeChat from "../components/employee/EmployeeChat";
@@ -13,6 +23,7 @@ const IS_DEMO = import.meta.env.VITE_DEMO === "true";
 const LIVE_BROWSER_ENABLED = import.meta.env.VITE_LIVE_BROWSER !== "false";
 import EmployeeReportCard from "../components/employee/EmployeeReportCard";
 import EmployeeSkillsTab from "../components/employee/EmployeeSkillsTab";
+import EmployeeProjectFilesTab from "../components/employee/EmployeeProjectFilesTab";
 import PLUGINS from "../data/plugins";
 import { getEmployeeById, deleteEmployee } from "../services/employeeStore";
 import { useApp } from "../context/AppContext";
@@ -20,6 +31,7 @@ import { useApp } from "../context/AppContext";
 const TABS = [
   { id: "chat", label: "Chat", icon: MessageSquare },
   { id: "skills", label: "Skills", icon: Wrench },
+  { id: "project_files", label: "Project Files", icon: Files },
   // { id: "console", label: "Console", icon: Terminal },
   { id: "report", label: "Report Card", icon: BarChart3 },
 ];
@@ -210,6 +222,9 @@ export default function EmployeePage() {
           employee={employee}
           onEmployeeUpdated={(emp) => setEmployee(emp)}
         />
+      )}
+      {activeTab === "project_files" && (
+        <EmployeeProjectFilesTab key={id} employee={employee} />
       )}
       {activeTab === "console" && <EmployeeConsole key={id} employee={employee} />}
       {activeTab === "report" && <EmployeeReportCard key={id} employee={employee} />}

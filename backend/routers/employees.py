@@ -2,11 +2,45 @@
 
 from __future__ import annotations
 
+import logging
+import mimetypes
+import os
+import re
+import shutil
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
+
+logger = logging.getLogger(__name__)
+
+# ── Project file storage ─────────────────────────────────────────────────────
+# Files users attach to an employee (via the Project Files tab) live on the
+# host disk under ``backend/uploads/employees/<employee_id>/<filename>``.
+# Metadata (id, name, size, mime, uploaded_at, storage_uri) is persisted on
+# the employee row in the existing ``files`` JSONB column, so no migration
+# is needed. The agent workspace plumbing in ``server.py`` copies these
+# files into ``/workspace/project_files/`` at the start of each turn so the
+# agent's file-editor tool can read them by a predictable relative path.
+
+_BACKEND_DIR = Path(__file__).resolve().parent.parent
+PROJECT_FILES_ROOT = _BACKEND_DIR / "uploads" / "employees"
+
+
+def _employee_files_dir(employee_id: str) -> Path:
+    """Return the on-disk directory for an employee's project files."""
+    safe_id = re.sub(r"[^A-Za-z0-9_-]", "_", employee_id)
+    return PROJECT_FILES_ROOT / safe_id
+
+
+def _safe_file_name(name: str) -> str:
+    """Strip path components and normalise to a safe single-segment name."""
+    base = os.path.basename((name or "").strip()) or f"file_{uuid.uuid4().hex}"
+    # Drop characters that would break shell paths or look suspicious.
+    return re.sub(r"[\x00-\x1f/\\]", "_", base)
 
 from metrics import (
     aggregate_task_runs,
@@ -819,3 +853,218 @@ async def list_session_ratings(employee_id: str, session_id: str):
         "session_id": session_id,
         "ratings": {int(idx): int(r) for idx, r in rows if r is not None},
     }
+
+
+# ── Project Files ────────────────────────────────────────────────────────────
+#
+# Project files are attached to an employee and get copied into the agent's
+# workspace at the start of every turn, so the agent's standing-task prompt
+# can reference them by a stable relative path. Unlike chat-uploaded files
+# (staged per-session in /tmp), these persist on the employee record.
+
+
+def _file_entry(
+    file_id: str,
+    name: str,
+    size: int,
+    mime: str,
+    storage_uri: str,
+    uploaded_at: str,
+) -> dict:
+    return {
+        "id": file_id,
+        "name": name,
+        "size": size,
+        "mime": mime or "application/octet-stream",
+        "storage_uri": storage_uri,
+        "uploaded_at": uploaded_at,
+    }
+
+
+def _resolve_and_sanitise_files(raw: list | None) -> list[dict]:
+    """Normalise a list of file entries read from the DB/memory store.
+
+    Older rows may be missing fields we later added; backfill them with safe
+    defaults so downstream code can assume a complete shape.
+    """
+    if not isinstance(raw, list):
+        return []
+    out: list[dict] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        name = _safe_file_name(str(item.get("name") or ""))
+        if not name:
+            continue
+        out.append({
+            "id": str(item.get("id") or uuid.uuid4().hex),
+            "name": name,
+            "size": int(item.get("size") or 0),
+            "mime": str(item.get("mime") or "application/octet-stream"),
+            "storage_uri": str(item.get("storage_uri") or ""),
+            "uploaded_at": str(item.get("uploaded_at") or ""),
+        })
+    return out
+
+
+async def _update_files_in_store(employee_id: str, new_files: list[dict]) -> None:
+    """Persist ``new_files`` as the employee's ``files`` column (or memory entry)."""
+    if _db_available:
+        from db.engine import async_session
+        from db.models import Employee
+        from sqlalchemy import select
+
+        async with async_session() as session:
+            row = (await session.execute(
+                select(Employee).where(Employee.id == _parse_uuid(employee_id))
+            )).scalar_one_or_none()
+            if not row:
+                raise HTTPException(404, "Employee not found")
+            row.files = new_files
+            await session.commit()
+        return
+
+    emp = next((e for e in _memory_store if e["id"] == employee_id), None)
+    if not emp:
+        raise HTTPException(404, "Employee not found")
+    emp["files"] = new_files
+
+
+async def _read_files_from_store(employee_id: str) -> list[dict]:
+    """Read the current files list from DB or memory fallback."""
+    if _db_available:
+        from db.engine import async_session
+        from db.models import Employee
+        from sqlalchemy import select
+
+        async with async_session() as session:
+            row = (await session.execute(
+                select(Employee).where(Employee.id == _parse_uuid(employee_id))
+            )).scalar_one_or_none()
+            if not row:
+                raise HTTPException(404, "Employee not found")
+            return _resolve_and_sanitise_files(row.files)
+
+    emp = next((e for e in _memory_store if e["id"] == employee_id), None)
+    if not emp:
+        raise HTTPException(404, "Employee not found")
+    return _resolve_and_sanitise_files(emp.get("files"))
+
+
+def _unique_name(dest_dir: Path, desired: str) -> str:
+    """Return ``desired`` or a suffixed variant that doesn't collide on disk.
+
+    ``file.pdf`` → ``file.pdf`` if free, else ``file-<hash6>.pdf``.
+    """
+    if not (dest_dir / desired).exists():
+        return desired
+    stem, dot, ext = desired.partition(".")
+    suffix = uuid.uuid4().hex[:6]
+    return f"{stem}-{suffix}" + (f".{ext}" if dot else "")
+
+
+@router.get("/{employee_id}/project_files")
+async def list_project_files(employee_id: str):
+    files = await _read_files_from_store(employee_id)
+    return {"employee_id": employee_id, "files": files}
+
+
+@router.post("/{employee_id}/project_files")
+async def upload_project_files(
+    employee_id: str,
+    files: list[UploadFile] = File(...),
+):
+    """Upload one or more files and attach them to the employee record.
+
+    Files are written to ``PROJECT_FILES_ROOT/<employee_id>/<filename>``
+    (resolving on-disk name collisions with a random suffix) and appended to
+    the employee's ``files`` JSONB list.
+    """
+    if not files:
+        raise HTTPException(400, "No files provided")
+
+    existing = await _read_files_from_store(employee_id)
+    dest_dir = _employee_files_dir(employee_id)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+
+    added: list[dict] = []
+    for upload in files:
+        raw_name = _safe_file_name(upload.filename or "")
+        final_name = _unique_name(dest_dir, raw_name)
+        dest_path = dest_dir / final_name
+
+        content = await upload.read()
+        try:
+            dest_path.write_bytes(content)
+        except OSError as exc:
+            logger.exception("Failed to write project file %s", dest_path)
+            raise HTTPException(500, f"Failed to save {final_name}: {exc}")
+
+        mime = upload.content_type or (mimetypes.guess_type(final_name)[0] or "application/octet-stream")
+        entry = _file_entry(
+            file_id=uuid.uuid4().hex,
+            name=final_name,
+            size=len(content),
+            mime=mime,
+            storage_uri=str(dest_path),
+            uploaded_at=datetime.now(timezone.utc).isoformat(),
+        )
+        added.append(entry)
+
+    merged = existing + added
+    await _update_files_in_store(employee_id, merged)
+
+    logger.info(
+        "project_files: uploaded %d file(s) for employee=%s (total=%d)",
+        len(added), employee_id, len(merged),
+    )
+    return {"employee_id": employee_id, "files": merged, "added": added}
+
+
+@router.delete("/{employee_id}/project_files/{file_id}")
+async def delete_project_file(employee_id: str, file_id: str):
+    existing = await _read_files_from_store(employee_id)
+    target = next((f for f in existing if f["id"] == file_id), None)
+    if not target:
+        raise HTTPException(404, "Project file not found")
+
+    # Remove bytes from disk best-effort; always update the metadata row.
+    storage_uri = target.get("storage_uri") or ""
+    if storage_uri:
+        try:
+            # Only delete files that live inside our managed directory to
+            # avoid a path-traversal from a malformed storage_uri wiping
+            # something else on the host.
+            p = Path(storage_uri).resolve()
+            root = PROJECT_FILES_ROOT.resolve()
+            if root in p.parents and p.exists():
+                p.unlink()
+        except Exception:
+            logger.exception("Failed to delete project file bytes at %s", storage_uri)
+
+    remaining = [f for f in existing if f["id"] != file_id]
+    await _update_files_in_store(employee_id, remaining)
+    return {"employee_id": employee_id, "files": remaining, "removed": target}
+
+
+@router.get("/{employee_id}/project_files/{file_id}/raw")
+async def get_project_file_raw(employee_id: str, file_id: str):
+    existing = await _read_files_from_store(employee_id)
+    target = next((f for f in existing if f["id"] == file_id), None)
+    if not target:
+        raise HTTPException(404, "Project file not found")
+
+    storage_uri = target.get("storage_uri") or ""
+    if not storage_uri:
+        raise HTTPException(410, "Project file bytes are not available")
+
+    p = Path(storage_uri).resolve()
+    root = PROJECT_FILES_ROOT.resolve()
+    if root not in p.parents or not p.exists():
+        raise HTTPException(410, "Project file bytes are not available")
+
+    return FileResponse(
+        path=str(p),
+        media_type=target.get("mime") or "application/octet-stream",
+        filename=target.get("name") or p.name,
+    )

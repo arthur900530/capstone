@@ -418,6 +418,54 @@ export async function deleteSubmission(submissionId) {
 }
 
 // ---------------------------------------------------------------------------
+// Employee project files
+// ---------------------------------------------------------------------------
+// Project files are attached to an employee (not a chat session) and get
+// staged into the agent's workspace at the start of every turn. They are
+// distinct from chat-uploaded files, which are one-shot per session.
+
+export async function listProjectFiles(employeeId) {
+  const res = await fetch(
+    `${API_BASE}/employees/${encodeURIComponent(employeeId)}/project_files`,
+  );
+  if (!res.ok) throw new Error(`Failed to load project files: ${res.status}`);
+  return res.json();
+}
+
+export async function uploadProjectFiles(employeeId, files) {
+  const form = new FormData();
+  for (const f of files) form.append("files", f);
+  const res = await fetch(
+    `${API_BASE}/employees/${encodeURIComponent(employeeId)}/project_files`,
+    { method: "POST", body: form },
+  );
+  if (!res.ok) {
+    let detail = `${res.status}`;
+    try {
+      const body = await res.json();
+      detail = body?.detail || detail;
+    } catch {
+      // keep default
+    }
+    throw new Error(`Upload failed: ${detail}`);
+  }
+  return res.json();
+}
+
+export async function deleteProjectFile(employeeId, fileId) {
+  const res = await fetch(
+    `${API_BASE}/employees/${encodeURIComponent(employeeId)}/project_files/${encodeURIComponent(fileId)}`,
+    { method: "DELETE" },
+  );
+  if (!res.ok) throw new Error(`Failed to delete project file: ${res.status}`);
+  return res.json();
+}
+
+export function projectFileRawUrl(employeeId, fileId) {
+  return `${API_BASE}/employees/${encodeURIComponent(employeeId)}/project_files/${encodeURIComponent(fileId)}/raw`;
+}
+
+// ---------------------------------------------------------------------------
 // Workspace browsing
 // ---------------------------------------------------------------------------
 

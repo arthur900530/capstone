@@ -1724,6 +1724,28 @@ async def _stream_real_task(
                 yield _sse("done", {"message": "Complete"})
                 return
 
+            # Stage the employee's Project Files into /workspace/project_files
+            # so the agent's file-editor tool can read them at the stable
+            # paths advertised in its system prompt. Done under the workspace
+            # lock right after priming so mount_dir contents don't overwrite
+            # them, and so a deleted file never survives into the next turn.
+            try:
+                staged = await asyncio.to_thread(
+                    _stage_project_files_into_workspace,
+                    (employee_profile or {}).get("project_files"),
+                    host_dir,
+                )
+                if staged:
+                    logger.info(
+                        "[project_files] staged %d file(s) into /workspace/project_files (session=%s)",
+                        staged, session_id,
+                    )
+            except Exception:
+                logger.exception(
+                    "[project_files] staging failed (session=%s) — continuing",
+                    session_id,
+                )
+
             _pending_bash_writes[session_id] = []
 
             loop.run_in_executor(None, _run_agent)
@@ -1868,6 +1890,69 @@ async def upload_files(
     return {"session_id": sid, "upload_dir": staging, "files": saved}
 
 
+def _sanitise_project_file_manifest(raw) -> list[dict]:
+    """Normalise the ``Employee.files`` JSONB column into the persona-block
+    manifest shape. Only the fields the agent needs (name, size, mime,
+    storage_uri) survive; everything else is dropped so we don't leak
+    internal metadata (uploaded_at, id) into the system prompt."""
+    if not isinstance(raw, list):
+        return []
+    out: list[dict] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        if not name:
+            continue
+        out.append({
+            "name": name,
+            "size": int(item.get("size") or 0),
+            "mime": str(item.get("mime") or "application/octet-stream"),
+            "storage_uri": str(item.get("storage_uri") or ""),
+        })
+    return out
+
+
+def _stage_project_files_into_workspace(
+    project_files: list[dict] | None,
+    host_dir: str | None,
+) -> int:
+    """Copy the employee's project files into ``<host_dir>/project_files``.
+
+    Called once per turn after the shared workspace has been primed with
+    the user's mount_dir contents. The directory is recreated from scratch
+    each turn so deletions on the Employee page propagate and stale files
+    don't linger across chats. Returns the count of successfully staged
+    files (for logging only).
+    """
+    if not project_files or not host_dir or not os.path.isdir(host_dir):
+        return 0
+
+    target = os.path.join(host_dir, "project_files")
+    # Wipe and recreate so a deleted file never survives into the next turn.
+    shutil.rmtree(target, ignore_errors=True)
+    os.makedirs(target, exist_ok=True)
+
+    ok = 0
+    for meta in project_files:
+        src = (meta or {}).get("storage_uri") or ""
+        name = (meta or {}).get("name") or ""
+        if not src or not name or not os.path.isfile(src):
+            logger.warning(
+                "[project_files] skip missing source for name=%r src=%r",
+                name, src,
+            )
+            continue
+        try:
+            shutil.copy2(src, os.path.join(target, os.path.basename(name)))
+            ok += 1
+        except Exception:
+            logger.exception(
+                "[project_files] failed to stage %s → %s", src, target
+            )
+    return ok
+
+
 async def _fetch_employee_profile_by_id(employee_id: str) -> dict | None:
     """Look up an employee row by id and return a persona dict, or ``None``.
 
@@ -1905,6 +1990,11 @@ async def _fetch_employee_profile_by_id(employee_id: str) -> dict | None:
                     "name": row.name or "",
                     "position": getattr(row, "position", "") or "",
                     "task": row.task or "",
+                    # Metadata-only project-file manifest. The agent sees this
+                    # in its system prompt via _format_employee_persona and
+                    # can read each file's bytes from /workspace/project_files
+                    # where _stream_real_task stages them before each turn.
+                    "project_files": _sanitise_project_file_manifest(row.files),
                 }
         except Exception:
             logger.exception("[persona] DB lookup for employee_id=%s failed", employee_id)
@@ -1925,6 +2015,7 @@ async def _fetch_employee_profile_by_id(employee_id: str) -> dict | None:
             "name": emp.get("name") or "",
             "position": emp.get("position") or "",
             "task": emp.get("task") or "",
+            "project_files": _sanitise_project_file_manifest(emp.get("files")),
         }
     except Exception:
         logger.exception("[persona] memory-store lookup failed")

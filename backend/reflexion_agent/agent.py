@@ -478,7 +478,53 @@ def _format_employee_persona(profile: dict | None) -> str:
             task,
         ])
 
+    project_files = profile.get("project_files") or []
+    if isinstance(project_files, list) and project_files:
+        lines.extend(_format_project_files_block(project_files))
+
     return "\n".join(lines)
+
+
+def _format_project_files_block(files: list[dict]) -> list[str]:
+    """Render the ``## Project Files`` section of the persona suffix.
+
+    The platform stages each file's bytes at ``/workspace/project_files/<name>``
+    before every turn (see ``_stage_project_files_into_workspace`` in
+    server.py). We list names/sizes/mime types here rather than inlining
+    content so small and large attachments are handled uniformly: the agent
+    uses its standard file-editor or bash tools to read whichever files it
+    actually needs for the current turn.
+    """
+    out: list[str] = [
+        "",
+        "## Project Files (always available in your workspace)",
+        "Your manager attached the following files to this role. They are "
+        "staged fresh at the start of every turn under the relative path "
+        "`./project_files/` inside your workspace, so you can open them "
+        "with your file-editor or read them via the terminal whenever "
+        "their contents are relevant to the user's request. Treat them as "
+        "persistent reference material for your role — not as one-shot "
+        "attachments — and check them before asking the user for "
+        "information they may already contain.",
+        "",
+    ]
+    for meta in files:
+        name = (meta or {}).get("name") or ""
+        if not name:
+            continue
+        size = int((meta or {}).get("size") or 0)
+        mime = str((meta or {}).get("mime") or "application/octet-stream")
+        size_str = _format_size(size)
+        out.append(f"- `./project_files/{name}` — {size_str}, {mime}")
+    return out
+
+
+def _format_size(size_bytes: int) -> str:
+    if size_bytes < 1024:
+        return f"{size_bytes} B"
+    if size_bytes < 1024 * 1024:
+        return f"{size_bytes / 1024:.1f} KB"
+    return f"{size_bytes / (1024 * 1024):.1f} MB"
 
 
 def runtime(
