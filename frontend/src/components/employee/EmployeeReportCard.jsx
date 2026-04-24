@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { fetchEmployeeMetrics } from "../../services/api";
 import TaskTrajectoryDrawer from "./TaskTrajectoryDrawer";
+import TaskPerformanceSection from "./TaskPerformanceSection";
 
 /* ── Tiny primitives ──────────────────────────────────────────────────── */
 
@@ -176,6 +177,19 @@ export default function EmployeeReportCard({ employee }) {
   const [error, setError] = useState(null);
   const [selectedTask, setSelectedTask] = useState(null);
 
+  async function loadMetrics({ showSpinner = true } = {}) {
+    if (showSpinner) setLoading(true);
+    setError(null);
+    try {
+      const res = await fetchEmployeeMetrics(employee.id);
+      setData(res);
+    } catch (err) {
+      setError(err?.message || "Failed to load metrics");
+    } finally {
+      if (showSpinner) setLoading(false);
+    }
+  }
+
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
@@ -289,6 +303,15 @@ export default function EmployeeReportCard({ employee }) {
           </MetricCard>
         </div>
 
+        {/* Goal-oriented task performance (new) */}
+        <TaskPerformanceSection
+          employeeId={employee.id}
+          aggregate={a}
+          recent={data.recent || []}
+          onOpenTrajectory={(task) => setSelectedTask(task)}
+          onRefresh={() => loadMetrics({ showSpinner: false })}
+        />
+
         {/* Recent tasks */}
         <div>
           <div className="mb-2 flex items-center gap-2">
@@ -328,6 +351,7 @@ export default function EmployeeReportCard({ employee }) {
           employeeId={employee.id}
           task={selectedTask}
           onClose={() => setSelectedTask(null)}
+          onAnnotated={() => loadMetrics({ showSpinner: false })}
         />
       ) : null}
     </div>

@@ -146,7 +146,7 @@ function TreeNode({ node, depth = 0, processed = false }) {
   );
 }
 
-export default function TaskTrajectoryDrawer({ employeeId, task, onClose }) {
+export default function TaskTrajectoryDrawer({ employeeId, task, onClose, onAnnotated }) {
   const [view, setView] = useState("processed");
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState(null);
@@ -196,6 +196,20 @@ export default function TaskTrajectoryDrawer({ employeeId, task, onClose }) {
       );
       setData(result);
       setView("processed");
+      // Notify the parent so any aggregated views (report card's Task
+      // Performance section + trend chart) re-fetch and stay in sync with
+      // what the drawer is now showing. Fire-and-forget; never blocks.
+      if (onAnnotated) {
+        Promise.resolve(
+          onAnnotated({
+            sessionId: task.sessionId,
+            taskIndex: task.taskIndex,
+            annotations: result?.annotations,
+          }),
+        ).catch(() => {
+          /* parent refresh shouldn't surface in the drawer */
+        });
+      }
     } catch (err) {
       setAnnotationError(err.message || "Failed to annotate trajectory");
     } finally {

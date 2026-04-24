@@ -253,7 +253,7 @@ async def delete_employee(employee_id: str):
 _RECENT_TASK_LIMIT = 20
 
 
-def _fallback_metrics_from_memory(employee_id: str) -> dict:
+def _fallback_metrics_from_memory(employee_id: str, limit: int = _RECENT_TASK_LIMIT) -> dict:
     """Derive metrics from the in-memory chat store.
 
     Used when the DB is unavailable (or for very old sessions predating the
@@ -289,8 +289,9 @@ def _fallback_metrics_from_memory(employee_id: str) -> dict:
         "aggregate": aggregate_task_runs(runs),
         "recent": [
             {**r, "started_at": _iso(r.get("started_at")), "ended_at": _iso(r.get("ended_at"))}
-            for r in runs[:_RECENT_TASK_LIMIT]
+            for r in runs[:limit]
         ],
+        "recent_limit": limit,
         "source": "memory",
     }
 
@@ -331,13 +332,17 @@ def _trajectory_summary(run: dict, tree) -> dict:
 
 
 @router.get("/{employee_id}/metrics")
-async def employee_metrics(employee_id: str):
+async def employee_metrics(employee_id: str, limit: int = _RECENT_TASK_LIMIT):
     """Return aggregate + recent task-run metrics for the report card.
 
     Reads from the ``task_runs`` table when the DB is available; otherwise
     falls back to deriving runs from the in-memory chat transcript so older
     sessions and DB-less dev environments still render a useful card.
+    The ``limit`` query param controls how many recent runs are returned
+    alongside the aggregate (the aggregate always spans every run).
     """
+    limit = max(1, min(int(limit), 100))
+
     if _db_available:
         from db.engine import async_session
         from db.models import Employee, TaskRun
@@ -365,14 +370,15 @@ async def employee_metrics(employee_id: str):
         return {
             "employee_id": employee_id,
             "aggregate": aggregate_task_runs(runs),
-            "recent": runs[:_RECENT_TASK_LIMIT],
+            "recent": runs[:limit],
+            "recent_limit": limit,
             "source": "db",
         }
 
     emp = next((e for e in _memory_store if e.get("id") == employee_id), None)
     if emp is None:
         raise HTTPException(404, "Employee not found")
-    return _fallback_metrics_from_memory(employee_id)
+    return _fallback_metrics_from_memory(employee_id, limit=limit)
 
 
 @router.get("/{employee_id}/task_runs/{session_id}/{task_index}/trajectory")
@@ -614,4 +620,106 @@ async def annotate_task_trajectory(
         "annotations": annotations,
         "annotated": True,
         "source": "cache" if (cached and not force) else "llm",
+    }
+
+
+@router.post("/{employee_id}/task_runs/annotate_recent")
+async def annotate_recent_task_runs(
+    employee_id: str,
+    limit: int = _RECENT_TASK_LIMIT,
+    force: bool = False,
+):
+    """Backfill LLM goal annotations for this employee's recent task runs.
+
+    Walks the N most recent ``task_runs``, runs :func:`annotate_tree` on any
+    that lack cached annotations (or all of them when ``force=true``), and
+    writes the results through to the ``trajectory_annotations`` column so
+    the report card's goal-oriented KPIs populate. Runs concurrently with a
+    small fan-out ceiling to avoid spamming the LLM endpoint.
+    """
+    if not _db_available:
+        raise HTTPException(
+            503, "Trajectory annotation requires the database to be available."
+        )
+
+    import asyncio
+
+    from db.engine import async_session
+    from db.models import Employee, TaskRun
+    from sqlalchemy import select, update
+
+    limit = max(1, min(int(limit), 50))
+    emp_uuid = _parse_uuid(employee_id)
+
+    async with async_session() as session:
+        emp_row = (
+            await session.execute(select(Employee).where(Employee.id == emp_uuid))
+        ).scalar_one_or_none()
+        if emp_row is None:
+            raise HTTPException(404, "Employee not found")
+
+        rows = (
+            await session.execute(
+                select(TaskRun)
+                .where(TaskRun.employee_id == emp_uuid)
+                .order_by(TaskRun.started_at.desc())
+                .limit(limit)
+            )
+        ).scalars().all()
+
+    targets = [
+        row for row in rows
+        if (row.raw_events and (force or not (row.trajectory_annotations or {})))
+    ]
+
+    if not targets:
+        return {
+            "employee_id": employee_id,
+            "scanned": len(rows),
+            "annotated": 0,
+            "skipped_unpersisted": sum(1 for r in rows if not r.raw_events),
+            "already_cached": sum(
+                1 for r in rows if (r.trajectory_annotations or {}) and not force
+            ),
+        }
+
+    semaphore = asyncio.Semaphore(3)  # cap LLM fan-out
+
+    async def _one(row) -> tuple[str, int, bool, str | None]:
+        async with semaphore:
+            try:
+                action_nodes, trial_boundaries = build_nodes_from_events(row.raw_events or [])
+                tree = segment_nodes(action_nodes, trial_boundaries)
+                annotations = await annotate_tree(tree)
+            except Exception as exc:  # noqa: BLE001
+                return row.session_id, row.task_index, False, str(exc)[:200]
+
+        try:
+            async with async_session() as session:
+                await session.execute(
+                    update(TaskRun)
+                    .where(
+                        TaskRun.employee_id == emp_uuid,
+                        TaskRun.session_id == row.session_id,
+                        TaskRun.task_index == row.task_index,
+                    )
+                    .values(trajectory_annotations=annotations)
+                )
+                await session.commit()
+        except Exception as exc:  # noqa: BLE001
+            return row.session_id, row.task_index, False, f"db write failed: {exc}"[:200]
+
+        return row.session_id, row.task_index, True, None
+
+    results = await asyncio.gather(*(_one(row) for row in targets))
+
+    succeeded = [r for r in results if r[2]]
+    failed = [{"session_id": r[0], "task_index": r[1], "error": r[3]} for r in results if not r[2]]
+
+    return {
+        "employee_id": employee_id,
+        "scanned": len(rows),
+        "annotated": len(succeeded),
+        "failed": failed,
+        "skipped_unpersisted": sum(1 for r in rows if not r.raw_events),
     }

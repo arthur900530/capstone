@@ -157,6 +157,8 @@ def task_runs_from_chat(chat: dict) -> list[dict]:
         )
         run["session_id"] = chat.get("id")
         run["task_index"] = task_index
+        run.setdefault("trajectory_annotations", {})
+        _attach_goal_fields(run)
         runs.append(run)
         task_index += 1
 
@@ -194,6 +196,51 @@ def _percentile(values: list[int], p: float) -> int:
     return s[idx]
 
 
+def _attach_goal_fields(run: dict) -> None:
+    """Compute the hierarchical goal tree + leaf/top-level summaries for a run.
+
+    Populates ``top_level_goals`` (hierarchy), ``leaf_summary`` and
+    ``top_level_summary`` on ``run`` in place. Idempotent — safe to call on a
+    run that already carries these fields (e.g. when re-serializing after an
+    annotation refresh).
+    """
+    from trajectory import (  # local import to avoid startup cycles
+        _attach_weighted_rates,
+        build_nodes_from_events,
+        extract_goal_hierarchy,
+        leaf_step_summary,
+        segment_nodes,
+        to_dict,
+        top_level_summary,
+        weighted_task_score_from_tree,
+    )
+
+    annotations = run.get("trajectory_annotations") or {}
+    raw_events = run.get("raw_events") or []
+
+    top_level: list[dict] = []
+    tree_dict: dict | None = None
+    if raw_events:
+        action_nodes, trial_boundaries = build_nodes_from_events(raw_events)
+        tree = segment_nodes(action_nodes, trial_boundaries)
+        tree_dict = to_dict(tree)
+        top_level = extract_goal_hierarchy(tree_dict, annotations)
+
+    _attach_weighted_rates(top_level)
+    run["top_level_goals"] = top_level
+    run["leaf_summary"] = leaf_step_summary(top_level)
+    run["top_level_summary"] = top_level_summary(top_level)
+    # Full-tree depth-weighted score: walks every annotated sequence node
+    # (root, trial wrappers, goals, sub-goals) plus leaf actions so the
+    # latest LLM verdict at *any* level — especially the root annotation
+    # the UI displays in the drawer — actually drives the KPI. Using
+    # ``weighted_task_score(top_level)`` alone here dropped the root /
+    # trial statuses and painted sessions green that the LLM flagged as
+    # failures.
+    run["task_score"] = weighted_task_score_from_tree(tree_dict, annotations)
+    run["annotated"] = bool(annotations)
+
+
 def aggregate_task_runs(runs: Iterable[dict]) -> dict:
     """Roll a list of task-run dicts up into the shape the report card wants.
 
@@ -213,6 +260,15 @@ def aggregate_task_runs(runs: Iterable[dict]) -> dict:
             "p95_latency_ms": 0,
             "tool_mix": [],
             "reflexion_rate": 0.0,
+            "avg_leaf_rate": 0.0,
+            "avg_task_score": 0.0,
+            "total_leaf_steps": 0,
+            "total_leaf_achieved": 0,
+            "tasks_fully_achieved": 0,
+            "total_top_level_goals": 0,
+            "top_level_fully_achieved": 0,
+            "annotated_tasks": 0,
+            "unannotated_tasks": 0,
         }
 
     n = len(runs)
@@ -227,6 +283,49 @@ def aggregate_task_runs(runs: Iterable[dict]) -> dict:
 
     multi_trial = sum(1 for r in runs if int(r.get("n_trials") or 1) > 1)
 
+    # Goal-oriented rollups. Each run is expected to carry leaf_summary /
+    # top_level_summary as computed by _attach_goal_fields(); tasks whose
+    # trajectories haven't been annotated yet will have zero counts and are
+    # excluded from averages so they don't drag the mean to zero.
+    #
+    # Step- and overall-rate KPIs use the depth-weighted per-task score
+    # (``task_score``) so they honour the aggregated-mean spec
+    # (0.5·L1_avg + 0.25·L2_avg + …). Runs without any status signal
+    # (``task_score is None``) are excluded so an un-annotated backlog
+    # doesn't drag the mean toward zero.
+    task_scores = [
+        float(r["task_score"])
+        for r in runs
+        if r.get("task_score") is not None
+    ]
+    leaf_rates = [
+        float((r.get("leaf_summary") or {}).get("rate") or 0.0)
+        for r in runs
+        if int((r.get("leaf_summary") or {}).get("total") or 0) > 0
+    ]
+    total_leaf = sum(int((r.get("leaf_summary") or {}).get("total") or 0) for r in runs)
+    total_leaf_achieved = sum(
+        int((r.get("leaf_summary") or {}).get("achieved") or 0) for r in runs
+    )
+    total_top_level = sum(
+        int((r.get("top_level_summary") or {}).get("total") or 0) for r in runs
+    )
+    total_top_level_fully = sum(
+        int((r.get("top_level_summary") or {}).get("fully_achieved") or 0) for r in runs
+    )
+    annotated = sum(1 for r in runs if r.get("annotated"))
+    # "Tasks achieved" uses the LLM's top-level (root) verdict directly:
+    # the session is achieved iff the root annotation says ``success``.
+    # The earlier strict-1.0 rule punished every imperfect leaf trace
+    # and ended up 0/N; the per-goal count before that ignored the root
+    # entirely. Neither matched what the user sees in the drawer.
+    tasks_fully_achieved = sum(
+        1
+        for r in runs
+        if ((r.get("trajectory_annotations") or {}).get("root") or {}).get("status")
+        == "success"
+    )
+
     return {
         "tasks": n,
         "avg_tool_calls":  round(mean([int(r.get("n_tool_calls") or 0) for r in runs]), 2),
@@ -237,12 +336,30 @@ def aggregate_task_runs(runs: Iterable[dict]) -> dict:
         "p95_latency_ms":  _percentile(durations, 0.95),
         "tool_mix":        tool_mix.most_common(10),
         "reflexion_rate":  round(multi_trial / n, 3) if n else 0.0,
+        # Goal/step oriented (new). ``avg_task_score`` is the weighted
+        # aggregated mean the report card's KPIs render; ``avg_leaf_rate``
+        # stays alongside as the raw count ratio for callers that want
+        # "how many leaf steps succeeded" without the depth weighting.
+        "avg_task_score":
+            round(sum(task_scores) / len(task_scores), 4) if task_scores else 0.0,
+        "avg_leaf_rate":
+            round(sum(leaf_rates) / len(leaf_rates), 4) if leaf_rates else 0.0,
+        "total_leaf_steps": total_leaf,
+        "total_leaf_achieved": total_leaf_achieved,
+        # Task-level rollup for the "Top-level goals" KPI tile.
+        "tasks_fully_achieved": tasks_fully_achieved,
+        # Kept for back-compat with any callers still reading the old
+        # per-goal counts; the report card no longer uses them.
+        "total_top_level_goals": total_top_level,
+        "top_level_fully_achieved": total_top_level_fully,
+        "annotated_tasks": annotated,
+        "unannotated_tasks": n - annotated,
     }
 
 
 def serialize_task_run(row) -> dict:
     """Convert a ``TaskRun`` ORM row to a plain JSON-ready dict."""
-    return {
+    run = {
         "session_id": row.session_id,
         "task_index": row.task_index,
         "prompt_preview": row.prompt_preview,
@@ -256,3 +373,5 @@ def serialize_task_run(row) -> dict:
         "raw_events": row.raw_events or [],
         "trajectory_annotations": getattr(row, "trajectory_annotations", None) or {},
     }
+    _attach_goal_fields(run)
+    return run

@@ -55,9 +55,35 @@ export async function deleteChat(chatId) {
   return res.json();
 }
 
-export async function fetchEmployeeMetrics(employeeId) {
-  const res = await fetch(`${API_BASE}/employees/${employeeId}/metrics`);
+export async function fetchEmployeeMetrics(employeeId, { limit } = {}) {
+  const query = Number.isFinite(limit) ? `?limit=${encodeURIComponent(limit)}` : "";
+  const res = await fetch(`${API_BASE}/employees/${employeeId}/metrics${query}`);
   if (!res.ok) throw new Error(`Failed to load employee metrics: ${res.status}`);
+  return res.json();
+}
+
+export async function backfillRecentAnnotations(
+  employeeId,
+  { limit, force = false } = {},
+) {
+  const params = new URLSearchParams();
+  if (Number.isFinite(limit)) params.set("limit", String(limit));
+  if (force) params.set("force", "true");
+  const query = params.toString() ? `?${params.toString()}` : "";
+  const res = await fetch(
+    `${API_BASE}/employees/${employeeId}/task_runs/annotate_recent${query}`,
+    { method: "POST" },
+  );
+  if (!res.ok) {
+    let detail = `${res.status}`;
+    try {
+      const body = await res.json();
+      detail = body?.detail || detail;
+    } catch {
+      // keep default
+    }
+    throw new Error(`Failed to backfill annotations: ${detail}`);
+  }
   return res.json();
 }
 
