@@ -311,40 +311,6 @@ export default function EmployeeReportCard({ employee }) {
           onOpenTrajectory={(task) => setSelectedTask(task)}
           onRefresh={() => loadMetrics({ showSpinner: false })}
         />
-
-        {/* Recent tasks */}
-        <div>
-          <div className="mb-2 flex items-center gap-2">
-            <ListChecks size={15} className="text-accent-teal" />
-            <h3 className="text-xs font-semibold uppercase tracking-wider text-text-secondary">
-              Recent tasks
-            </h3>
-            <span className="rounded-full bg-surface px-1.5 py-0.5 text-[10px] text-text-muted">
-              {data.recent?.length ?? 0}
-            </span>
-          </div>
-          {data.recent && data.recent.length > 0 ? (
-            <ul className="space-y-2">
-              {data.recent.map((r) => (
-                <RecentTaskRow
-                  key={`${r.session_id}-${r.task_index}`}
-                  run={r}
-                  onClick={() =>
-                    setSelectedTask({
-                      sessionId: r.session_id,
-                      taskIndex: r.task_index,
-                      run: r,
-                    })
-                  }
-                />
-              ))}
-            </ul>
-          ) : (
-            <p className="rounded-lg border border-border/40 bg-surface/40 p-4 text-center text-xs text-text-muted">
-              No recent tasks recorded.
-            </p>
-          )}
-        </div>
       </div>
       {selectedTask ? (
         <TaskTrajectoryDrawer
