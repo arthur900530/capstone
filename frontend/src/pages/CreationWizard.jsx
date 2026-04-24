@@ -162,7 +162,7 @@ export default function CreationWizard() {
             skillIds={skillIds}
             config={config}
             files={files}
-            onBack={() => setStep(3)}
+            onBack={() => setStep(2)}
             onCreate={handleCreate}
           />
         )}
