@@ -340,7 +340,7 @@ export default function InputBox({
                   if (!showWorkspacePicker) setWorkspaceInput(mountDir);
                 }}
                 title={mountDir ? `Workspace: ${mountDir}` : "Mount a workspace directory"}
-                className={`flex h-8 max-w-[500px] items-center gap-1 rounded-lg px-2 transition-colors hover:bg-surface-hover ${
+                className={`flex h-8 max-w-[200px] items-center gap-1 rounded-lg px-2 transition-colors hover:bg-surface-hover ${
                   mountDir
                     ? "text-accent-deep"
                     : "text-text-muted hover:text-text-secondary"
