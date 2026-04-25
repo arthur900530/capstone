@@ -56,11 +56,11 @@ Aditya also delivered major marketplace, infrastructure, and safety work: DB-bac
 
 **Aspen Chen.** Aspen contributed OpenHands and Docker workspace integration, browser live view/path selection, persona injection and persistent memory, and the report-card/metrics/trajectory system including LLM induction and user ratings (`a11af01`, `fb34ff4`, `6472d94`, `7a06bc6`, `e3d89b8`, `0356dd7`, `6678b89`, `365979c`, `98d6a3b`, `488e008`).
 
-**Danni Qu.** Danni contributed the skill evaluation pipeline/run UI, agent skill mapper/evaluation workflow, and OpenAI base URL config (`db6cf63`, `df87bcf`, `0f97e06`, `83a81a6`).
+**Danni Qu / Angela.** Danni/Angela contributed the skill evaluation pipeline, run button, auto-refresh UI, agent skill mapper/evaluation workflow, and OpenAI base URL config (`db6cf63`, `45ab6d1`, `df87bcf`, `0f97e06`, `83a81a6`).
 
 **Hin Kit Eric Wong.** Hin Kit Eric Wong has a substantial reflexion-specific history across `backend/reflexion_agent` and `backend/reflexion_memory.json`: 4,853 added / 212 deleted lines over 5 non-merge commits, with 4,843 current blamed lines in those paths. The commits are `f9103c5` for reflexion agent/evaluator/reflector bug and logic fixes, `d4941b4` for unit pytest coverage, `7d94742` for reflexion docs plus a Layer 3 test artifact, `640b681` for debug logging, live-testing documentation, and run artifacts, and `fb31357` for step-ceiling and evaluator prompt tuning. Separately, `d0cde9f` filters irrelevant agent runtime metadata artifacts from the mounted workspace through server, workspace panel, and API changes.
 
-**Yuling.** Yuling contributed stream termination/final-answer fixes, OpenAI model config, first-run environment fixes, wizard back-button and skill-card bugfixes, auto skill selection, and selected-skill agent context (`7310ee6`, `88d03f4`, `abe60bb`, `499a796`, `5066069`, `1c31b49`, `30039ed`, `78ff9cc`).
+**Yuling.** Yuling contributed stream termination/final-answer fixes, OpenAI model config, first-run environment fixes, wizard back-button and skill-card bugfixes, an LLM similarity check in the skill evaluation framework, auto skill selection, and selected-skill agent context (`7310ee6`, `88d03f4`, `abe60bb`, `499a796`, `5066069`, `1c31b49`, `65f74d8`, `30039ed`, `78ff9cc`).
 
 ## Reproduction
 
