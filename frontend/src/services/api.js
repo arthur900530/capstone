@@ -161,6 +161,25 @@ export async function fetchSkills() {
   return res.json();
 }
 
+export async function suggestEmployeeSkills(description) {
+  const res = await fetch(`${API_BASE}/employees/suggest-skills`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ description }),
+  });
+  if (!res.ok) {
+    let detail = `${res.status}`;
+    try {
+      const body = await res.json();
+      detail = body?.detail || detail;
+    } catch {
+      // keep default
+    }
+    throw new Error(`Failed to suggest skills: ${detail}`);
+  }
+  return res.json();
+}
+
 export async function fetchSkillById(skillId) {
   const res = await fetch(`${API_BASE}/skills/${skillId}`);
   if (!res.ok) throw new Error(`Failed to load skill: ${res.status}`);

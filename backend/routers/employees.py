@@ -8,12 +8,15 @@ import os
 import re
 import shutil
 import uuid
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
+import yaml
+from config import SKILL_SELECTION_MODEL
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +105,10 @@ class EmployeeUpdate(BaseModel):
     lastActiveAt: str | None = None
 
 
+class SkillSuggestionRequest(BaseModel):
+    description: str = Field(default="", max_length=_MAX_DESCRIPTION_CHARS)
+
+
 # ── System-prompt generation ────────────────────────────────────────────────
 # The wizard's "Describe" step used to flow straight into the system prompt.
 # Now the backend expands that short hint with an OpenAI call so users get a
@@ -115,6 +122,15 @@ _SYSTEM_PROMPT_META = (
     "the employee who they are, what expertise they have, how they should behave, "
     "and the kinds of tasks they should excel at. Output only the prompt text — "
     "no markdown headers, no quotes, no preamble."
+)
+
+_SKILL_SELECTION_PROMPT = (
+    "You are selecting the most relevant skills for an AI employee. "
+    "Given the employee description and a list of candidate skills with ids, names, "
+    "and descriptions, choose only the skills that are clearly useful for the role. "
+    "Return strict JSON with the shape "
+    '{"skill_ids":["id1","id2"],"reason":"short explanation"}. '
+    "Prefer precision over recall. Return an empty array if none fit."
 )
 
 # Used when the user's configured chat model isn't an OpenAI model we can call
@@ -141,6 +157,138 @@ def _resolve_openai_model(model: str) -> str:
             return _FALLBACK_PROMPT_MODEL
         raw = bare
     return raw or _FALLBACK_PROMPT_MODEL
+
+
+def _parse_skill_frontmatter(definition: str) -> dict:
+    text = definition or ""
+    if not text.startswith("---"):
+        return {}
+    parts = text.split("---", 2)
+    if len(parts) < 3:
+        return {}
+    try:
+        meta = yaml.safe_load(parts[1]) or {}
+    except yaml.YAMLError:
+        return {}
+    return meta if isinstance(meta, dict) else {}
+
+
+def _skill_candidate_from_dict(skill: dict) -> dict | None:
+    skill_id = str(skill.get("id") or skill.get("slug") or "").strip()
+    if not skill_id:
+        return None
+
+    definition = skill.get("definition") or ""
+    meta = _parse_skill_frontmatter(definition) if definition else {}
+    description = (
+        str(skill.get("description") or "").strip()
+        or str(meta.get("description") or "").strip()
+    )
+    name = (
+        str(skill.get("name") or "").strip()
+        or str(meta.get("name") or "").strip()
+        or skill_id
+    )
+    return {
+        "id": skill_id,
+        "name": name,
+        "description": description,
+    }
+
+
+async def _list_skill_candidates() -> list[dict]:
+    if _db_available:
+        from db.engine import async_session
+        from services import skill_service
+
+        async with async_session() as session:
+            skills = await skill_service.list_skills(session)
+        candidates = [_skill_candidate_from_dict(skill) for skill in skills]
+        return [candidate for candidate in candidates if candidate]
+
+    import server
+
+    candidates = [_skill_candidate_from_dict(skill) for skill in server._SKILLS.values()]
+    return [candidate for candidate in candidates if candidate]
+
+
+def _normalize_selected_skill_ids(skill_ids: object, candidates: list[dict]) -> list[str]:
+    if not isinstance(skill_ids, list):
+        return []
+    allowed_ids = {candidate["id"] for candidate in candidates}
+    seen: set[str] = set()
+    selected: list[str] = []
+    for item in skill_ids:
+        skill_id = str(item or "").strip()
+        if not skill_id or skill_id not in allowed_ids or skill_id in seen:
+            continue
+        seen.add(skill_id)
+        selected.append(skill_id)
+    return selected
+
+
+async def _auto_select_skills(description: str) -> list[str]:
+    desc = (description or "").strip()
+    if not desc:
+        return []
+
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        logger.warning("Skipping auto skill selection: OPENAI_API_KEY not configured")
+        return []
+
+    candidates = await _list_skill_candidates()
+    if not candidates:
+        return []
+
+    from openai import AsyncOpenAI
+
+    client = AsyncOpenAI(api_key=api_key, timeout=30.0)
+    payload = {
+        "employee_description": desc,
+        "skills": candidates,
+    }
+
+    try:
+        target_model = _resolve_openai_model(SKILL_SELECTION_MODEL)
+        resp = await client.chat.completions.create(
+            model=target_model,
+            messages=[
+                {"role": "system", "content": _SKILL_SELECTION_PROMPT},
+                {"role": "user", "content": json.dumps(payload, ensure_ascii=True)},
+            ],
+            temperature=0.1,
+            max_tokens=600,
+            response_format={"type": "json_object"},
+        )
+    except Exception:
+        logger.exception("Automatic skill selection failed (model=%s)", target_model)
+        return []
+
+    content = ""
+    if resp.choices and resp.choices[0].message:
+        content = (resp.choices[0].message.content or "").strip()
+    if not content:
+        return []
+
+    try:
+        parsed = json.loads(content)
+    except json.JSONDecodeError:
+        logger.warning("Automatic skill selection returned non-JSON content")
+        return []
+
+    selected = _normalize_selected_skill_ids(parsed.get("skill_ids"), candidates)
+    logger.info(
+        "Automatic skill selection chose %d skill(s): %s",
+        len(selected),
+        ", ".join(selected) or "(none)",
+    )
+    return selected
+
+
+@router.post("/suggest-skills")
+async def suggest_skills(body: SkillSuggestionRequest):
+    return {"skillIds": await _auto_select_skills(body.description or "")}
 
 
 async def _generate_system_prompt(description: str, model: str) -> str:
