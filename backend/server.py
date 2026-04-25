@@ -1428,6 +1428,13 @@ def _resolve_workspace_for_runtime(
                 shutil.rmtree(p)
         skills_dir = os.path.join(workspace, ".agents", "skills")
         os.makedirs(skills_dir, exist_ok=True)
+        logger.info(
+            "[skills] materializing request skill packages session_id=%s workspace=%s skills_dir=%s skill_ids=%s",
+            session_id,
+            workspace,
+            skills_dir,
+            skill_ids,
+        )
         for sid in skill_ids:
             _materialize_skill_package(skills_dir, sid)
     except Exception:
@@ -1990,6 +1997,7 @@ async def _fetch_employee_profile_by_id(employee_id: str) -> dict | None:
                     "name": row.name or "",
                     "position": getattr(row, "position", "") or "",
                     "task": row.task or "",
+                    "skill_ids": row.skill_ids or [],
                     # Metadata-only project-file manifest. The agent sees this
                     # in its system prompt via _format_employee_persona and
                     # can read each file's bytes from /workspace/project_files
@@ -2015,6 +2023,7 @@ async def _fetch_employee_profile_by_id(employee_id: str) -> dict | None:
             "name": emp.get("name") or "",
             "position": emp.get("position") or "",
             "task": emp.get("task") or "",
+            "skill_ids": emp.get("skillIds") or [],
             "project_files": _sanitise_project_file_manifest(emp.get("files")),
         }
     except Exception:
@@ -2065,10 +2074,6 @@ async def chat(req: ChatRequest):
     file_dicts = [f.model_dump(exclude_none=True) for f in req.files] if req.files else None
     _upsert_chat(session_id, req.question, role="user", agent_id=agent["id"], files=file_dicts)
 
-    skill_ids = req.skill_ids if req.skill_ids else None
-    if skill_ids:
-        _validate_skills_for_runtime(skill_ids)
-
     # Prefer the server-side lookup (the DB row is the source of truth, and
     # it survives stale frontend bundles). Fall back to whatever persona the
     # client embedded in the request so the chat keeps working if the DB is
@@ -2086,6 +2091,18 @@ async def chat(req: ChatRequest):
         req.employee.model_dump(exclude_none=True) if req.employee else None
     ) or None
     employee_profile = server_profile or client_profile or None
+    skill_ids = req.skill_ids if req.skill_ids else None
+    if not skill_ids and server_profile:
+        candidate_skill_ids = server_profile.get("skill_ids")
+        if isinstance(candidate_skill_ids, list) and candidate_skill_ids:
+            skill_ids = [str(sid).strip() for sid in candidate_skill_ids if str(sid).strip()]
+            logger.info(
+                "[skills] Using employee-backed skill_ids fallback employee_id=%s skill_ids=%s",
+                resolved_id,
+                skill_ids,
+            )
+    if skill_ids:
+        _validate_skills_for_runtime(skill_ids)
 
     # Remember the session→employee mapping in-process so subsequent turns on
     # the same uvicorn keep resolving the persona even if the frontend drops
