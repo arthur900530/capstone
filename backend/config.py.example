@@ -35,12 +35,12 @@ _REPO_ROOT = _BACKEND_DIR.parent
 dotenv.load_dotenv(_REPO_ROOT / ".env")
 dotenv.load_dotenv(_BACKEND_DIR / ".env", override=True)
 
-# ── OpenRouter (chat agent, trajectory annotation) ──────────────────────────
-BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
-API_KEY = os.getenv("OPENROUTER_API_KEY", "")
+# ── OpenAI (chat agent, trajectory annotation) ──────────────────────────────
+BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://api.openai.com/v1")
+API_KEY = os.getenv("OPENAI_API_KEY")
 
 # ── Model ids ───────────────────────────────────────────────────────────────
-AGENT_MODEL = os.getenv("AGENT_MODEL", "openrouter/minimax/minimax-m2.7")
+AGENT_MODEL = os.getenv("AGENT_MODEL", "openai/gpt-5.4")
 SKILL_MODEL = os.getenv("SKILL_MODEL", "google/gemini-2.5-flash")
 VERIFIER_MODEL = os.getenv("VERIFIER_MODEL", "openai/gpt-4o")
 
