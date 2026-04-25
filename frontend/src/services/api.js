@@ -469,9 +469,16 @@ export function projectFileRawUrl(employeeId, fileId) {
 // Workspace browsing
 // ---------------------------------------------------------------------------
 
-export async function fetchWorkspaceTree(dirPath) {
+export async function fetchWorkspaceTree(
+  dirPath,
+  { includeRuntimeArtifacts = false } = {},
+) {
+  const params = new URLSearchParams({
+    path: dirPath,
+    include_runtime_artifacts: String(Boolean(includeRuntimeArtifacts)),
+  });
   const res = await fetch(
-    `${API_BASE}/workspace/tree?path=${encodeURIComponent(dirPath)}`,
+    `${API_BASE}/workspace/tree?${params.toString()}`,
   );
   if (!res.ok) throw new Error(`Failed to load workspace tree: ${res.status}`);
   return res.json();

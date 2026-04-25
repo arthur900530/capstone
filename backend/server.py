@@ -104,9 +104,10 @@ from routers.employees import router as employees_router
 #   - Only one agent runs at a time; ``_SHARED_WS["lock"]`` serializes them.
 #   - The user's ``mount_dir`` on disk is not live: changes are synced back
 #     after each turn of the owning session, and again on eviction.
-#   - Hidden top-level dirs (``.agents``, ``.openhands``) are excluded from
-#     sync-back to avoid polluting the user's project with agent-internal
-#     scaffolding. They still live inside /workspace during the run.
+#   - Agent/runtime top-level dirs (``.agents``, ``.openhands``,
+#     ``bash_events``, ``conversations``, ``workspace``) are excluded from
+#     sync-back so user ``mount_dir`` only receives user-facing outputs.
+#     Runtime internals still live inside /workspace during the run.
 
 _SHARED_WS: dict[str, Any] = {
     "workspace": None,       # DockerWorkspace instance (entered via __enter__)
@@ -1127,10 +1128,22 @@ def _copy_dir_contents(src_dir: str, dst_dir: str) -> None:
 
 
 # Top-level entries excluded when syncing back the shared workspace to the
-# user's real mount_dir. These are agent-internal scaffolding (skill packs,
-# task tracker files, conversation journals, …) that should not pollute
-# the user's project directory.
-_SYNC_BACK_EXCLUDE_TOPLEVEL: set[str] = {".agents", ".openhands"}
+# user's real mount_dir. These are runtime internals and agent scaffolding
+# that are required during execution but should not pollute user projects.
+_SYNC_BACK_EXCLUDE_TOPLEVEL: set[str] = {
+    ".agents",
+    ".openhands",
+    "bash_events",
+    "conversations",
+    "workspace",
+}
+
+# Runtime top-level dirs that are internal to agent execution. We keep them
+# out of mount_dir sync-back, but optionally expose them in workspace tree API
+# for explicit debug visibility in the UI.
+_RUNTIME_ARTIFACT_TOPLEVEL: tuple[str, ...] = tuple(
+    sorted(_SYNC_BACK_EXCLUDE_TOPLEVEL)
+)
 
 
 def _sync_dir_contents_for_export(src_dir: str, dst_dir: str) -> None:
@@ -2643,7 +2656,7 @@ def _is_text_file(path: str) -> bool:
     return False
 
 
-def _build_tree(root: str, rel: str = "") -> list[dict]:
+def _build_tree(root: str, rel: str = "", include_hidden: bool = False) -> list[dict]:
     """Recursively build a JSON-friendly directory tree."""
     full = os.path.join(root, rel) if rel else root
     entries: list[dict] = []
@@ -2653,7 +2666,7 @@ def _build_tree(root: str, rel: str = "") -> list[dict]:
         return entries
 
     for name in items:
-        if name.startswith("."):
+        if not include_hidden and name.startswith("."):
             continue  # skip hidden files/dirs
         child_full = os.path.join(full, name)
         child_rel = os.path.join(rel, name) if rel else name
@@ -2662,7 +2675,7 @@ def _build_tree(root: str, rel: str = "") -> list[dict]:
                 "name": name,
                 "path": child_rel,
                 "type": "directory",
-                "children": _build_tree(root, child_rel),
+                "children": _build_tree(root, child_rel, include_hidden=include_hidden),
             })
         else:
             try:
@@ -2678,6 +2691,39 @@ def _build_tree(root: str, rel: str = "") -> list[dict]:
     return entries
 
 
+def _merge_runtime_artifacts_into_tree(
+    mount_tree: list[dict],
+    include_runtime_artifacts: bool,
+) -> list[dict]:
+    """Optionally merge known runtime dirs from shared host_dir into tree."""
+    if not include_runtime_artifacts:
+        return mount_tree
+
+    shared_host_dir = _SHARED_WS.get("host_dir")
+    current_owner = _SHARED_WS.get("current_owner")
+    if not shared_host_dir or not os.path.isdir(shared_host_dir) or not current_owner:
+        return mount_tree
+
+    existing_names = {entry.get("name") for entry in mount_tree}
+    merged = list(mount_tree)
+    for name in _RUNTIME_ARTIFACT_TOPLEVEL:
+        if name in existing_names:
+            continue
+        runtime_dir = os.path.join(shared_host_dir, name)
+        if not os.path.isdir(runtime_dir):
+            continue
+        merged.append(
+            {
+                "name": name,
+                "path": name,
+                "type": "directory",
+                "children": _build_tree(shared_host_dir, name, include_hidden=True),
+            }
+        )
+    merged.sort(key=lambda node: node.get("name", ""))
+    return merged
+
+
 def _safe_resolve(base: str, requested: str) -> str:
     """Resolve requested path and ensure it stays inside base. Raise 403 on traversal."""
     base_resolved = os.path.realpath(base)
@@ -2688,11 +2734,12 @@ def _safe_resolve(base: str, requested: str) -> str:
 
 
 @app.get("/api/workspace/tree")
-async def workspace_tree(path: str):
+async def workspace_tree(path: str, include_runtime_artifacts: bool = False):
     """Return recursive file/directory tree for a given root path."""
     if not path or not os.path.isdir(path):
         raise HTTPException(status_code=400, detail="Invalid directory path")
     tree = _build_tree(path)
+    tree = _merge_runtime_artifacts_into_tree(tree, include_runtime_artifacts)
     return {"root": path, "tree": tree}
 
 

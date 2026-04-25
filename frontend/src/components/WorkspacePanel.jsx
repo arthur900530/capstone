@@ -20,20 +20,23 @@ export default function WorkspacePanel({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [filter, setFilter] = useState("");
+  const [showRuntimeArtifacts, setShowRuntimeArtifacts] = useState(false);
 
   const loadTree = useCallback(async () => {
     if (!mountDir) return;
     setLoading(true);
     setError(null);
     try {
-      const data = await fetchWorkspaceTree(mountDir);
+      const data = await fetchWorkspaceTree(mountDir, {
+        includeRuntimeArtifacts: showRuntimeArtifacts,
+      });
       setTree(data.tree || []);
     } catch (err) {
       setError(err.message);
     } finally {
       setLoading(false);
     }
-  }, [mountDir]);
+  }, [mountDir, showRuntimeArtifacts]);
 
   useEffect(() => {
     loadTree();
@@ -57,7 +60,11 @@ export default function WorkspacePanel({
       .filter(Boolean);
   };
 
-  const displayTree = filterTree(tree, filter);
+  const filteredByRuntimeArtifacts = filterRuntimeArtifacts(
+    tree,
+    showRuntimeArtifacts
+  );
+  const displayTree = filterTree(filteredByRuntimeArtifacts, filter);
   const rootName = mountDir?.split("/").pop() || "workspace";
 
   return (
@@ -96,6 +103,31 @@ export default function WorkspacePanel({
             className="flex-1 bg-transparent text-[11px] text-text-primary outline-none placeholder:text-text-muted"
           />
         </div>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={showRuntimeArtifacts}
+          onClick={() => setShowRuntimeArtifacts((prev) => !prev)}
+          title="Show or hide runtime artifacts in workspace tree"
+          className={`mt-1.5 flex h-7 items-center gap-2 rounded-lg px-2 text-[10px] font-medium transition-colors ${
+            showRuntimeArtifacts
+              ? "bg-accent-teal/20 text-accent-teal"
+              : "text-text-muted hover:bg-surface-hover hover:text-text-secondary"
+          }`}
+        >
+          <span
+            className={`relative inline-flex h-4 w-7 shrink-0 items-center rounded-full transition-colors ${
+              showRuntimeArtifacts ? "bg-accent-teal" : "bg-border"
+            }`}
+          >
+            <span
+              className={`absolute top-0.5 left-0.5 h-3 w-3 rounded-full bg-white shadow transition-transform ${
+                showRuntimeArtifacts ? "translate-x-3" : "translate-x-0"
+              }`}
+            />
+          </span>
+          Show runtime artifacts
+        </button>
       </div>
 
       {/* Tree */}
@@ -122,7 +154,7 @@ export default function WorkspacePanel({
 
       {/* Footer: file count */}
       <div className="border-t border-border/20 px-3 py-1.5 text-[10px] text-text-muted">
-        {countFiles(tree)} files
+        {countFiles(filteredByRuntimeArtifacts)} files
       </div>
     </aside>
   );
@@ -135,4 +167,34 @@ function countFiles(nodes) {
     else if (n.children) count += countFiles(n.children);
   }
   return count;
+}
+
+const RUNTIME_ARTIFACT_DIRS = new Set([
+  ".agents",
+  ".openhands",
+  "bash_events",
+  "conversations",
+  "workspace",
+]);
+
+function filterRuntimeArtifacts(nodes, showRuntimeArtifacts, depth = 0) {
+  return nodes
+    .map((node) => {
+      const shouldHideAtTopLevel =
+        !showRuntimeArtifacts &&
+        depth === 0 &&
+        node.type === "directory" &&
+        RUNTIME_ARTIFACT_DIRS.has(node.name);
+      if (shouldHideAtTopLevel) return null;
+      if (node.type !== "directory" || !node.children) return node;
+      return {
+        ...node,
+        children: filterRuntimeArtifacts(
+          node.children,
+          showRuntimeArtifacts,
+          depth + 1
+        ),
+      };
+    })
+    .filter(Boolean);
 }
