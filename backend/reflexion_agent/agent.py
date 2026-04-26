@@ -563,10 +563,21 @@ def runtime(
 
     llm = LLM(model=model, api_key=SecretStr(api_key), base_url=base_url, service_id="agent")
     skills = load_project_skills(work_dir=repo_dir)
+    skill_names = sorted(
+        str(
+            getattr(skill, "name", None)
+            or getattr(skill, "id", None)
+            or getattr(skill, "slug", None)
+            or getattr(skill, "skill_id", None)
+            or repr(skill)
+        )
+        for skill in skills
+    )
     logger.info(
-        "project_skills_count=%d work_dir=%s",
+        "project_skills_count=%d work_dir=%s project_skills=%s",
         len(skills),
         repo_dir or "(empty)",
+        skill_names,
     )
     persona_block = _format_employee_persona(employee_profile)
     # Emit a log regardless of whether a persona was injected so it's easy
