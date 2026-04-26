@@ -20,6 +20,9 @@ PRODUCT_PATHS=(
   backend/config.py.example
 )
 
+ANDREW_BUGFIX_BASE="${ANDREW_BUGFIX_BASE:-origin/main}"
+ANDREW_BUGFIX_HEAD="${ANDREW_BUGFIX_HEAD:-origin/andrew}"
+
 JOURNEY_PATHS=(
   frontend/src/pages/CreationWizard.jsx
   frontend/src/components/wizard
@@ -55,7 +58,8 @@ grouped_commit_counts() {
       BEGIN { FS = "\t" }
       {
         person = $1 " <" $2 ">"
-        if ($1 == "Aditya Kumar") person = "Aditya Kumar"
+        if ($1 == "Andrew Zhang" || $1 == "andrew-yifanzhang") person = "Andrew Zhang"
+        else if ($1 == "Aditya Kumar") person = "Aditya Kumar"
         else if ($1 == "Arthur Chien") person = "Arthur Chien"
         else if ($1 == "Aspen Chen" || $1 == "AspenC") person = "Aspen Chen"
         else if ($1 == "Yuling") person = "Yuling"
@@ -79,7 +83,12 @@ numstat_by_author() {
   git log --all --no-merges --numstat --format='@@@%aN' -- "$@" |
     awk '
       BEGIN { FS = "\t" }
-      /^@@@/ { author = substr($0, 4); commits[author]++; next }
+      /^@@@/ {
+        author = substr($0, 4)
+        if (author == "Andrew Zhang" || author == "andrew-yifanzhang") author = "Andrew Zhang"
+        commits[author]++
+        next
+      }
       NF == 3 && $1 ~ /^[0-9]+$/ { added[author] += $1; deleted[author] += $2 }
       END {
         for (author in commits) {
@@ -99,13 +108,34 @@ blame_by_author() {
       git blame --line-porcelain -- "$file"
     done |
     awk '
-      /^author / { author = substr($0, 8); lines[author]++ }
+      /^author / {
+        author = substr($0, 8)
+        if (author == "Andrew Zhang" || author == "andrew-yifanzhang") author = "Andrew Zhang"
+        lines[author]++
+      }
       END {
         for (author in lines) {
           printf "%10d %s\n", lines[author], author
         }
       }
     ' | sort -k2,2
+}
+
+andrew_bugfix_summary() {
+  if ! git rev-parse --verify --quiet "$ANDREW_BUGFIX_HEAD" >/dev/null; then
+    return
+  fi
+
+  print_title "Andrew Zhang open PR #17 bugfix summary"
+  printf 'Base: %s\n' "$ANDREW_BUGFIX_BASE"
+  printf 'Head: %s\n' "$ANDREW_BUGFIX_HEAD"
+  git diff --shortstat "$ANDREW_BUGFIX_BASE...$ANDREW_BUGFIX_HEAD"
+  printf '\n%10s %10s %s\n' "added" "deleted" "path"
+  git diff --numstat "$ANDREW_BUGFIX_BASE...$ANDREW_BUGFIX_HEAD"
+  if [[ "${INCLUDE_COMMIT_HISTORY:-0}" == "1" ]]; then
+    printf '\n'
+    git log --no-merges --format='%h %ad %an %s' --date=short "$ANDREW_BUGFIX_BASE..$ANDREW_BUGFIX_HEAD"
+  fi
 }
 
 commit_list() {
@@ -130,6 +160,7 @@ fi
 
 numstat_by_author "Main product paths: non-merge numstat by author" "${PRODUCT_PATHS[@]}"
 blame_by_author "Main product paths: current-line blame by author" "${PRODUCT_PATHS[@]}"
+andrew_bugfix_summary
 
 numstat_by_author "Journey, wizard, employee, and skill UX paths: non-merge numstat by author" "${JOURNEY_PATHS[@]}"
 blame_by_author "Journey, wizard, employee, and skill UX paths: current-line blame by author" "${JOURNEY_PATHS[@]}"

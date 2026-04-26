@@ -1,6 +1,6 @@
 # Technical Contribution Evidence
 
-Basis: local git history through 2026-04-25 on branch `describe-to-system-prompt`. This treats Sylindril as the contributor recorded in git as `Aditya Kumar <adityakumar2001@outlook.com>`. Merge commits are not counted as implementation work; the evidence below is based on authored commits, path-specific history, numstat, and current-line blame.
+Basis: local git history through 2026-04-26 after fetching `origin/main` and `origin/andrew`. This treats Sylindril as the contributor recorded in git as `Aditya Kumar <adityakumar2001@outlook.com>`. Merge commits are not counted as implementation work; the evidence below is based on authored commits, path-specific history, numstat, and current-line blame.
 
 ## Summary
 
@@ -10,7 +10,8 @@ Repository-wide commit counts:
 
 | Contributor | Commits | Notes |
 |---|---:|---|
-| Aditya Kumar / Sylindril | 170 | `Aditya Kumar <adityakumar2001@outlook.com>` |
+| Andrew Zhang | 3 | 2 bugfix commits on `origin/andrew`, plus PR #15 merge commit |
+| Aditya Kumar / Sylindril | 173 | `Aditya Kumar <adityakumar2001@outlook.com>` |
 | Arthur Chien | 39 | 37 plus 2 across two emails |
 | Aspen Chen | 32 | 28 plus 4 across two author names |
 | Danni Qu | 8 | `Danni Qu <angelaqu129@gmail.com>` |
@@ -21,28 +22,39 @@ Main product-path quantities:
 
 | Contributor | Non-merge commits | Lines added | Lines deleted | Current blamed lines |
 |---|---:|---:|---:|---:|
-| Aditya Kumar / Sylindril | 163 | 15,622 | 6,403 | 10,774 |
-| Arthur Chien | 26 | 8,316 | 1,183 | 5,947 |
-| Aspen Chen | 21 | 7,719 | 388 | 7,249 |
+| Andrew Zhang | 2 | 168 | 140 | N/A; PR #17 is open |
+| Aditya Kumar / Sylindril | 163 | 15,622 | 6,403 | 10,766 |
+| Arthur Chien | 26 | 8,316 | 1,183 | 5,945 |
+| Aspen Chen | 21 | 7,719 | 388 | 7,244 |
 | Danni Qu | 5 | 539 | 87 | 460 |
 | Hin Kit Eric Wong | 5 | 503 | 59 | 356 |
-| Yuling | 10 | 575 | 61 | 264 |
+| Yuling | 10 | 575 | 61 | 555 |
 
 Focused subsystem quantities:
 
 | Subsystem | Contributor | Non-merge commits | Lines added | Lines deleted | Current blamed lines |
 |---|---|---:|---:|---:|---:|
 | Demo simulator | Aditya Kumar / Sylindril | 17 | 1,694 | 214 | 1,434 |
-| Journey / wizard / employee / skill UX | Aditya Kumar / Sylindril | 89 | 6,404 | 1,182 | 5,170 |
-| Journey / wizard / employee / skill UX | Arthur Chien | 10 | 404 | 78 | 370 |
+| Demo simulator | Andrew Zhang | 1 | 16 | 28 | N/A; PR #17 is open |
+| Journey / wizard / employee / skill UX | Andrew Zhang | 1 | 28 | 8 | N/A; PR #17 is open |
+| Journey / wizard / employee / skill UX | Aditya Kumar / Sylindril | 89 | 6,404 | 1,182 | 5,167 |
+| Journey / wizard / employee / skill UX | Arthur Chien | 10 | 404 | 78 | 369 |
 | Journey / wizard / employee / skill UX | Aspen Chen | 7 | 701 | 10 | 693 |
-| Journey / wizard / employee / skill UX | Yuling | 3 | 235 | 10 | 8 |
+| Journey / wizard / employee / skill UX | Yuling | 3 | 235 | 10 | 235 |
 | Reflexion agent | Arthur Chien | 4 | 1,494 | 4 | 1,251 |
-| Reflexion agent | Aspen Chen | 8 | 529 | 39 | 517 |
+| Reflexion agent | Aspen Chen | 8 | 529 | 39 | 516 |
 | Reflexion agent | Hin Kit Eric Wong | 5 | 4,853 | 212 | 4,843 |
-| Reflexion agent | Yuling | 3 | 155 | 12 | 142 |
+| Reflexion agent | Yuling | 3 | 155 | 12 | 154 |
+
+Open PR quantities:
+
+| PR / Branch | Contributor | Commits | Files changed | Lines added | Lines deleted | Status |
+|---|---|---:|---:|---:|---:|---|
+| PR #17 / `origin/andrew` | Andrew Zhang | 2 | 8 | 192 | 140 | Open against `main` |
 
 ## Contributor Evidence
+
+**Andrew Zhang.** Andrew's latest open PR #17 contributes bugfixes for frontend lint and hook-ordering issues: `8a7632f` fixes `FileEditBlock` hook-ordering lint errors, and `25766f6` fixes React Compiler lint issues in editor, browser-scene, wizard, and version-history flows. The PR changes 8 files with 192 insertions and 140 deletions, including extracting editor canvas helper logic into `frontend/src/components/editorCanvasUtils.js`. Andrew also authored merge commit `2370930` for PR #15; consistent with the basis above, that merge commit is listed in commit totals but not treated as implementation work.
 
 **Aditya Kumar / Sylindril.** Sylindril/Aditya authored the core employee journey and shell: the router/context/dashboard setup (`c39a01c`, `835fd27`, `dc5a6f5`, `f37a719`), the creation wizard route and employee page (`46bebfb`, `692bccb`), the initial wizard steps (`8cf83d0`, `f032dd0`, `081115c`), local employee persistence (`664b3db`), backend employee model/schema/API (`510dfbc`, `23ea2cc`, `14bf60e`), and the later swap from localStorage to backend API (`0b234a8`).
 
@@ -64,7 +76,7 @@ Aditya also delivered major marketplace, infrastructure, and safety work: DB-bac
 
 ## Reproduction
 
-Run `bash scripts/contribution_evidence.sh` from the repository root to regenerate the headline tables. The script uses `--all`, so it includes local and remote refs such as `origin/fix/reflexion-agent-bugs` and `origin/fix/workspace-filebrowser-runtime-noise`. Raw path-specific commit lists are omitted by default because the tables and cited commit tags are easier to read; run `INCLUDE_COMMIT_HISTORY=1 bash scripts/contribution_evidence.sh` if a full audit trail is needed. The core commands are:
+Run `bash scripts/contribution_evidence.sh` from the repository root to regenerate the headline tables. The script uses `--all`, so it includes local and remote refs such as `origin/andrew`. Raw path-specific commit lists are omitted by default because the tables and cited commit tags are easier to read; run `INCLUDE_COMMIT_HISTORY=1 bash scripts/contribution_evidence.sh` if a full audit trail is needed. The core commands are:
 
 ```bash
 git shortlog -sne --all | sort -k2,2 -k3,3
