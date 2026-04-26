@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { createElement, useState, useEffect } from "react";
 import {
   Search, Plus, Sparkles, LayoutGrid, List, Loader2,
   Wrench, X, Check, Download, AlertCircle, Store, Upload as UploadIcon,
@@ -95,7 +95,7 @@ export default function SkillBrowser({ selectedSkillIds, onToggleSkill, onSkills
         {[
           { id: "create", label: "Create", icon: UploadIcon },
           { id: "browse", label: "Browse", icon: Store },
-        ].map(({ id, label, icon: TabIcon }) => (
+        ].map(({ id, label, icon }) => (
           <button
             key={id}
             onClick={() => setSubTab(id)}
@@ -105,7 +105,7 @@ export default function SkillBrowser({ selectedSkillIds, onToggleSkill, onSkills
                 : "text-text-muted hover:bg-surface/50 hover:text-text-secondary"
             }`}
           >
-            <TabIcon size={13} />
+            {createElement(icon, { size: 13 })}
             {label}
           </button>
         ))}

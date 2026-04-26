@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { createElement, useState, useEffect } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
@@ -67,7 +67,7 @@ function ConfidenceBadge({ score }) {
   );
 }
 
-function CollapsibleBlock({ icon: Icon, title, badge, children, defaultOpen = false }) {
+function CollapsibleBlock({ icon, title, badge, children, defaultOpen = false }) {
   const [open, setOpen] = useState(defaultOpen);
 
   return (
@@ -77,7 +77,7 @@ function CollapsibleBlock({ icon: Icon, title, badge, children, defaultOpen = fa
         className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-text-secondary hover:text-text-primary"
       >
         {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-        <Icon size={14} className="text-accent-teal" />
+        {createElement(icon, { size: 14, className: "text-accent-teal" })}
         <span className="font-medium">{title}</span>
         {badge}
       </button>
@@ -371,4 +371,3 @@ export default function ChatMessage({
     </div>
   );
 }
-

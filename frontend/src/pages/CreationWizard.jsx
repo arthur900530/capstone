@@ -8,7 +8,7 @@ import StepLaunch from "../components/wizard/StepLaunch";
 import PLUGINS from "../data/plugins";
 import EMPLOYEE_TEMPLATES from "../data/employeeTemplates";
 import { createEmployee } from "../services/employeeStore";
-import { useApp } from "../context/AppContext";
+import { useApp } from "../context/appContextCore";
 
 const STEPS = ["Describe", "Plugin", "Learn Skills", "Launch"];
 

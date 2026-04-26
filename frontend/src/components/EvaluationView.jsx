@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { createElement, useState, useEffect } from "react";
 import {
   BarChart3,
   Loader2,
@@ -45,12 +45,12 @@ function RateBar({ rate }) {
   );
 }
 
-function MetricCard({ icon: Icon, label, children, onViewDetails }) {
+function MetricCard({ icon, label, children, onViewDetails }) {
   return (
     <div className="rounded-lg border border-border/60 bg-[#2a2c31] p-4 shadow-[0_2px_12px_rgba(0,0,0,0.25)]">
       <div className="mb-3 flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <Icon size={15} className="text-accent-teal" />
+          {createElement(icon, { size: 15, className: "text-accent-teal" })}
           <h4 className="text-xs font-semibold uppercase tracking-wider text-text-secondary">
             {label}
           </h4>
@@ -169,7 +169,6 @@ function SkillEvalsPage({ skillEvals, onSkillEvalsUpdate, onBack, agentId }) {
     }
   };
 
-  const fmt = (v) => (v != null ? (v * 100).toFixed(1) + "%" : "—");
   const rateColor = (v) =>
     v >= 0.8
       ? "text-emerald-400"
@@ -571,9 +570,12 @@ export default function EvaluationView({
     if (focusAgentId && runs.length > 0) {
       const match = runs.find((r) => r.agent_id === focusAgentId);
       if (match) {
-        setSelectedAgentId(focusAgentId);
-        const timer = setTimeout(() => onClearFocus?.(), 1000);
-        return () => clearTimeout(timer);
+        const selectTimer = setTimeout(() => setSelectedAgentId(focusAgentId), 0);
+        const clearTimer = setTimeout(() => onClearFocus?.(), 1000);
+        return () => {
+          clearTimeout(selectTimer);
+          clearTimeout(clearTimer);
+        };
       }
     }
   }, [focusAgentId, runs, onClearFocus]);

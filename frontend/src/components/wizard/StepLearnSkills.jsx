@@ -1,5 +1,5 @@
 import { X } from "lucide-react";
-import { useApp } from "../../context/AppContext";
+import { useApp } from "../../context/appContextCore";
 import SkillBrowser from "../skills/SkillBrowser";
 
 export default function StepLearnSkills({ skillIds, onSkillIdsChange, onBack, onNext }) {

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Globe, Loader2, MousePointerClick, X } from "lucide-react";
-import { useApp } from "../context/AppContext";
+import { useApp } from "../context/appContextCore";
 
 // The agent's VM runs Chromium inside a desktop environment. noVNC streams
 // the whole desktop over ``resize=scale``. We measure the panel with a
@@ -32,7 +32,6 @@ export default function BrowserLiveView({ sessionId }) {
   const { browserLive, setBrowserLive } = useApp();
   const [iframeSrc, setIframeSrc] = useState("");
   const [status, setStatus] = useState("Waiting for agent to open the browser...");
-  const [iframeReady, setIframeReady] = useState(false);
   const [panelSize, setPanelSize] = useState({ w: 0, h: 0 });
   const pollTimerRef = useRef(null);
   const panelRef = useRef(null);
@@ -79,7 +78,6 @@ export default function BrowserLiveView({ sessionId }) {
   useEffect(() => {
     if (!browserLive?.enabled || !browserLive?.visible) {
       setIframeSrc("");
-      setIframeReady(false);
       return undefined;
     }
 
@@ -100,7 +98,7 @@ export default function BrowserLiveView({ sessionId }) {
         } else if (!data?.url) {
           setStatus("Live browser not available yet.");
         }
-      } catch (err) {
+      } catch {
         if (cancelled) return;
         setStatus("Waiting for agent browser to come online…");
       } finally {
@@ -168,7 +166,6 @@ export default function BrowserLiveView({ sessionId }) {
               transformOrigin: "center center",
             }}
             allow="clipboard-read; clipboard-write"
-            onLoad={() => setIframeReady(true)}
           />
         ) : (
           <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">

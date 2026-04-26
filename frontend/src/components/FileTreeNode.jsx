@@ -10,22 +10,20 @@ import {
   FolderOpen,
 } from "lucide-react";
 
-const FILE_ICONS = {
-  py: FileCode2,
-  js: FileCode2,
-  jsx: FileCode2,
-  ts: FileCode2,
-  tsx: FileCode2,
-  json: FileJson,
-  md: FileText,
-  txt: FileText,
-  csv: FileText,
-  log: FileText,
-};
-
-function getFileIcon(name) {
+function getFileIconType(name) {
   const ext = name.split(".").pop()?.toLowerCase();
-  return FILE_ICONS[ext] || File;
+  if (["py", "js", "jsx", "ts", "tsx"].includes(ext)) return "code";
+  if (ext === "json") return "json";
+  if (["md", "txt", "csv", "log"].includes(ext)) return "text";
+  return "file";
+}
+
+function FileNodeIcon({ name, className }) {
+  const type = getFileIconType(name);
+  if (type === "code") return <FileCode2 size={14} className={className} />;
+  if (type === "json") return <FileJson size={14} className={className} />;
+  if (type === "text") return <FileText size={14} className={className} />;
+  return <File size={14} className={className} />;
 }
 
 export default function FileTreeNode({
@@ -39,12 +37,6 @@ export default function FileTreeNode({
   const isDir = node.type === "directory";
   const isActive = !isDir && node.path === activeFile;
   const isModified = modifiedFiles?.has(node.path);
-
-  const Icon = isDir
-    ? expanded
-      ? FolderOpen
-      : Folder
-    : getFileIcon(node.name);
 
   const handleClick = () => {
     if (isDir) {
@@ -79,16 +71,18 @@ export default function FileTreeNode({
         )}
 
         {/* File/folder icon */}
-        <Icon
-          size={14}
-          className={`shrink-0 ${
-            isDir
-              ? "text-amber-400/70"
-              : isActive
-                ? "text-accent-teal"
-                : "text-text-muted"
-          }`}
-        />
+        {isDir ? (
+          expanded ? (
+            <FolderOpen size={14} className="shrink-0 text-amber-400/70" />
+          ) : (
+            <Folder size={14} className="shrink-0 text-amber-400/70" />
+          )
+        ) : (
+          <FileNodeIcon
+            name={node.name}
+            className={`shrink-0 ${isActive ? "text-accent-teal" : "text-text-muted"}`}
+          />
+        )}
 
         {/* Name */}
         <span className="flex-1 truncate">{node.name}</span>

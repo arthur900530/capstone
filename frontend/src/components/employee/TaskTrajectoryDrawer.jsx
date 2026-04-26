@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { createElement, useEffect, useMemo, useState } from "react";
 import {
   AlertCircle,
   BarChart3,
@@ -39,7 +39,7 @@ function StatPill({ label, value }) {
   );
 }
 
-function ViewButton({ active, icon: Icon, label, onClick }) {
+function ViewButton({ active, icon, label, onClick }) {
   return (
     <button
       type="button"
@@ -50,7 +50,7 @@ function ViewButton({ active, icon: Icon, label, onClick }) {
           : "bg-surface text-text-secondary hover:text-text-primary"
       }`}
     >
-      <Icon size={14} />
+      {createElement(icon, { size: 14 })}
       {label}
     </button>
   );

@@ -25,8 +25,6 @@ export default function InputBox({
   skills = [],
   selectedSkillIds = [],
   onSelectedSkillsChange,
-  skipConfirm = false,
-  onSkipConfirmChange,
   mountDir = "",
   onMountDirChange,
   hideSkillPicker = true,
@@ -47,7 +45,6 @@ export default function InputBox({
   const [workspaceInput, setWorkspaceInput] = useState("");
   const [workspacePickerLoading, setWorkspacePickerLoading] = useState(false);
   const [workspacePickerError, setWorkspacePickerError] = useState("");
-  const [pendingSubmit, setPendingSubmit] = useState(null);
   const fileInputRef = useRef(null);
   const modelRef = useRef(null);
   const skillRef = useRef(null);
@@ -90,11 +87,6 @@ export default function InputBox({
 
   const files = stagedFiles ?? [];
 
-  const closeAllPopups = () => {
-    setShowModelPicker(false);
-    setShowSkillPicker(false);
-    setShowWorkspacePicker(false);
-  };
   const selectedSkills = skills.filter((s) => selectedSkillIds.includes(s.id));
 
   const toggleSkill = (skillId) => {

@@ -99,7 +99,7 @@ export default function TerminalScene({ scene = {} }) {
       outputTimers.forEach(clearTimeout);
       clearTimeout(finalTimer);
     };
-  }, [commandDone]);
+  }, [commandDone, outputLines]);
 
   return (
     <div className="h-full bg-[#0d0d0d] font-mono text-xs p-4 overflow-hidden flex flex-col">

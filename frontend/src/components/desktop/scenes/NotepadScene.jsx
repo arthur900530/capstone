@@ -73,7 +73,7 @@ export default function NotepadScene({ scene = {} }) {
     }, 400);
 
     return () => clearInterval(interval);
-  }, [phase]);
+  }, [phase, isExtracting]);
 
   return (
     <div className="h-full flex flex-col bg-[#1e1e1e]">

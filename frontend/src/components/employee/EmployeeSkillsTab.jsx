@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { X, Plus } from "lucide-react";
 import { updateEmployee } from "../../services/employeeStore";
-import { useApp } from "../../context/AppContext";
+import { useApp } from "../../context/appContextCore";
 import SkillBrowser from "../skills/SkillBrowser";
 
 export default function EmployeeSkillsTab({ employee, onEmployeeUpdated }) {

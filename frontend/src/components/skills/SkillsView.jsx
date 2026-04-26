@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { createElement, useState, useEffect, useRef, useCallback } from "react";
 import {
   Wrench, Plus, Loader2, AlertCircle, Search, Sparkles,
   LayoutGrid, List, Store, Download, Upload as UploadIcon, ClipboardCheck,
@@ -81,11 +81,6 @@ export default function SkillsView({ onSkillsChanged }) {
   const handleSelectSkill = (id) => {
     setViewingFile(null);
     setSelectedId(id);
-  };
-
-  const handleFileClick = (skillId, filename) => {
-    setSelectedId(skillId);
-    setViewingFile(filename);
   };
 
   const handleCreated = (skill) => {
@@ -235,7 +230,7 @@ export default function SkillsView({ onSkillsChanged }) {
 
           {/* Sub-tabs row */}
           <div className="mt-3 flex items-center gap-1">
-            {TABS.map(({ id, label, icon: TabIcon }) => {
+            {TABS.map(({ id, label, icon }) => {
               const count = id === "installed" ? installedCount
                 : id === "review" ? reviewCount
                 : null;
@@ -249,7 +244,7 @@ export default function SkillsView({ onSkillsChanged }) {
                       : "text-text-muted hover:bg-surface/50 hover:text-text-secondary"
                   }`}
                 >
-                  <TabIcon size={13} />
+                  {createElement(icon, { size: 13 })}
                   {label}
                   {count != null && count > 0 && (
                     <span className="rounded-full bg-accent-teal/10 px-1.5 py-0.5 text-[10px] text-accent-teal">

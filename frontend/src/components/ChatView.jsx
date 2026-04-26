@@ -14,7 +14,7 @@ import ChatMessage from "./ChatMessage";
 import InputBox from "./InputBox";
 import WelcomeHeader from "./WelcomeHeader";
 import BrowserLiveView from "./BrowserLiveView";
-import { useApp } from "../context/AppContext";
+import { useApp } from "../context/appContextCore";
 
 const LIVE_BROWSER_ENABLED = import.meta.env.VITE_LIVE_BROWSER !== "false";
 const IS_DEMO = import.meta.env.VITE_DEMO === "true";

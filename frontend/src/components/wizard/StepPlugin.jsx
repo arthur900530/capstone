@@ -3,7 +3,7 @@ import { ChevronDown, Plus, X, List, Share2 } from "lucide-react";
 import PLUGINS from "../../data/plugins";
 import PluginCard from "../PluginCard";
 import SkillGraph from "./SkillGraph";
-import { useApp } from "../../context/AppContext";
+import { useApp } from "../../context/appContextCore";
 
 export default function StepPlugin({
   selectedPluginIds,

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { createElement, useState, useEffect, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import {
   ArrowLeft,
@@ -28,7 +28,7 @@ import EmployeeProjectFilesTab from "../components/employee/EmployeeProjectFiles
 import EmployeeSystemPromptTab from "../components/employee/EmployeeSystemPromptTab";
 import PLUGINS from "../data/plugins";
 import { getEmployeeById, deleteEmployee } from "../services/employeeStore";
-import { useApp } from "../context/AppContext";
+import { useApp } from "../context/appContextCore";
 
 const TABS = [
   { id: "chat", label: "Chat", icon: MessageSquare },
@@ -178,7 +178,7 @@ export default function EmployeePage() {
 
       <div className="shrink-0 border-b border-border/20 px-6">
         <div className="mx-auto flex max-w-5xl gap-1">
-          {TABS.map(({ id, label, icon: Icon }) => (
+          {TABS.map(({ id, label, icon }) => (
             <button
               key={id}
               onClick={() => setActiveTab(id)}
@@ -188,7 +188,7 @@ export default function EmployeePage() {
                   : "border-transparent text-text-muted hover:text-text-secondary"
               }`}
             >
-              <Icon size={15} />
+              {createElement(icon, { size: 15 })}
               {label}
             </button>
           ))}

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { createElement, useEffect, useMemo, useState } from "react";
 import {
   ChevronDown,
   ChevronLeft,
@@ -10,20 +10,6 @@ import {
   ListChecks,
 } from "lucide-react";
 import { backfillRecentAnnotations } from "../../services/api";
-
-/* Bucketize a leaf achievement rate into one of four color tiers.
-   The "fully achieved" tier is reserved for a strict 100% — that way a
-   top-level goal the LLM flagged "success" but that has one failed
-   sub-step falls out of dark-green into light-green and stops hiding it. */
-function rateBucket(rate, { unknownTotal, total }) {
-  if (!total || total === 0) return "empty";
-  // If we truly have no signal on any step, render as unknown (gray).
-  if (unknownTotal >= total) return "unknown";
-  if (rate >= 1) return "all";
-  if (rate >= 0.75) return "mostly";
-  if (rate >= 0.5) return "partial";
-  return "not";
-}
 
 const BUCKET_STYLES = {
   all: {
@@ -275,14 +261,14 @@ function GoalBar({ goals }) {
     0,
   );
 
-  let cum = 0;
-  const segments = goals.map((goal, i) => {
+  const segments = goals.reduce((acc, goal, i) => {
     const units = Math.max(1, goal.leaf_total || 1);
     const widthPct = (units / totalUnits) * 100;
-    const leftPct = cum;
-    cum += widthPct;
-    return { goal, i, widthPct, leftPct };
-  });
+    const leftPct = acc.total;
+    acc.items.push({ goal, i, widthPct, leftPct });
+    acc.total += widthPct;
+    return acc;
+  }, { items: [], total: 0 }).items;
 
   const hovered = hoveredIdx != null ? segments[hoveredIdx] : null;
 
@@ -728,11 +714,11 @@ function TrendHoverCard({ point, chartWidth, padL, padR }) {
   );
 }
 
-function Kpi({ icon: Icon, label, value, sub, accent }) {
+function Kpi({ icon, label, value, sub, accent }) {
   return (
     <div className="rounded-lg border border-border/60 bg-[#2a2c31] p-4 shadow-[0_2px_12px_rgba(0,0,0,0.25)]">
       <div className="flex items-center gap-2">
-        <Icon size={14} className="text-accent-teal" />
+        {createElement(icon, { size: 14, className: "text-accent-teal" })}
         <p className="text-[11px] font-semibold uppercase tracking-wider text-text-muted">
           {label}
         </p>
