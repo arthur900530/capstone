@@ -78,4 +78,5 @@ TEST_CASE_MIN_LATENCY_MS = int(os.getenv("TEST_CASE_MIN_LATENCY_MS", "120000"))
 # ── PostgreSQL ──────────────────────────────────────────────────────────────
 # Leave empty to use the in-memory fallback. Set this in ``.env`` when you
 # want persistent Postgres-backed skills/employees.
-DATABASE_URL = os.getenv("DATABASE_URL", "")
+APP_DB_MODE = os.getenv("APP_DB_MODE", "").strip().lower()
+DATABASE_URL = "" if APP_DB_MODE == "memory" else os.getenv("DATABASE_URL", "")
