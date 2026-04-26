@@ -28,12 +28,38 @@ fi
 
 MOCK_MODE=0
 DEMO_MODE=0
+DB_MODE="auto"
 for arg in "$@"; do
   case "$arg" in
     --mock) MOCK_MODE=1 ;;
     --demo) DEMO_MODE=1 ;;
+    --memory) DB_MODE="memory" ;;
+    --postgres) DB_MODE="postgres" ;;
+    --help|-h)
+      cat <<EOF
+Usage: ./start.sh [--memory|--postgres] [--mock] [--demo]
+
+Database modes:
+  --memory     Use in-memory fallback stores, ignoring DATABASE_URL.
+  --postgres   Require DATABASE_URL and run Postgres migrations/seeding.
+
+When neither database flag is provided, startup auto-detects from DATABASE_URL:
+Postgres is used when DATABASE_URL is set; otherwise memory mode is used.
+EOF
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $arg" >&2
+      echo "Run ./start.sh --help for usage." >&2
+      exit 1
+      ;;
   esac
 done
+
+if [[ " $* " == *" --memory "* && " $* " == *" --postgres "* ]]; then
+  echo "Choose only one database mode: --memory or --postgres" >&2
+  exit 1
+fi
 
 PIDS=()
 
@@ -211,10 +237,20 @@ else
 fi
 step "API dependencies ready"
 
+if [[ "$DB_MODE" != "auto" ]]; then
+  export APP_DB_MODE="$DB_MODE"
+else
+  unset APP_DB_MODE 2>/dev/null || true
+fi
+
 # Read DATABASE_URL from the backend's config via the venv's python (which
 # has python-dotenv and every other dependency installed above).
 DATABASE_URL=$(cd "$BACKEND_DIR" && PYTHONPATH=. .venv/bin/python -c "from config import DATABASE_URL; print(DATABASE_URL)")
 export DATABASE_URL
+
+if [[ "$DB_MODE" == "postgres" && -z "$DATABASE_URL" ]]; then
+  die "--postgres requires DATABASE_URL. Set it in .env, backend/.env, or the shell."
+fi
 
 # ── Skillsbench ───────────────────────────────────────────────────────────────
 
@@ -240,9 +276,18 @@ fi
 header "Database"
 
 if [[ -z "$DATABASE_URL" ]]; then
-  info "DATABASE_URL not configured"
+  if [[ "$DB_MODE" == "memory" ]]; then
+    step "Memory mode selected"
+  else
+    info "DATABASE_URL not configured"
+  fi
   info "Using in-memory fallback"
 elif command -v pg_isready >/dev/null 2>&1; then
+  if [[ "$DB_MODE" == "postgres" ]]; then
+    step "Postgres mode selected"
+  else
+    info "DATABASE_URL configured — using Postgres"
+  fi
   if ! pg_isready -h localhost -p 5432 -q 2>/dev/null; then
     info "Starting PostgreSQL..."
     sudo service postgresql start 2>/dev/null \
