@@ -2,7 +2,7 @@ import { useNavigate } from "react-router-dom";
 import { Plus, Users } from "lucide-react";
 import EmployeeCard from "../components/dashboard/EmployeeCard";
 import TemplateGallery from "../components/dashboard/TemplateGallery";
-import { useApp } from "../context/AppContext";
+import { useApp } from "../context/appContextCore";
 
 export default function DashboardPage() {
   const { employees } = useApp();

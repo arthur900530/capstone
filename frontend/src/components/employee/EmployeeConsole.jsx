@@ -38,7 +38,7 @@ export default function EmployeeConsole({ employee }) {
       setLoading(false);
     }
     loadEvents();
-  }, [employee.id, employee.chatSessionIds?.length]);
+  }, [employee.id, employee.chatSessionIds]);
 
   if (loading) {
     return (

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { createElement, useEffect, useState } from "react";
 import {
   BarChart3,
   Wrench,
@@ -29,13 +29,13 @@ function KpiCard({ label, value, sub }) {
   );
 }
 
-function MetricCard({ icon: Icon, label, children, className = "" }) {
+function MetricCard({ icon, label, children, className = "" }) {
   return (
     <div
       className={`rounded-lg border border-border/60 bg-[#2a2c31] p-4 shadow-[0_2px_12px_rgba(0,0,0,0.25)] ${className}`}
     >
       <div className="mb-3 flex items-center gap-2">
-        <Icon size={15} className="text-accent-teal" />
+        {createElement(icon, { size: 15, className: "text-accent-teal" })}
         <h4 className="text-xs font-semibold uppercase tracking-wider text-text-secondary">
           {label}
         </h4>

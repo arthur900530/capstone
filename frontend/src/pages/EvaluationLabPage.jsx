@@ -1,5 +1,5 @@
 import EvaluationView from "../components/EvaluationView";
-import { useApp } from "../context/AppContext";
+import { useApp } from "../context/appContextCore";
 
 export default function EvaluationLabPage() {
   const { agentMap, focusAgentId, setFocusAgentId } = useApp();

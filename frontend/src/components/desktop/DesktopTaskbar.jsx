@@ -42,8 +42,6 @@ function Clock() {
 }
 
 export default function DesktopTaskbar({ windows, activeWindowId, onWindowClick }) {
-  const visible = windows.filter((w) => !w.minimized || true); // show all windows in taskbar
-
   return (
     <div className="h-10 bg-[#0d0d0d]/90 backdrop-blur border-t border-border/20 flex items-center px-4 shrink-0">
       {/* Left spacer */}

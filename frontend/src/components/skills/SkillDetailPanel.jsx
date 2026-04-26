@@ -123,7 +123,7 @@ export default function SkillDetailPanel({ skill, onClose, onInstall, onUninstal
     setEditDesc(skill.description);
     setEditDef(skill.definition);
     setSubmitDone(false);
-  }, [skill.id]);
+  }, [skill.id, skill.name, skill.description, skill.definition]);
 
   const dirty = editing && (editName !== skill.name || editDesc !== skill.description || editDef !== skill.definition);
 

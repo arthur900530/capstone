@@ -16,7 +16,7 @@ import {
 } from "lucide-react";
 import PLUGINS from "../data/plugins";
 
-function ChatHistoryItem({ chat, agentName, isActive, onSelect, onDelete, onRename }) {
+function ChatHistoryItem({ chat, isActive, onSelect, onDelete, onRename }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(chat.name);
 

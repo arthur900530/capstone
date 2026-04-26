@@ -83,7 +83,7 @@ export default function EmployeeChat({ employee, onDesktopEvent }) {
     } else {
       setRatings({});
     }
-  }, [employee.id]);
+  }, [employee.id, employee.chatSessionIds]);
 
   const handleSubmit = async (question, submittedFiles = []) => {
     if (!question.trim() || isStreaming) return;
