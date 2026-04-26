@@ -46,9 +46,6 @@ VERIFIER_MODEL = os.getenv("VERIFIER_MODEL", "openai/gpt-4o")
 SKILL_SELECTION_MODEL = os.getenv("SKILL_SELECTION_MODEL", "openai/gpt-4o")
 
 # ── PostgreSQL ──────────────────────────────────────────────────────────────
-# Default points at a localhost Postgres with stock ``postgres:postgres``
-# credentials. Production deployments must override this in ``.env``.
-DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "postgresql+asyncpg://postgres:postgres@localhost:5432/skillmarket",
-)
+# Leave empty to use the in-memory fallback. Set this in ``.env`` when you
+# want persistent Postgres-backed skills/employees.
+DATABASE_URL = os.getenv("DATABASE_URL", "")

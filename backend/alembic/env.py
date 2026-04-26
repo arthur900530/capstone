@@ -15,6 +15,9 @@ DATABASE_URL = os.getenv(
     context.config.get_main_option("sqlalchemy.url"),
 )
 
+if not DATABASE_URL:
+    raise RuntimeError("DATABASE_URL is not configured")
+
 
 def run_migrations_offline():
     context.configure(url=DATABASE_URL, target_metadata=target_metadata, literal_binds=True)
