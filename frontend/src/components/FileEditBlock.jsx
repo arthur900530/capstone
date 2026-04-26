@@ -51,11 +51,10 @@ function useLineReveal(totalLines, { enabled = true, interval = 80 } = {}) {
 
   useEffect(() => {
     if (!enabled) {
-      setRevealed(totalLines);
       return;
     }
-    setRevealed(0);
     let current = 0;
+    const resetTimer = window.setTimeout(() => setRevealed(0), 0);
     timerRef.current = setInterval(() => {
       current += 1;
       if (current >= totalLines) {
@@ -65,10 +64,13 @@ function useLineReveal(totalLines, { enabled = true, interval = 80 } = {}) {
         setRevealed(current);
       }
     }, interval);
-    return () => clearInterval(timerRef.current);
+    return () => {
+      window.clearTimeout(resetTimer);
+      clearInterval(timerRef.current);
+    };
   }, [totalLines, enabled, interval]);
 
-  return revealed;
+  return enabled ? revealed : totalLines;
 }
 
 function basename(path) {
@@ -106,11 +108,13 @@ function CopyButton({ text }) {
 
 /* ── Line-numbered code block ──────────────────────────────────── */
 function CodeBlock({ code, startLine = 1, animate = true }) {
-  if (!code) return null;
-  const lines = code.replace(/\n$/, "").split("\n");
+  const hasCode = Boolean(code);
+  const lines = hasCode ? code.replace(/\n$/, "").split("\n") : [];
   const gutterWidth = String(startLine + lines.length - 1).length;
-  const revealed = useLineReveal(lines.length, { enabled: animate });
+  const revealed = useLineReveal(lines.length, { enabled: animate && hasCode });
   const done = revealed >= lines.length;
+
+  if (!hasCode) return null;
 
   return (
     <div className="fe-code-block overflow-x-auto rounded-b-lg bg-[#1a1a1a] font-mono text-xs leading-[1.6]">
@@ -140,15 +144,17 @@ function CodeBlock({ code, startLine = 1, animate = true }) {
 
 /* ── Diff view (str_replace) ───────────────────────────────────── */
 function DiffView({ oldStr, newStr, animate = true }) {
-  if (!oldStr && !newStr) return null;
-  const oldLines = (oldStr || "").replace(/\n$/, "").split("\n");
-  const newLines = (newStr || "").replace(/\n$/, "").split("\n");
+  const hasDiff = Boolean(oldStr || newStr);
+  const oldLines = oldStr ? oldStr.replace(/\n$/, "").split("\n") : [];
+  const newLines = newStr ? newStr.replace(/\n$/, "").split("\n") : [];
   const allCount = oldLines.length + newLines.length;
-  const revealed = useLineReveal(allCount, { enabled: animate, interval: 80 });
+  const revealed = useLineReveal(allCount, { enabled: animate && hasDiff, interval: 80 });
   const done = revealed >= allCount;
 
   const oldRevealed = Math.min(revealed, oldLines.length);
   const newRevealed = Math.max(0, revealed - oldLines.length);
+
+  if (!hasDiff) return null;
 
   return (
     <div className="fe-code-block overflow-x-auto rounded-b-lg bg-[#1a1a1a] font-mono text-xs leading-[1.6]">
@@ -179,10 +185,12 @@ function DiffView({ oldStr, newStr, animate = true }) {
 
 /* ── Insert view ───────────────────────────────────────────────── */
 function InsertView({ newStr, insertLine, animate = true }) {
-  if (!newStr) return null;
-  const lines = newStr.replace(/\n$/, "").split("\n");
-  const revealed = useLineReveal(lines.length, { enabled: animate, interval: 40 });
+  const hasInsert = Boolean(newStr);
+  const lines = hasInsert ? newStr.replace(/\n$/, "").split("\n") : [];
+  const revealed = useLineReveal(lines.length, { enabled: animate && hasInsert, interval: 40 });
   const done = revealed >= lines.length;
+
+  if (!hasInsert) return null;
 
   return (
     <div className="fe-code-block overflow-x-auto rounded-b-lg bg-[#1a1a1a] font-mono text-xs leading-[1.6]">
