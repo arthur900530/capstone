@@ -35,7 +35,7 @@ export default function CreationWizard() {
       : [],
   );
   const [config, setConfig] = useState({
-    model: templatePlugins[0]?.defaultModel || "openai/gpt-5.4",
+    model: templatePlugins[0]?.defaultModel || "",
     maxTrials: 3,
     confidenceThreshold: 0.7,
     useReflexion: false,
@@ -60,7 +60,7 @@ export default function CreationWizard() {
         description,
         pluginIds: selectedPluginIds,
         skillIds,
-        model: config.model,
+        model: config.model || undefined,
         useReflexion: config.useReflexion,
         maxTrials: config.maxTrials,
         confidenceThreshold: config.confidenceThreshold,
@@ -144,6 +144,8 @@ export default function CreationWizard() {
         )}
         {step === 2 && (
           <StepLearnSkills
+            description={description}
+            pluginIds={selectedPluginIds}
             skillIds={skillIds}
             onSkillIdsChange={setSkillIds}
             onBack={() => setStep(1)}

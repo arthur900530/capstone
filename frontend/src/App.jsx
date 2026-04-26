@@ -112,6 +112,9 @@ export default function App() {
   const currentEmployee = currentEmployeeId
     ? employees.find((e) => e.id === currentEmployeeId) || null
     : null;
+  const effectiveSkillIds = currentEmployeeId
+    ? currentEmployee?.skillIds || []
+    : selectedSkillIds;
 
   // The employee (if any) the user is currently talking to. We link each
   // new chat session to this employee so the sidebar can group the
@@ -295,7 +298,7 @@ export default function App() {
                   type: f.type,
                 }))
               : undefined,
-          skillIds: selectedSkillIds,
+          skillIds: effectiveSkillIds,
           mountDir: mountDir || undefined,
           employeeId: currentEmployeeId || undefined,
           employee: currentEmployee
@@ -753,6 +756,7 @@ export default function App() {
     ratings,
     setRatings,
     currentEmployeeId,
+    currentEmployee,
   };
 
   return (

@@ -1,9 +1,57 @@
-import { X } from "lucide-react";
-import { useApp } from "../../context/appContextCore";
+import { useEffect, useState } from "react";
+import { Loader2, Sparkles, X } from "lucide-react";
+import { useApp } from "../../context/AppContext";
+import { suggestEmployeeSkills } from "../../services/api";
 import SkillBrowser from "../skills/SkillBrowser";
 
-export default function StepLearnSkills({ skillIds, onSkillIdsChange, onBack, onNext }) {
+export default function StepLearnSkills({
+  description,
+  pluginIds,
+  skillIds,
+  onSkillIdsChange,
+  onBack,
+  onNext,
+}) {
   const { refreshSkills } = useApp();
+  const [isSuggesting, setIsSuggesting] = useState(false);
+  const [suggestionError, setSuggestionError] = useState(null);
+  const [hasSuggested, setHasSuggested] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    const shouldSuggest =
+      pluginIds.length === 0 &&
+      skillIds.length === 0 &&
+      description.trim() &&
+      !hasSuggested;
+
+    if (!shouldSuggest) return undefined;
+
+    setIsSuggesting(true);
+    setSuggestionError(null);
+
+    suggestEmployeeSkills(description)
+      .then((data) => {
+        if (cancelled) return;
+        const suggested = Array.isArray(data?.skillIds) ? data.skillIds : [];
+        if (suggested.length > 0) {
+          onSkillIdsChange(suggested);
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) setSuggestionError(err.message);
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setIsSuggesting(false);
+          setHasSuggested(true);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [description, hasSuggested, onSkillIdsChange, pluginIds.length, skillIds.length]);
 
   const toggleSkill = (sid) => {
     onSkillIdsChange(
@@ -22,6 +70,31 @@ export default function StepLearnSkills({ skillIds, onSkillIdsChange, onBack, on
         Browse the marketplace to discover skills, or create your own. Selected
         skills will be assigned to this employee.
       </p>
+
+      {pluginIds.length === 0 && description.trim() && (
+        <div className="mb-4 rounded-xl border border-border/40 bg-surface p-3">
+          <div className="flex items-start gap-2">
+            <Sparkles size={15} className="mt-0.5 text-accent-teal" />
+            <div className="min-w-0 flex-1">
+              <p className="text-xs font-medium text-text-primary">
+                Auto skill suggestions
+              </p>
+              {isSuggesting ? (
+                <div className="mt-1 flex items-center gap-2 text-xs text-text-muted">
+                  <Loader2 size={12} className="animate-spin" />
+                  Matching skills from the employee description...
+                </div>
+              ) : suggestionError ? (
+                <p className="mt-1 text-xs text-red-400">{suggestionError}</p>
+              ) : (
+                <p className="mt-1 text-xs text-text-muted">
+                  Suggested skills are preselected here when no plugin is chosen.
+                </p>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Selected skills summary */}
       {skillIds.length > 0 && (
