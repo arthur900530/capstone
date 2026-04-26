@@ -79,7 +79,7 @@ else:
 
 from contextlib import asynccontextmanager
 
-from config import AGENT_MODEL
+from config import AGENT_MODEL, DATABASE_URL
 from db.engine import engine
 from db.seed import seed_from_filesystem
 from routers.skills import router as skills_router
@@ -121,19 +121,24 @@ async def lifespan(application):
     """Start DB engine, seed skills, and warm the shared DockerWorkspace."""
     from routers.skills import set_db_available
     from routers.employees import set_db_available as set_emp_db
-    try:
-        from alembic.config import Config
-        from alembic import command
-        alembic_cfg = Config(os.path.join(os.path.dirname(__file__), "alembic.ini"))
-        await asyncio.to_thread(command.upgrade, alembic_cfg, "head")
-        await seed_from_filesystem()
-        set_db_available(True)
-        set_emp_db(True)
-        logger.info("Database initialized and seeded.")
-    except Exception as exc:
+    if not DATABASE_URL:
         set_db_available(False)
         set_emp_db(False)
-        logger.warning("DB init skipped — falling back to in-memory skills: %s", exc)
+        logger.info("DATABASE_URL not configured — using in-memory stores.")
+    else:
+        try:
+            from alembic.config import Config
+            from alembic import command
+            alembic_cfg = Config(os.path.join(os.path.dirname(__file__), "alembic.ini"))
+            await asyncio.to_thread(command.upgrade, alembic_cfg, "head")
+            await seed_from_filesystem()
+            set_db_available(True)
+            set_emp_db(True)
+            logger.info("Database initialized and seeded.")
+        except Exception as exc:
+            set_db_available(False)
+            set_emp_db(False)
+            logger.warning("DB init skipped — falling back to in-memory skills: %s", exc)
 
     # Warm the shared DockerWorkspace once, before accepting requests.
     if REAL_AGENT_ENABLED:
@@ -189,10 +194,11 @@ async def lifespan(application):
             _SHARED_WS["workspace"] = None
             _SHARED_WS["host_dir"] = None
 
-    try:
-        await engine.dispose()
-    except Exception:
-        pass
+    if engine is not None:
+        try:
+            await engine.dispose()
+        except Exception:
+            pass
 
 
 def _start_shared_workspace(host_dir: str):

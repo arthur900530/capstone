@@ -239,7 +239,10 @@ fi
 
 header "Database"
 
-if command -v pg_isready >/dev/null 2>&1; then
+if [[ -z "$DATABASE_URL" ]]; then
+  info "DATABASE_URL not configured"
+  info "Using in-memory fallback"
+elif command -v pg_isready >/dev/null 2>&1; then
   if ! pg_isready -h localhost -p 5432 -q 2>/dev/null; then
     info "Starting PostgreSQL..."
     sudo service postgresql start 2>/dev/null \
