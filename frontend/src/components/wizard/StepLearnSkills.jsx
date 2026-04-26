@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Loader2, Sparkles, X } from "lucide-react";
-import { useApp } from "../../context/AppContext";
+import { useApp } from "../../context/appContextCore";
 import { suggestEmployeeSkills } from "../../services/api";
 import SkillBrowser from "../skills/SkillBrowser";
 
@@ -27,8 +27,10 @@ export default function StepLearnSkills({
 
     if (!shouldSuggest) return undefined;
 
-    setIsSuggesting(true);
-    setSuggestionError(null);
+    const startTimer = setTimeout(() => {
+      setIsSuggesting(true);
+      setSuggestionError(null);
+    }, 0);
 
     suggestEmployeeSkills(description)
       .then((data) => {
@@ -50,6 +52,7 @@ export default function StepLearnSkills({
 
     return () => {
       cancelled = true;
+      clearTimeout(startTimer);
     };
   }, [description, hasSuggested, onSkillIdsChange, pluginIds.length, skillIds.length]);
 
