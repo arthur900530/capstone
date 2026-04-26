@@ -112,7 +112,7 @@ function IdleContent() {
   );
 }
 
-function SearchingContent({ query, resultsVisible, highlightFirst }) {
+function SearchingContent({ resultsVisible, highlightFirst }) {
   return (
     <div className="flex-1 overflow-hidden p-4 space-y-4">
       {resultsVisible && (
@@ -210,8 +210,7 @@ function ReadingContent({ phase }) {
 export default function BrowserScene({ scene = {} }) {
   const { phase = "idle", query = "AAPL financial data", detail } = scene;
 
-  const [resultsVisible, setResultsVisible] = useState(false);
-  const [highlightFirst, setHighlightFirst] = useState(false);
+  const [visibleSceneKey, setVisibleSceneKey] = useState(null);
 
   const searchUrl =
     phase === "searching" || phase === "results_shown"
@@ -231,32 +230,22 @@ export default function BrowserScene({ scene = {} }) {
   const activeUrl = searchUrl || edgarUrl || readingUrl;
   const urlCharCount = activeUrl.length;
   const typingDuration = urlCharCount * 30 + 100;
+  const sceneKey = `${phase}:${query}:${detail || ""}`;
+  const canShowResults =
+    phase === "searching" ||
+    phase === "edgar" ||
+    phase === "reading" ||
+    phase === "results_shown";
+  const resultsVisible = canShowResults && visibleSceneKey === sceneKey;
+  const highlightFirst = phase === "results_shown";
 
   useEffect(() => {
-    setResultsVisible(false);
-    setHighlightFirst(false);
-
-    if (
-      phase === "searching" ||
-      phase === "edgar" ||
-      phase === "reading" ||
-      phase === "results_shown"
-    ) {
-      const showTimer = setTimeout(() => {
-        setResultsVisible(true);
-      }, typingDuration + 300);
-
-      return () => clearTimeout(showTimer);
-    }
-  }, [phase, query]);
-
-  useEffect(() => {
-    if (phase === "results_shown") {
-      setHighlightFirst(true);
-    } else {
-      setHighlightFirst(false);
-    }
-  }, [phase]);
+    if (!canShowResults) return undefined;
+    const showTimer = setTimeout(() => {
+      setVisibleSceneKey(sceneKey);
+    }, typingDuration + 300);
+    return () => clearTimeout(showTimer);
+  }, [canShowResults, sceneKey, typingDuration]);
 
   const isEdgar =
     phase === "edgar" ||
@@ -272,7 +261,6 @@ export default function BrowserScene({ scene = {} }) {
         {phase === "idle" && <IdleContent />}
         {(phase === "searching" || (phase === "results_shown" && !isEdgar && !isReading)) && (
           <SearchingContent
-            query={query}
             resultsVisible={resultsVisible}
             highlightFirst={highlightFirst}
           />

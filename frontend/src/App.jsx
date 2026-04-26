@@ -9,7 +9,8 @@ import {
 import { Menu, PanelRight } from "lucide-react";
 import Sidebar from "./components/Sidebar";
 import ChatView from "./components/ChatView";
-import EditorCanvas, { isCanvasPreviewable } from "./components/EditorCanvas";
+import EditorCanvas from "./components/EditorCanvas";
+import { isCanvasPreviewable } from "./components/editorCanvasUtils";
 import WorkspacePanel from "./components/WorkspacePanel";
 import DashboardPage from "./pages/DashboardPage";
 import PluginsPage from "./pages/PluginsPage";
