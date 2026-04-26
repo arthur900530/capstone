@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo, useCallback } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
@@ -65,73 +65,6 @@ function fileKind(path) {
   return "text";
 }
 
-// Agent-internal artifacts that should never auto-open the canvas. They still
-// appear in the workspace tree, so the user can click them on demand.
-const AUTO_OPEN_IGNORED_BASENAMES = new Set([
-  "TASKS.json",
-  "TASKS.md",
-  "reflexion_memory.json",
-  "base_state.json",
-]);
-const AUTO_OPEN_IGNORED_SEGMENTS = new Set([
-  "subagents",
-  "events",
-  "conversations",
-]);
-// OpenHands per-event journal files: event-00001-<uuid>.json, …
-const AUTO_OPEN_IGNORED_BASENAME_PATTERNS = [
-  /^event-\d{5}-[0-9a-fA-F-]{8,}\.json$/,
-];
-// Any path segment (directory or file) containing one of these tokens is
-// treated as agent-internal and will NOT auto-open in the canvas. Matching is
-// case-insensitive. Use this for scratch / staging directories such as
-// `tmp_tsmc`, `tmp_scratch`, `.../tmp/.../foo.py`, etc.
-const AUTO_OPEN_IGNORED_SEGMENT_SUBSTRINGS = ["tmp"];
-
-function basenameOf(path) {
-  if (!path) return "";
-  return path.split("/").pop() || "";
-}
-
-function isAgentInternalPath(path) {
-  if (!path) return false;
-  const base = basenameOf(path);
-  if (AUTO_OPEN_IGNORED_BASENAMES.has(base)) return true;
-  if (AUTO_OPEN_IGNORED_BASENAME_PATTERNS.some((re) => re.test(base))) return true;
-  const parts = path.split("/");
-  // Match a segment anywhere in the directory portion of the path.
-  for (let i = 0; i < parts.length - 1; i++) {
-    if (AUTO_OPEN_IGNORED_SEGMENTS.has(parts[i])) return true;
-  }
-  // Substring match against every segment (including the basename) so names
-  // like `tmp_tsmc/report.md` or `some/tmp/file.py` are caught too.
-  for (const part of parts) {
-    if (!part) continue;
-    const lower = part.toLowerCase();
-    if (AUTO_OPEN_IGNORED_SEGMENT_SUBSTRINGS.some((tok) => lower.includes(tok))) {
-      return true;
-    }
-  }
-  return false;
-}
-
-/**
- * True when the canvas knows how to render the file in a useful way AND
- * the file isn't an agent-internal artifact (task tracker, reflexion memory,
- * subagent state, etc.). Used to decide whether to auto-open a file produced
- * by the agent.
- */
-export function isCanvasPreviewable(path) {
-  if (isAgentInternalPath(path)) return false;
-  const ext = getExt(path);
-  if (!ext) return false;
-  if (ext === "pdf") return true;
-  if (MARKDOWN_EXTS.has(ext)) return true;
-  if (IMAGE_EXTS.has(ext)) return true;
-  if (TEXT_EXTS.has(ext)) return true;
-  return false;
-}
-
 /* ── Animated line reveal ─────────────────────────────────────── */
 
 function useLineReveal(totalLines, { enabled = true, interval = 35 } = {}) {
@@ -139,9 +72,9 @@ function useLineReveal(totalLines, { enabled = true, interval = 35 } = {}) {
   const timerRef = useRef(null);
 
   useEffect(() => {
-    if (!enabled) { setRevealed(totalLines); return; }
-    setRevealed(0);
+    if (!enabled) return;
     let current = 0;
+    const resetTimer = window.setTimeout(() => setRevealed(0), 0);
     timerRef.current = setInterval(() => {
       current += 1;
       if (current >= totalLines) {
@@ -151,10 +84,13 @@ function useLineReveal(totalLines, { enabled = true, interval = 35 } = {}) {
         setRevealed(current);
       }
     }, interval);
-    return () => clearInterval(timerRef.current);
+    return () => {
+      window.clearTimeout(resetTimer);
+      clearInterval(timerRef.current);
+    };
   }, [totalLines, enabled, interval]);
 
-  return revealed;
+  return enabled ? revealed : totalLines;
 }
 
 /* ── Copy button ──────────────────────────────────────────────── */

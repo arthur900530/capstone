@@ -44,23 +44,27 @@ export default function useVersionHistory(skillId, currentSkillData) {
     if (initializedRef.current === skillId) return;
     initializedRef.current = skillId;
 
-    const stored = loadVersions(skillId);
-    if (stored && stored.length > 0) {
-      setVersions(stored);
-      setActiveVersion(stored[stored.length - 1].version);
-    } else if (currentSkillData) {
-      const v1 = [{
-        version: 1,
-        name: currentSkillData.name,
-        description: currentSkillData.description,
-        definition: currentSkillData.definition,
-        savedAt: currentSkillData.updated_at || new Date().toISOString(),
-        submitted: false,
-      }];
-      setVersions(v1);
-      setActiveVersion(1);
-      saveVersions(skillId, v1);
-    }
+    const resetTimer = window.setTimeout(() => {
+      const stored = loadVersions(skillId);
+      if (stored && stored.length > 0) {
+        setVersions(stored);
+        setActiveVersion(stored[stored.length - 1].version);
+      } else if (currentSkillData) {
+        const v1 = [{
+          version: 1,
+          name: currentSkillData.name,
+          description: currentSkillData.description,
+          definition: currentSkillData.definition,
+          savedAt: currentSkillData.updated_at || new Date().toISOString(),
+          submitted: false,
+        }];
+        setVersions(v1);
+        setActiveVersion(1);
+        saveVersions(skillId, v1);
+      }
+    }, 0);
+
+    return () => window.clearTimeout(resetTimer);
   }, [skillId, currentSkillData]);
 
   // Persist on change

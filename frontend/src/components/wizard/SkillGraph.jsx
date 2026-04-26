@@ -5,26 +5,43 @@ import { fetchSkills, browseMarketplaceSkills, installSkill } from "../../servic
 import PLUGINS from "../../data/plugins";
 
 export default function SkillGraph({ pluginIds, skillIds, onToggleSkill }) {
-  const [cloudSkills, setCloudSkills] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [skillLoad, setSkillLoad] = useState({
+    key: null,
+    skills: [],
+  });
   const [hoveredNode, setHoveredNode] = useState(null);
   const [installing, setInstalling] = useState(null);
+  const pluginKey = pluginIds.join(",");
+  const loading = skillLoad.key !== pluginKey;
+  const cloudSkills = useMemo(
+    () => (loading ? [] : skillLoad.skills),
+    [loading, skillLoad.skills],
+  );
 
   const selectedPlugins = PLUGINS.filter((p) => pluginIds.includes(p.id));
   const primaryPlugin = selectedPlugins[0];
   const PrimaryIcon = Icons[primaryPlugin?.icon] || Icons.Bot;
 
   useEffect(() => {
-    setLoading(true);
+    let cancelled = false;
     browseMarketplaceSkills({ status: "published" })
-      .then((res) => res.skills || res || [])
+      .then((res) => res.items || res.skills || res || [])
       .catch(() => fetchSkills().catch(() => []))
       .then((skills) => {
+        if (cancelled) return;
         const list = Array.isArray(skills) ? skills : [];
-        setCloudSkills(list.filter((s) => !skillIds.includes(s.id || s.slug)));
+        setSkillLoad({
+          key: pluginKey,
+          skills: list.filter((s) => !skillIds.includes(s.id || s.slug)),
+        });
       })
-      .finally(() => setLoading(false));
-  }, [pluginIds.join(",")]);
+      .catch(() => {
+        if (!cancelled) setSkillLoad({ key: pluginKey, skills: [] });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [pluginKey, skillIds]);
 
   const handleAddSkill = async (node) => {
     onToggleSkill(node.id);
@@ -39,7 +56,10 @@ export default function SkillGraph({ pluginIds, skillIds, onToggleSkill }) {
       setInstalling(null);
     }
     // Remove from suggestions
-    setCloudSkills((prev) => prev.filter((s) => (s.id || s.slug) !== node.id));
+    setSkillLoad((prev) => ({
+      ...prev,
+      skills: prev.skills.filter((s) => (s.id || s.slug) !== node.id),
+    }));
   };
 
   const graphSize = 520;
