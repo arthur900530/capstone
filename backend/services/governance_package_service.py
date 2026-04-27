@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import html
+import ast
 import json
 import logging
 from datetime import datetime, timezone
@@ -15,17 +16,17 @@ logger = logging.getLogger(__name__)
 POLICY_REFERENCES = [
     {
         "name": "Federal Reserve SR 11-7: Supervisory Guidance on Model Risk Management",
-        "url": "https://www.federalreserve.gov/bankinforeg/srletters/sr1107.htm",
+        "url": "https://www.federalreserve.gov/boarddocs/srletters/2011/sr1107a1.pdf",
         "summary": "Primary U.S. banking model-risk guidance for model development, validation, use, governance, controls, and ongoing monitoring.",
     },
     {
         "name": "OCC Bulletin 2011-12: Sound Practices for Model Risk Management",
-        "url": "https://www.occ.gov/news-issuances/bulletins/2011/bulletin-2011-12a.pdf",
+        "url": "https://occ.gov/news-issuances/bulletins/2011/bulletin-2011-12a.pdf",
         "summary": "OCC model-risk guidance issued with SR 11-7 for banks supervised by the OCC.",
     },
     {
         "name": "NIST AI Risk Management Framework 1.0",
-        "url": "https://www.nist.gov/itl/ai-risk-management-framework",
+        "url": "https://www.nist.gov/publications/artificial-intelligence-risk-management-framework-ai-rmf-10",
         "summary": "AI-specific risk-management framework organized around Govern, Map, Measure, and Manage functions.",
     },
 ]
@@ -217,6 +218,47 @@ def _resolve_model_for_base_url(model: str) -> str:
     return raw or "gpt-4o-mini"
 
 
+def _text_from_llm_section(value: Any, fallback: str) -> str:
+    """Collapse LLM JSON values to readable prose instead of Python repr text."""
+    if value in (None, ""):
+        return fallback
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return fallback
+        if (
+            (text.startswith("{") and text.endswith("}"))
+            or (text.startswith("[") and text.endswith("]"))
+        ):
+            try:
+                return _text_from_llm_section(ast.literal_eval(text), fallback)
+            except (ValueError, SyntaxError):
+                try:
+                    return _text_from_llm_section(json.loads(text), fallback)
+                except json.JSONDecodeError:
+                    pass
+        return text
+    if isinstance(value, list):
+        items = [str(item).strip() for item in value if str(item).strip()]
+        return " ".join(items) or fallback
+    if isinstance(value, dict):
+        parts: list[str] = []
+        if value.get("tier"):
+            parts.append(f"Tier: {value['tier']}.")
+        if value.get("score") is not None:
+            parts.append(f"Score: {value['score']}.")
+        reasons = value.get("reasons")
+        if isinstance(reasons, list) and reasons:
+            parts.append(" ".join(str(reason).strip() for reason in reasons if str(reason).strip()))
+        for key, item in value.items():
+            if key in {"tier", "score", "reasons"}:
+                continue
+            if item not in (None, "", [], {}):
+                parts.append(f"{str(key).replace('_', ' ').title()}: {item}.")
+        return " ".join(parts).strip() or fallback
+    return str(value)
+
+
 async def generate_governance_package(employee: dict, metrics: dict) -> dict:
     context = build_governance_context(employee, metrics)
     draft = _template_draft(context)
@@ -249,9 +291,13 @@ async def generate_governance_package(employee: dict, metrics: dict) -> dict:
             content = (resp.choices[0].message.content or "").strip()
             parsed = json.loads(content)
             draft = {
-                key: str(parsed.get(key) or draft[key] or "Not specified")
+                key: _text_from_llm_section(parsed.get(key), draft[key] or "Not specified")
                 for key in SECTION_KEYS
             }
+            # These two sections are most likely to be returned as raw JSON by
+            # an LLM. Keep them deterministic and prose-shaped in the product.
+            draft["risk_summary"] = _template_draft(context)["risk_summary"]
+            draft["controls_summary"] = _template_draft(context)["controls_summary"]
             llm["used"] = True
         except Exception as exc:  # noqa: BLE001
             logger.warning("Governance LLM draft failed; using template fallback: %s", exc)

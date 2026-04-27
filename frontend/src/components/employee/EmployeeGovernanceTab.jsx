@@ -41,10 +41,24 @@ function ErrorState({ message, onRetry }) {
   );
 }
 
-function Section({ title, children }) {
+const NARRATIVE_ORDER = [
+  "system_overview",
+  "intended_use",
+  "data_inputs",
+  "evaluation_summary",
+  "risk_summary",
+  "controls_summary",
+  "monitoring_plan",
+  "limitations",
+  "approval_notes",
+];
+
+function Section({ title, children, className = "" }) {
   return (
-    <section className="rounded-lg border border-border/60 bg-[#2a2c31] p-4 shadow-[0_2px_12px_rgba(0,0,0,0.25)]">
-      <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-text-secondary">
+    <section
+      className={`rounded-lg border border-border/60 bg-[#2a2c31] p-4 shadow-[0_2px_12px_rgba(0,0,0,0.25)] ${className}`}
+    >
+      <h3 className="mb-3 border-b border-border/50 pb-2 text-[13px] font-semibold uppercase tracking-wider text-text-primary">
         {title}
       </h3>
       {children}
@@ -57,6 +71,70 @@ function sectionTitle(key) {
     .split("_")
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
     .join(" ");
+}
+
+function normalizeDisplayValue(value) {
+  if (value == null || value === "") return "Not specified";
+  if (Array.isArray(value)) return value;
+  if (typeof value === "object") return value;
+  if (typeof value !== "string") return String(value);
+
+  const trimmed = value.trim();
+  if (!trimmed) return "Not specified";
+
+  if (
+    (trimmed.startsWith("{") && trimmed.endsWith("}")) ||
+    (trimmed.startsWith("[") && trimmed.endsWith("]"))
+  ) {
+    try {
+      return JSON.parse(trimmed);
+    } catch {
+      // Keep the original text if it is not valid JSON.
+    }
+  }
+  return trimmed;
+}
+
+function SectionContent({ value }) {
+  const normalized = normalizeDisplayValue(value);
+
+  if (Array.isArray(normalized)) {
+    return (
+      <ul className="space-y-2 pl-4">
+        {normalized.map((item) => (
+          <li
+            key={String(item)}
+            className="list-disc text-sm leading-6 text-text-secondary marker:text-accent-teal"
+          >
+            {String(item)}
+          </li>
+        ))}
+      </ul>
+    );
+  }
+
+  if (typeof normalized === "object") {
+    return (
+      <dl className="grid gap-3 sm:grid-cols-2">
+        {Object.entries(normalized).map(([key, item]) => (
+          <div key={key} className="rounded-md border border-border/40 bg-surface/40 p-3">
+            <dt className="text-[11px] font-semibold uppercase tracking-wider text-accent-light">
+              {sectionTitle(key)}
+            </dt>
+            <dd className="mt-1 text-sm leading-6 text-text-secondary">
+              {Array.isArray(item) ? item.join("; ") : String(item ?? "Not specified")}
+            </dd>
+          </div>
+        ))}
+      </dl>
+    );
+  }
+
+  return (
+    <p className="text-sm leading-6 text-text-secondary">
+      {normalized}
+    </p>
+  );
 }
 
 export default function EmployeeGovernanceTab({ employee }) {
@@ -107,6 +185,9 @@ export default function EmployeeGovernanceTab({ employee }) {
   const references = context.policy_references || [];
   const controls = context.controls || [];
   const llm = data?.llm || {};
+  const narrativeEntries = NARRATIVE_ORDER
+    .filter((key) => Object.prototype.hasOwnProperty.call(sections, key))
+    .map((key) => [key, sections[key]]);
 
   return (
     <div className="flex-1 overflow-y-auto">
@@ -205,30 +286,34 @@ export default function EmployeeGovernanceTab({ employee }) {
           </div>
         </Section>
 
-        <div className="grid gap-4 lg:grid-cols-2">
-          {Object.entries(sections).map(([key, value]) => (
+        <div className="space-y-4">
+          {narrativeEntries.map(([key, value]) => (
             <Section key={key} title={sectionTitle(key)}>
-              <p className="text-sm leading-6 text-text-secondary">
-                {value || "Not specified"}
-              </p>
+              <SectionContent value={value} />
             </Section>
           ))}
         </div>
 
         <div className="grid gap-4 lg:grid-cols-2">
           <Section title="Deterministic risk drivers">
-            <ul className="space-y-2">
+            <ul className="space-y-2 pl-4">
               {(risk.reasons || []).map((reason) => (
-                <li key={reason} className="text-sm leading-5 text-text-secondary">
+                <li
+                  key={reason}
+                  className="list-disc text-sm leading-6 text-text-secondary marker:text-accent-teal"
+                >
                   {reason}
                 </li>
               ))}
             </ul>
           </Section>
           <Section title="Required controls">
-            <ul className="space-y-2">
+            <ul className="space-y-2 pl-4">
               {controls.map((control) => (
-                <li key={control} className="text-sm leading-5 text-text-secondary">
+                <li
+                  key={control}
+                  className="list-disc text-sm leading-6 text-text-secondary marker:text-accent-teal"
+                >
                   {control}
                 </li>
               ))}

@@ -75,5 +75,17 @@ def test_render_governance_html_links_policy_references():
     html = svc.render_governance_html(package)
 
     assert "Financial Services AI Governance Package" in html
-    assert "https://www.federalreserve.gov/bankinforeg/srletters/sr1107.htm" in html
-    assert "https://www.occ.gov/news-issuances/bulletins/2011/bulletin-2011-12a.pdf" in html
+    assert "https://www.federalreserve.gov/boarddocs/srletters/2011/sr1107a1.pdf" in html
+    assert "https://occ.gov/news-issuances/bulletins/2011/bulletin-2011-12a.pdf" in html
+    assert "https://www.nist.gov/publications/artificial-intelligence-risk-management-framework-ai-rmf-10" in html
+
+
+def test_llm_section_normalization_removes_raw_dict_repr():
+    text = svc._text_from_llm_section(
+        "{'tier': 'Medium', 'score': 2, 'reasons': ['Average score warrants monitoring.']}",
+        "fallback",
+    )
+
+    assert "Tier: Medium." in text
+    assert "Average score warrants monitoring." in text
+    assert "{'tier'" not in text
