@@ -139,6 +139,7 @@ async def lifespan(application):
         except Exception as exc:
             set_db_available(False)
             set_emp_db(False)
+            seed_dev_employee()
             logger.warning("DB init skipped — falling back to in-memory skills: %s", exc)
 
     # Warm the shared DockerWorkspace once, before accepting requests.
