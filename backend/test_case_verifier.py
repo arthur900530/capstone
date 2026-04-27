@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import json
-import os
 from typing import Any
 
 from openai import AsyncOpenAI
 
-from config import VERIFIER_MODEL
+from config import OPENAI_API_KEY, VERIFIER_MODEL
 
 _VERIFIER_PROMPT = (
     "You are an external evaluator grading one completed agent run.\n"
@@ -21,13 +20,21 @@ _VERIFIER_PROMPT = (
 def _resolve_openai_model(model: str) -> str:
     raw = (model or "").strip()
     if not raw:
-        return "gpt-4o"
+        raise RuntimeError(
+            "Auto-test generation and verification require an OpenAI model. "
+            "VERIFIER_MODEL is empty. Set VERIFIER_MODEL to an openai/... value "
+            "(e.g. openai/gpt-4o-mini)."
+        )
     while "/" in raw:
         provider, _, bare = raw.partition("/")
         if provider.lower() != "openai":
-            return "gpt-4o"
+            raise RuntimeError(
+                "Auto-test generation and verification require an OpenAI model. "
+                f"'{model}' is not an OpenAI model. "
+                "Set VERIFIER_MODEL to an openai/... value (e.g. openai/gpt-4o-mini)."
+            )
         raw = bare
-    return raw or "gpt-4o"
+    return raw or "gpt-4o-mini"
 
 
 async def verify_test_case_run(
@@ -38,12 +45,11 @@ async def verify_test_case_run(
     final_answer: str,
     compact_trajectory: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    api_key = os.environ.get("OPENAI_API_KEY")
-    if not api_key:
+    if not OPENAI_API_KEY:
         raise RuntimeError("OPENAI_API_KEY is not configured")
 
     target_model = _resolve_openai_model(VERIFIER_MODEL)
-    client = AsyncOpenAI(api_key=api_key, timeout=45.0)
+    client = AsyncOpenAI(api_key=OPENAI_API_KEY, timeout=45.0)
     payload = {
         "test_case": {
             "prompt": case_prompt,
@@ -55,16 +61,27 @@ async def verify_test_case_run(
             "trajectory": compact_trajectory[:200],
         },
     }
-    resp = await client.chat.completions.create(
-        model=target_model,
-        messages=[
-            {"role": "system", "content": _VERIFIER_PROMPT},
-            {"role": "user", "content": json.dumps(payload, ensure_ascii=True)},
-        ],
-        temperature=0,
-        max_tokens=700,
-        response_format={"type": "json_object"},
-    )
+    messages = [
+        {"role": "system", "content": _VERIFIER_PROMPT},
+        {"role": "user", "content": json.dumps(payload, ensure_ascii=True)},
+    ]
+    # Try structured JSON mode first; fall back to plain completion for models
+    # that don't support response_format (newer OpenAI models, fine-tuned models).
+    try:
+        resp = await client.chat.completions.create(
+            model=target_model,
+            messages=messages,
+            temperature=0,
+            max_tokens=700,
+            response_format={"type": "json_object"},
+        )
+    except Exception:
+        resp = await client.chat.completions.create(
+            model=target_model,
+            messages=messages,
+            temperature=0,
+            max_tokens=700,
+        )
     content = ((resp.choices or [{}])[0].message.content or "").strip()
     parsed = json.loads(content) if content else {}
     verdict = str(parsed.get("verdict") or "error").lower()

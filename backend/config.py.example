@@ -19,7 +19,17 @@ Optional Reflexion defaults via ``.env`` (see ``reflexion_agent/agent.py``):
   REFLEXION_MEMORY_PATH=             — override the default cross-session
                                        memory file location.
 
-Auto Test Generation settings (see ``test_case_generator.py`` and ``test_case_runner.py``):
+Auto Test Generation settings (see ``test_case_generator.py`` and
+``test_case_verifier.py``):
+
+  Before first run, re-copy ``config.py`` from this example and set
+  ``OPENAI_API_KEY`` in ``.env`` (must be a valid OpenAI key, not OpenRouter).
+  Set ``VERIFIER_MODEL`` to an ``openai/...`` model (e.g. ``openai/gpt-4o-mini``).
+  Non-OpenAI model strings raise ``RuntimeError`` at generation/verification time.
+
+  OPENAI_API_KEY=                    — required; used by the test-case generator
+                                       and the LLM judge (OpenAI client only).
+  VERIFIER_MODEL=                    — must be ``openai/...`` for auto-tests.
   TEST_CASE_DEFAULT_MAX_LATENCY_MS=  — fallback latency cap (ms) when the LLM
                                        does not supply one (default: 120000).
   TEST_CASE_MIN_LATENCY_MS=          — hard floor applied to every test run so
@@ -53,6 +63,8 @@ VERIFIER_MODEL = os.getenv("VERIFIER_MODEL", "openai/gpt-4o")
 SKILL_SELECTION_MODEL = os.getenv("SKILL_SELECTION_MODEL", "openai/gpt-4o")
 
 # ── Auto Test Generation ─────────────────────────────────────────────────────
+# Requires an OpenAI API key — the generator and verifier use the OpenAI client.
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 # Latency cap applied when the LLM omits max_latency_ms.
 TEST_CASE_DEFAULT_MAX_LATENCY_MS = int(os.getenv("TEST_CASE_DEFAULT_MAX_LATENCY_MS", "120000"))
 # Hard floor — no test run can time out before the agent has had at least this

@@ -6,7 +6,7 @@ from typing import Any
 from openai import AsyncOpenAI
 
 from config import (
-    API_KEY,
+    OPENAI_API_KEY,
     TEST_CASE_DEFAULT_MAX_LATENCY_MS,
     TEST_CASE_MIN_LATENCY_MS,
     VERIFIER_MODEL,
@@ -26,16 +26,24 @@ _GENERATOR_PROMPT = (
 def _resolve_openai_model(model: str) -> str:
     """Strip a provider prefix (e.g. 'openai/gpt-4o' → 'gpt-4o').
 
-    Falls back to 'gpt-4o-mini' for non-OpenAI model strings so the OpenAI
-    client always receives a bare model name it can understand.
+    Auto-test generation uses the OpenAI client only; non-OpenAI model strings
+    raise a clear error instead of silently substituting another model.
     """
     raw = (model or "").strip()
     if not raw:
-        return "gpt-4o-mini"
+        raise RuntimeError(
+            "Auto-test generation and verification require an OpenAI model. "
+            "VERIFIER_MODEL is empty. Set VERIFIER_MODEL to an openai/... value "
+            "(e.g. openai/gpt-4o-mini)."
+        )
     while "/" in raw:
         provider, _, bare = raw.partition("/")
         if provider.lower() != "openai":
-            return "gpt-4o-mini"
+            raise RuntimeError(
+                "Auto-test generation and verification require an OpenAI model. "
+                f"'{model}' is not an OpenAI model. "
+                "Set VERIFIER_MODEL to an openai/... value (e.g. openai/gpt-4o-mini)."
+            )
         raw = bare
     return raw or "gpt-4o-mini"
 
@@ -78,10 +86,10 @@ async def generate_test_cases(
     plugins: list[dict[str, str]],
     count: int = 5,
 ) -> tuple[list[dict[str, Any]], str]:
-    if not API_KEY:
+    if not OPENAI_API_KEY:
         raise RuntimeError("OPENAI_API_KEY is not configured")
 
-    client = AsyncOpenAI(api_key=API_KEY, timeout=45.0)
+    client = AsyncOpenAI(api_key=OPENAI_API_KEY, timeout=45.0)
     target_model = _resolve_openai_model(VERIFIER_MODEL)
     payload = {
         "count": max(1, min(int(count), 20)),
