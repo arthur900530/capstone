@@ -6,10 +6,10 @@ from typing import Any
 from openai import AsyncOpenAI
 
 from config import (
-    OPENAI_API_KEY,
+    API_KEY,
     TEST_CASE_DEFAULT_MAX_LATENCY_MS,
-    TEST_CASE_GENERATION_MODEL,
     TEST_CASE_MIN_LATENCY_MS,
+    VERIFIER_MODEL,
 )
 
 _GENERATOR_PROMPT = (
@@ -21,6 +21,23 @@ _GENERATOR_PROMPT = (
     "adversarial asks, missing data, off-domain asks, and boundary-of-capability situations.\n"
     "Do not wrap output in markdown."
 )
+
+
+def _resolve_openai_model(model: str) -> str:
+    """Strip a provider prefix (e.g. 'openai/gpt-4o' → 'gpt-4o').
+
+    Falls back to 'gpt-4o-mini' for non-OpenAI model strings so the OpenAI
+    client always receives a bare model name it can understand.
+    """
+    raw = (model or "").strip()
+    if not raw:
+        return "gpt-4o-mini"
+    while "/" in raw:
+        provider, _, bare = raw.partition("/")
+        if provider.lower() != "openai":
+            return "gpt-4o-mini"
+        raw = bare
+    return raw or "gpt-4o-mini"
 
 
 def _normalize_case(raw: Any) -> dict[str, Any] | None:
@@ -61,11 +78,11 @@ async def generate_test_cases(
     plugins: list[dict[str, str]],
     count: int = 5,
 ) -> tuple[list[dict[str, Any]], str]:
-    if not OPENAI_API_KEY:
+    if not API_KEY:
         raise RuntimeError("OPENAI_API_KEY is not configured")
 
-    client = AsyncOpenAI(api_key=OPENAI_API_KEY, timeout=45.0)
-    target_model = TEST_CASE_GENERATION_MODEL
+    client = AsyncOpenAI(api_key=API_KEY, timeout=45.0)
+    target_model = _resolve_openai_model(VERIFIER_MODEL)
     payload = {
         "count": max(1, min(int(count), 20)),
         "employee": {
