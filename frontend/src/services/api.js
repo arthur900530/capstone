@@ -484,6 +484,72 @@ export function projectFileRawUrl(employeeId, fileId) {
   return `${API_BASE}/employees/${encodeURIComponent(employeeId)}/project_files/${encodeURIComponent(fileId)}/raw`;
 }
 
+export async function generateTestCases(employeeId, count = 5) {
+  const query = `?count=${encodeURIComponent(count)}`;
+  const res = await fetch(
+    `${API_BASE}/employees/${encodeURIComponent(employeeId)}/test_cases/generate${query}`,
+    { method: "POST" },
+  );
+  if (!res.ok) throw new Error(`Failed to generate test cases: ${res.status}`);
+  return res.json();
+}
+
+export async function listTestCases(employeeId) {
+  const res = await fetch(
+    `${API_BASE}/employees/${encodeURIComponent(employeeId)}/test_cases`,
+  );
+  if (!res.ok) throw new Error(`Failed to load test cases: ${res.status}`);
+  return res.json();
+}
+
+export async function updateTestCase(employeeId, caseId, updates) {
+  const res = await fetch(
+    `${API_BASE}/employees/${encodeURIComponent(employeeId)}/test_cases/${encodeURIComponent(caseId)}`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(updates),
+    },
+  );
+  if (!res.ok) throw new Error(`Failed to update test case: ${res.status}`);
+  return res.json();
+}
+
+export async function deleteTestCase(employeeId, caseId) {
+  const res = await fetch(
+    `${API_BASE}/employees/${encodeURIComponent(employeeId)}/test_cases/${encodeURIComponent(caseId)}`,
+    { method: "DELETE" },
+  );
+  if (!res.ok) throw new Error(`Failed to delete test case: ${res.status}`);
+  return res.json();
+}
+
+export async function runTestCase(employeeId, caseId) {
+  const res = await fetch(
+    `${API_BASE}/employees/${encodeURIComponent(employeeId)}/test_cases/${encodeURIComponent(caseId)}/run`,
+    { method: "POST" },
+  );
+  if (!res.ok) throw new Error(`Failed to run test case: ${res.status}`);
+  return res.json();
+}
+
+export async function runAllTestCases(employeeId) {
+  const res = await fetch(
+    `${API_BASE}/employees/${encodeURIComponent(employeeId)}/test_cases/run_all`,
+    { method: "POST" },
+  );
+  if (!res.ok) throw new Error(`Failed to run all test cases: ${res.status}`);
+  return res.json();
+}
+
+export async function listTestCaseRuns(employeeId, caseId) {
+  const res = await fetch(
+    `${API_BASE}/employees/${encodeURIComponent(employeeId)}/test_cases/${encodeURIComponent(caseId)}/runs`,
+  );
+  if (!res.ok) throw new Error(`Failed to load test case runs: ${res.status}`);
+  return res.json();
+}
+
 // ---------------------------------------------------------------------------
 // Workspace browsing
 // ---------------------------------------------------------------------------
