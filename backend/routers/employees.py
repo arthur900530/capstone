@@ -70,6 +70,52 @@ def set_db_available(value: bool):
     _db_available = value
 
 
+def seed_dev_employee() -> None:
+    """Populate a realistic test employee in the in-memory store.
+
+    Called by server.py lifespan when DATABASE_URL is unset so the
+    Auto Tests tab can be exercised immediately without going through
+    the creation wizard.  Only runs once and only when the store is empty.
+    """
+    if _memory_store:
+        return  # already seeded (e.g. previous call or real data)
+    import uuid as _uuid
+    from datetime import datetime, timezone
+
+    dev_emp: dict[str, Any] = {
+        "id": "dev-employee-auto-test-001",
+        "name": "Research Analyst (Dev Seed)",
+        "position": "Equity Research Analyst",
+        "description": (
+            "An AI analyst that researches public companies: gathers financial data, "
+            "reads SEC filings, computes valuation metrics, and writes concise "
+            "investment memos."
+        ),
+        "task": (
+            "You are an AI equity research analyst. Your job is to:\n"
+            "1. Gather publicly available financial data for a given company.\n"
+            "2. Summarize key metrics (revenue, EPS, P/E, debt ratios).\n"
+            "3. Identify material risks and catalysts.\n"
+            "4. Write a concise 3-paragraph investment memo.\n\n"
+            "Always cite sources. Flag when data is unavailable or ambiguous. "
+            "Do not make up numbers."
+        ),
+        "pluginIds": ["web_search"],
+        "skillIds": [],
+        "model": "gpt-4o-mini",
+        "useReflexion": False,
+        "maxTrials": 3,
+        "confidenceThreshold": 0.7,
+        "chatSessionIds": [],
+        "files": [],
+        "status": "idle",
+        "lastActiveAt": None,
+        "createdAt": datetime.now(timezone.utc).isoformat(),
+    }
+    _memory_store.append(dev_emp)
+    logger.info("[dev-seed] Seeded in-memory employee id=%s", dev_emp["id"])
+
+
 # Length caps on the free-form text fields. ``description`` is a short hint
 # users type in the wizard — a couple sentences at most — so 2k is generous.
 # ``task`` is the generated (or hand-edited) system prompt; 40k lets users
