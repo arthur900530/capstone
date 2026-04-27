@@ -55,6 +55,9 @@ export default function EmployeePage() {
     handleNewChat,
   } = useApp();
   const [activeTab, setActiveTab] = useState("chat");
+  // Track whether the Auto Tests tab has been visited so we mount it lazily
+  // but then keep it mounted (with CSS hiding) so in-flight runs survive tab switches.
+  const [autoTestsEverActive, setAutoTestsEverActive] = useState(false);
   const [employee, setEmployee] = useState(null);
   const [loading, setLoading] = useState(true);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
@@ -184,7 +187,10 @@ export default function EmployeePage() {
           {TABS.map(({ id, label, icon }) => (
             <button
               key={id}
-              onClick={() => setActiveTab(id)}
+              onClick={() => {
+                setActiveTab(id);
+                if (id === "auto_tests") setAutoTestsEverActive(true);
+              }}
               className={`flex items-center gap-2 border-b-2 px-4 py-3 text-sm font-medium transition-colors ${
                 activeTab === id
                   ? "border-accent-teal text-accent-teal"
@@ -244,7 +250,14 @@ export default function EmployeePage() {
           }}
         />
       )}
-      {activeTab === "auto_tests" && <AutoTestsTab key={id} employee={employee} />}
+      {/* AutoTestsTab is mounted lazily on first visit, then stays mounted so
+          in-flight test runs survive tab switches. CSS hides it rather than
+          unmounting, which would kill in-progress fetches. */}
+      {autoTestsEverActive && (
+        <div style={activeTab !== "auto_tests" ? { display: "none" } : undefined}>
+          <AutoTestsTab key={id} employee={employee} />
+        </div>
+      )}
       {activeTab === "console" && <EmployeeConsole key={id} employee={employee} />}
       {activeTab === "report" && <EmployeeReportCard key={id} employee={employee} />}
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import mimetypes
 import os
@@ -18,7 +19,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 import yaml
 from config import SKILL_SELECTION_MODEL
-from config import TEST_CASE_DEFAULT_MAX_LATENCY_MS
+from config import TEST_CASE_DEFAULT_MAX_LATENCY_MS, TEST_CASE_MIN_LATENCY_MS
 from test_case_generator import generate_test_cases
 from test_case_runner import run_test_case
 
@@ -728,7 +729,7 @@ async def generate_employee_test_cases(employee_id: str, count: int = 5):
                     prompt=item["prompt"],
                     success_criteria=item["success_criteria"],
                     hard_failure_signals=item["hard_failure_signals"],
-                    expected_tool_families=item["expected_tool_families"],
+                    expected_tool_families=item.get("expected_tool_families") or [],
                     max_latency_ms=item["max_latency_ms"],
                     generated_by_model=generated_model,
                     status="draft",
@@ -751,7 +752,7 @@ async def generate_employee_test_cases(employee_id: str, count: int = 5):
             "prompt": item["prompt"],
             "success_criteria": item["success_criteria"],
             "hard_failure_signals": item["hard_failure_signals"],
-            "expected_tool_families": item["expected_tool_families"] or [],
+            "expected_tool_families": item.get("expected_tool_families") or [],
             "max_latency_ms": item["max_latency_ms"],
             "generated_by_model": generated_model,
             "status": "draft",
@@ -855,8 +856,72 @@ async def delete_employee_test_case(employee_id: str, case_id: str):
 
 async def _run_single_test_case(employee_id: str, case_payload: dict[str, Any]) -> dict:
     employee = await _assert_employee_exists(employee_id)
+
+    # Reuse the pre-warmed Docker workspace (H-A fix) AND prime it with the
+    # employee's assigned skills so the agent has access to the right tools.
     try:
-        run_result = await run_test_case(
+        from server import (  # type: ignore
+            _SHARED_WS,
+            _owner_key,
+            _prime_shared_workspace_sync,
+            _resolve_workspace_for_runtime,
+        )
+        _ws = _SHARED_WS.get("workspace")
+        _host_dir = _SHARED_WS.get("host_dir")
+        _ws_lock = _SHARED_WS.get("lock")
+        _server_available = True
+    except Exception:
+        _ws, _host_dir, _ws_lock = None, None, None
+        _server_available = False
+
+    skill_ids: list[str] = employee.get("skillIds") or []
+    test_session_id = f"autotest-{uuid.uuid4().hex[:12]}"
+
+    # Build a temp workspace directory containing the employee's skill packages.
+    # This runs outside the lock (pure disk I/O, no Docker interaction).
+    effective_mount: str | None = None
+    cleanup_dirs: list[str] = []
+    if _server_available and _host_dir:
+        try:
+            effective_mount, cleanup_dirs = await asyncio.to_thread(
+                _resolve_workspace_for_runtime,
+                test_session_id,
+                None,
+                skill_ids or None,
+            )
+        except Exception:
+            logger.warning("Failed to resolve skill workspace for test run; continuing without skills")
+            effective_mount, cleanup_dirs = None, []
+
+    async def _prime_and_run() -> dict:
+        """Prime the shared workspace with the employee's skills, then run the agent.
+        Must be called while the caller already holds _ws_lock (if any)."""
+        primed_skills: list[str] = []
+        if _server_available and _host_dir:
+            try:
+                okey = _owner_key(test_session_id, None, skill_ids)
+                await asyncio.to_thread(
+                    _prime_shared_workspace_sync,
+                    test_session_id,
+                    effective_mount,
+                    None,
+                    cleanup_dirs,
+                    okey,
+                )
+                primed_skills = skill_ids
+            except Exception:
+                logger.warning("Workspace priming failed; continuing with unprimed workspace")
+        # region agent log
+        import json as _j, time as _t
+        _log_path = "/Users/hinkitericwong/Library/Mobile Documents/com~apple~CloudDocs/Personal - HKEW/Education/Carnegie Mellon University/Classes/4. 2026 Spring/11-699 Capstone/Capstone Frontend/.cursor/debug-3f5e2b.log"
+        try:
+            with open(_log_path, "a") as _lf:
+                _lf.write(_j.dumps({"sessionId": "3f5e2b", "timestamp": int(_t.time() * 1000), "location": "employees.py:_prime_and_run", "message": "workspace primed for test run", "data": {"skill_ids": skill_ids, "primed_skills": primed_skills, "effective_mount": effective_mount, "host_dir": _host_dir}}) + "\n")
+        except Exception:
+            pass
+        # endregion
+
+        return await run_test_case(
             case_prompt=case_payload["prompt"],
             success_criteria=case_payload["success_criteria"],
             hard_failure_signals=case_payload.get("hard_failure_signals") or [],
@@ -866,9 +931,24 @@ async def _run_single_test_case(employee_id: str, case_payload: dict[str, Any]) 
                 "position": employee.get("position"),
                 "task": employee.get("task"),
             },
-            max_latency_ms=case_payload.get("max_latency_ms") or TEST_CASE_DEFAULT_MAX_LATENCY_MS,
+            max_latency_ms=max(
+                case_payload.get("max_latency_ms") or TEST_CASE_DEFAULT_MAX_LATENCY_MS,
+                TEST_CASE_MIN_LATENCY_MS,
+            ),
             use_reflexion=bool(employee.get("useReflexion")),
+            workspace=_ws,
+            host_dir=_host_dir,
+            # Lock is managed by _run_single_test_case; pass None to avoid
+            # run_test_case trying to acquire it a second time.
+            workspace_lock=None,
         )
+
+    try:
+        if _ws_lock is not None:
+            async with _ws_lock:
+                run_result = await _prime_and_run()
+        else:
+            run_result = await _prime_and_run()
     except HTTPException:
         raise
     except Exception as exc:

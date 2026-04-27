@@ -38,7 +38,11 @@ export default function TestCaseRunDetail({ run, onClose, onOpenTrajectory }) {
               <span>Finished cleanly: {String(Boolean(checks.finished_cleanly))}</span>
               <span>Non-empty output: {String(Boolean(checks.non_empty_output))}</span>
               <span>Latency budget: {String(Boolean(checks.latency_within_budget))}</span>
-              <span>Tool families: {String(Boolean(checks.expected_tool_families))}</span>
+              {checks.used_tools?.length > 0 && (
+                <span className="col-span-2 text-text-muted">
+                  Tools used: {checks.used_tools.join(", ")}
+                </span>
+              )}
             </div>
           </div>
 
