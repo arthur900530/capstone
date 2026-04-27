@@ -698,13 +698,22 @@ async def generate_employee_test_cases(employee_id: str, count: int = 5):
     skill_summaries = [{"id": sid, "name": sid, "description": ""} for sid in skill_ids]
     plugin_summaries = [{"id": pid, "name": pid, "description": ""} for pid in plugin_ids]
 
-    generated_cases, generated_model = await generate_test_cases(
-        employee_description=employee.get("description") or "",
-        employee_task=employee.get("task") or "",
-        skills=skill_summaries,
-        plugins=plugin_summaries,
-        count=count,
-    )
+    try:
+        generated_cases, generated_model = await generate_test_cases(
+            employee_description=employee.get("description") or "",
+            employee_task=employee.get("task") or "",
+            skills=skill_summaries,
+            plugins=plugin_summaries,
+            count=count,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Test case generation failed for employee=%s", employee_id)
+        raise HTTPException(
+            status_code=502,
+            detail=f"Test case generation failed: {exc}",
+        ) from exc
 
     if _db_available:
         from db.engine import async_session
@@ -846,19 +855,28 @@ async def delete_employee_test_case(employee_id: str, case_id: str):
 
 async def _run_single_test_case(employee_id: str, case_payload: dict[str, Any]) -> dict:
     employee = await _assert_employee_exists(employee_id)
-    run_result = await run_test_case(
-        case_prompt=case_payload["prompt"],
-        success_criteria=case_payload["success_criteria"],
-        hard_failure_signals=case_payload.get("hard_failure_signals") or [],
-        expected_tool_families=case_payload.get("expected_tool_families") or [],
-        employee_profile={
-            "name": employee.get("name"),
-            "position": employee.get("position"),
-            "task": employee.get("task"),
-        },
-        max_latency_ms=case_payload.get("max_latency_ms") or TEST_CASE_DEFAULT_MAX_LATENCY_MS,
-        use_reflexion=bool(employee.get("useReflexion")),
-    )
+    try:
+        run_result = await run_test_case(
+            case_prompt=case_payload["prompt"],
+            success_criteria=case_payload["success_criteria"],
+            hard_failure_signals=case_payload.get("hard_failure_signals") or [],
+            expected_tool_families=case_payload.get("expected_tool_families") or [],
+            employee_profile={
+                "name": employee.get("name"),
+                "position": employee.get("position"),
+                "task": employee.get("task"),
+            },
+            max_latency_ms=case_payload.get("max_latency_ms") or TEST_CASE_DEFAULT_MAX_LATENCY_MS,
+            use_reflexion=bool(employee.get("useReflexion")),
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Test case run failed case_id=%s employee=%s", case_payload.get("id"), employee_id)
+        raise HTTPException(
+            status_code=502,
+            detail=f"Test case run failed: {exc}",
+        ) from exc
 
     if _db_available:
         from db.engine import async_session

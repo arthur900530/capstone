@@ -107,9 +107,27 @@ async def generate_test_cases(
         raise RuntimeError("Generator returned an empty response")
 
     parsed = json.loads(content)
-    raw_cases = parsed.get("cases") if isinstance(parsed, dict) else parsed
+    # json_object mode always returns a dict; try common key names first,
+    # then fall back to the first list value found in the response.
+    raw_cases = None
+    if isinstance(parsed, list):
+        raw_cases = parsed
+    elif isinstance(parsed, dict):
+        for key in ("cases", "test_cases", "tests", "items", "results", "data"):
+            if isinstance(parsed.get(key), list):
+                raw_cases = parsed[key]
+                break
+        if raw_cases is None:
+            # last-resort: grab the first list value regardless of key name
+            for value in parsed.values():
+                if isinstance(value, list):
+                    raw_cases = value
+                    break
     if not isinstance(raw_cases, list):
-        raise RuntimeError("Generator did not return an array of cases")
+        raise RuntimeError(
+            f"Generator returned an unexpected JSON shape. "
+            f"Expected a list of test cases but got: {json.dumps(parsed)[:300]}"
+        )
 
     normalized = []
     for raw in raw_cases[: max(1, min(int(count), 20))]:
