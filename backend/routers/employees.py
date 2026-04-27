@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse, Response
 from pydantic import BaseModel, Field
 import yaml
 from config import SKILL_SELECTION_MODEL
@@ -54,6 +54,11 @@ from metrics import (
     aggregate_task_runs,
     serialize_task_run,
     task_runs_from_chat,
+)
+from services.governance_package_service import (
+    generate_governance_package,
+    render_governance_html,
+    render_governance_pdf,
 )
 from trajectory import build_nodes_from_events, flatten_action_nodes, segment_nodes, to_dict
 from trajectory_llm import annotate_tree, apply_annotations
@@ -1246,6 +1251,43 @@ async def employee_metrics(employee_id: str, limit: int = _RECENT_TASK_LIMIT):
     if emp is None:
         raise HTTPException(404, "Employee not found")
     return _fallback_metrics_from_memory(employee_id, limit=limit)
+
+
+@router.get("/{employee_id}/governance")
+async def employee_governance_package(employee_id: str):
+    """Generate a financial-services governance package for one employee."""
+    employee = await get_employee(employee_id)
+    metrics_payload = await employee_metrics(employee_id, limit=_RECENT_TASK_LIMIT)
+    return await generate_governance_package(employee, metrics_payload)
+
+
+@router.get("/{employee_id}/governance.html")
+async def employee_governance_html(employee_id: str):
+    package = await employee_governance_package(employee_id)
+    return HTMLResponse(render_governance_html(package))
+
+
+@router.get("/{employee_id}/governance.pdf")
+async def employee_governance_pdf(employee_id: str):
+    package = await employee_governance_package(employee_id)
+    try:
+        pdf = await render_governance_pdf(package)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Governance PDF generation failed: %s", exc)
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "PDF generation is unavailable. Install Playwright Chromium "
+                "with `python -m playwright install chromium` or use the HTML export."
+            ),
+        ) from exc
+    safe_name = re.sub(r"[^A-Za-z0-9_-]+", "-", employee.get("name") or employee_id).strip("-")
+    filename = f"governance-{safe_name or employee_id}.pdf"
+    return Response(
+        pdf,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.get("/{employee_id}/task_runs/{session_id}/{task_index}/trajectory")

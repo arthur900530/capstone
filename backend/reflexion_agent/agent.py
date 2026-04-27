@@ -285,9 +285,14 @@ class BrowserDockerWorkspace(DockerWorkspace):
         object.__setattr__(self, "api_key", None)
 
         try:
-            # OpenHands SDK's _wait_for_health uses a 120s default; there is
-            # no `health_check_timeout` attribute on DockerWorkspace in v1.15+.
-            self._wait_for_health()
+            # OpenHands SDK changed _wait_for_health across releases: older
+            # versions carried an internal default, while v1.17 requires an
+            # explicit keyword-only timeout. Support both so local SDK upgrades
+            # don't prevent the shared workspace from starting.
+            try:
+                self._wait_for_health(timeout=120)
+            except TypeError:
+                self._wait_for_health()
             logger.info("Docker workspace is ready at %s", self.host)
             RemoteWorkspace.model_post_init(self, context)
         except Exception:

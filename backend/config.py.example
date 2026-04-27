@@ -65,6 +65,7 @@ AGENT_MODEL = os.getenv("AGENT_MODEL", "openai/gpt-5.4")
 SKILL_MODEL = os.getenv("SKILL_MODEL", "google/gemini-2.5-flash")
 VERIFIER_MODEL = os.getenv("VERIFIER_MODEL", "openai/gpt-5.4-nano-2026-03-17")
 SKILL_SELECTION_MODEL = os.getenv("SKILL_SELECTION_MODEL", "openai/gpt-4o")
+GOVERNANCE_MODEL = os.getenv("GOVERNANCE_MODEL", "openai/gpt-4o-mini")
 
 # ── Auto Test Generation ─────────────────────────────────────────────────────
 # Requires an OpenAI API key — the generator and verifier use the OpenAI client.

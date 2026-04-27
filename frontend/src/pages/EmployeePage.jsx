@@ -9,9 +9,9 @@ import {
   Wrench,
   Files,
   Sparkles,
+  ShieldCheck,
   Trash2,
   Loader2,
-  ShieldCheck,
 } from "lucide-react";
 import ConfirmDialog from "../components/skills/ConfirmDialog";
 import * as Icons from "lucide-react";
@@ -28,6 +28,7 @@ import EmployeeSkillsTab from "../components/employee/EmployeeSkillsTab";
 import EmployeeProjectFilesTab from "../components/employee/EmployeeProjectFilesTab";
 import EmployeeSystemPromptTab from "../components/employee/EmployeeSystemPromptTab";
 import AutoTestsTab from "../components/employee/AutoTestsTab";
+import EmployeeGovernanceTab from "../components/employee/EmployeeGovernanceTab";
 import PLUGINS from "../data/plugins";
 import { getEmployeeById, deleteEmployee } from "../services/employeeStore";
 import { useApp } from "../context/appContextCore";
@@ -40,6 +41,7 @@ const TABS = [
   { id: "auto_tests", label: "Auto Tests", icon: ShieldCheck },
   // { id: "console", label: "Console", icon: Terminal },
   { id: "report", label: "Report Card", icon: BarChart3 },
+  { id: "governance", label: "Governance", icon: ShieldCheck },
 ];
 
 export default function EmployeePage() {
@@ -264,6 +266,9 @@ export default function EmployeePage() {
       )}
       {activeTab === "console" && <EmployeeConsole key={id} employee={employee} />}
       {activeTab === "report" && <EmployeeReportCard key={id} employee={employee} />}
+      {activeTab === "governance" && (
+        <EmployeeGovernanceTab key={id} employee={employee} />
+      )}
 
       <ConfirmDialog
         open={showDeleteConfirm}

@@ -62,6 +62,17 @@ export async function fetchEmployeeMetrics(employeeId, { limit } = {}) {
   return res.json();
 }
 
+export function employeeGovernanceUrl(employeeId, format = "pdf") {
+  const suffix = format === "html" ? "governance.html" : "governance.pdf";
+  return `${API_BASE}/employees/${employeeId}/${suffix}`;
+}
+
+export async function fetchEmployeeGovernance(employeeId) {
+  const res = await fetch(`${API_BASE}/employees/${employeeId}/governance`);
+  if (!res.ok) throw new Error(`Failed to load governance package: ${res.status}`);
+  return res.json();
+}
+
 export async function backfillRecentAnnotations(
   employeeId,
   { limit, force = false } = {},

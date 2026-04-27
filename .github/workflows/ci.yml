@@ -62,4 +62,5 @@ jobs:
       - name: Run backend regression tests
         env:
           OPENHANDS_SUPPRESS_BANNER: "1"
-        run: python -m pytest backend/reflexion_agent/tests --ignore=backend/reflexion_agent/tests/runs
+          PYTHONPATH: backend
+        run: python -m pytest backend/tests backend/reflexion_agent/tests --ignore=backend/reflexion_agent/tests/runs
