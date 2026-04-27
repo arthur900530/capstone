@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import json
-import os
 from typing import Any
 
 from openai import AsyncOpenAI
 
-from config import SKILL_SELECTION_MODEL, TEST_CASE_DEFAULT_MAX_LATENCY_MS, TEST_CASE_MIN_LATENCY_MS
+from config import (
+    OPENAI_API_KEY,
+    TEST_CASE_DEFAULT_MAX_LATENCY_MS,
+    TEST_CASE_GENERATION_MODEL,
+    TEST_CASE_MIN_LATENCY_MS,
+)
 
 _GENERATOR_PROMPT = (
     "You generate high-quality edge-case tests for an AI employee.\n"
@@ -17,18 +21,6 @@ _GENERATOR_PROMPT = (
     "adversarial asks, missing data, off-domain asks, and boundary-of-capability situations.\n"
     "Do not wrap output in markdown."
 )
-
-
-def _resolve_openai_model(model: str) -> str:
-    raw = (model or "").strip()
-    if not raw:
-        return "gpt-4o-mini"
-    while "/" in raw:
-        provider, _, bare = raw.partition("/")
-        if provider.lower() != "openai":
-            return "gpt-4o-mini"
-        raw = bare
-    return raw or "gpt-4o-mini"
 
 
 def _normalize_case(raw: Any) -> dict[str, Any] | None:
@@ -69,12 +61,11 @@ async def generate_test_cases(
     plugins: list[dict[str, str]],
     count: int = 5,
 ) -> tuple[list[dict[str, Any]], str]:
-    api_key = os.environ.get("OPENAI_API_KEY")
-    if not api_key:
+    if not OPENAI_API_KEY:
         raise RuntimeError("OPENAI_API_KEY is not configured")
 
-    client = AsyncOpenAI(api_key=api_key, timeout=45.0)
-    target_model = _resolve_openai_model(SKILL_SELECTION_MODEL)
+    client = AsyncOpenAI(api_key=OPENAI_API_KEY, timeout=45.0)
+    target_model = TEST_CASE_GENERATION_MODEL
     payload = {
         "count": max(1, min(int(count), 20)),
         "employee": {
@@ -85,19 +76,36 @@ async def generate_test_cases(
         "plugins": plugins,
     }
 
-    resp = await client.chat.completions.create(
-        model=target_model,
-        messages=[
-            {"role": "system", "content": _GENERATOR_PROMPT},
-            {"role": "user", "content": json.dumps(payload, ensure_ascii=True)},
-        ],
-        temperature=0.7,
-        max_tokens=2200,
-        response_format={"type": "json_object"},
-    )
+    messages = [
+        {"role": "system", "content": _GENERATOR_PROMPT},
+        {"role": "user", "content": json.dumps(payload, ensure_ascii=True)},
+    ]
+    # Try structured JSON mode first; fall back to plain completion for models
+    # that don't support response_format (older deployments, fine-tuned models).
+    try:
+        resp = await client.chat.completions.create(
+            model=target_model,
+            messages=messages,
+            temperature=0.7,
+            max_tokens=2200,
+            response_format={"type": "json_object"},
+        )
+    except Exception:
+        resp = await client.chat.completions.create(
+            model=target_model,
+            messages=messages,
+            temperature=0.7,
+            max_tokens=2200,
+        )
     content = ((resp.choices or [{}])[0].message.content or "").strip()
     if not content:
         raise RuntimeError("Generator returned an empty response")
+    # Strip markdown code fences that some models wrap around JSON output.
+    if content.startswith("```"):
+        content = content.split("```", 2)[1]
+        if content.startswith("json"):
+            content = content[4:]
+        content = content.rsplit("```", 1)[0].strip()
 
     parsed = json.loads(content)
     # json_object mode always returns a dict; try common key names first,
