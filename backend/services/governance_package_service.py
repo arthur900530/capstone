@@ -190,12 +190,24 @@ def _template_draft(context: dict) -> dict:
             f"{len(employee['project_files'])} project file(s) are attached. "
             "Specific production data sources must be reviewed before financial-services deployment."
         ),
-        "evaluation_summary": (
-            f"Evaluation evidence includes {evaluation['tasks']} task(s), "
-            f"{evaluation['annotated_tasks']} annotated task(s), average task score "
-            f"{_pct(evaluation['avg_task_score'])}, and average user rating "
-            f"{evaluation['avg_user_rating'] or 'Not specified'}."
-        ),
+        "evaluation_summary": {
+            "Source": evaluation["source"],
+            "Tasks": evaluation["tasks"],
+            "Average task score": _pct(evaluation["avg_task_score"]),
+            "Average leaf rate": _pct(evaluation["avg_leaf_rate"]),
+            "Average user rating": evaluation["avg_user_rating"] or "Not specified",
+            "Rated tasks": evaluation["rated_tasks"],
+            "Annotated tasks": evaluation["annotated_tasks"],
+            "Unannotated tasks": evaluation["unannotated_tasks"],
+            "Average tool calls": evaluation["avg_tool_calls"],
+            "Average trials": evaluation["avg_trials"],
+            "Reflexion rate": _pct(evaluation["reflexion_rate"]),
+            "Tool mix": [
+                f"{tool}: {count}"
+                for tool, count in (evaluation.get("tool_mix") or [])
+            ] or ["No tools recorded"],
+            "Recent task count": evaluation["recent_task_count"],
+        },
         "risk_summary": f"Current model-risk tier is {risk['tier']}: {' '.join(risk['reasons'])}",
         "controls_summary": " ".join(context["controls"]),
         "monitoring_plan": (
@@ -206,6 +218,37 @@ def _template_draft(context: dict) -> dict:
         ),
         "approval_notes": "Not specified. Governance approval should be recorded by an authorized reviewer.",
     }
+
+
+def evaluation_summary_items(context: dict) -> dict:
+    evaluation = context.get("evaluation") or {}
+    return {
+        "Source": evaluation.get("source") or "Not specified",
+        "Tasks": evaluation.get("tasks", 0),
+        "Average task score": _pct(evaluation.get("avg_task_score")),
+        "Average leaf rate": _pct(evaluation.get("avg_leaf_rate")),
+        "Average user rating": evaluation.get("avg_user_rating") or "Not specified",
+        "Rated tasks": evaluation.get("rated_tasks", 0),
+        "Annotated tasks": evaluation.get("annotated_tasks", 0),
+        "Unannotated tasks": evaluation.get("unannotated_tasks", 0),
+        "Average tool calls": evaluation.get("avg_tool_calls", 0.0),
+        "Average trials": evaluation.get("avg_trials", 0.0),
+        "Reflexion rate": _pct(evaluation.get("reflexion_rate")),
+        "Tool mix": [
+            f"{tool}: {count}"
+            for tool, count in (evaluation.get("tool_mix") or [])
+        ] or ["No tools recorded"],
+        "Recent task count": evaluation.get("recent_task_count", 0),
+    }
+
+
+def normalize_governance_package(package: dict) -> dict:
+    """Normalize older cached packages to the current UI-friendly shape."""
+    context = package.get("context") or {}
+    sections = package.setdefault("sections", {})
+    if isinstance(sections.get("evaluation_summary"), str):
+        sections["evaluation_summary"] = evaluation_summary_items(context)
+    return package
 
 
 def _resolve_model_for_base_url(model: str) -> str:
@@ -298,12 +341,14 @@ async def generate_governance_package(employee: dict, metrics: dict) -> dict:
             # an LLM. Keep them deterministic and prose-shaped in the product.
             draft["risk_summary"] = _template_draft(context)["risk_summary"]
             draft["controls_summary"] = _template_draft(context)["controls_summary"]
+            # Approval notes are a reviewer/admin input field, not model prose.
+            draft["approval_notes"] = _template_draft(context)["approval_notes"]
             llm["used"] = True
         except Exception as exc:  # noqa: BLE001
             logger.warning("Governance LLM draft failed; using template fallback: %s", exc)
             llm["error"] = "LLM draft failed; template fallback used."
 
-    return {
+    return normalize_governance_package({
         "context": context,
         "sections": draft,
         "llm": llm,
@@ -311,7 +356,7 @@ async def generate_governance_package(employee: dict, metrics: dict) -> dict:
             "Generated governance documentation is a review aid for financial-services governance. "
             "It does not establish legal, regulatory, model-risk, or compliance approval."
         ),
-    }
+    })
 
 
 def _esc(value: Any) -> str:

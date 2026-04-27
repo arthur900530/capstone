@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   AlertCircle,
   Download,
@@ -50,7 +50,6 @@ const NARRATIVE_ORDER = [
   "controls_summary",
   "monitoring_plan",
   "limitations",
-  "approval_notes",
 ];
 
 function Section({ title, children, className = "" }) {
@@ -58,7 +57,7 @@ function Section({ title, children, className = "" }) {
     <section
       className={`rounded-lg border border-border/60 bg-[#2a2c31] p-4 shadow-[0_2px_12px_rgba(0,0,0,0.25)] ${className}`}
     >
-      <h3 className="mb-3 border-b border-border/50 pb-2 text-[13px] font-semibold uppercase tracking-wider text-text-primary">
+      <h3 className="mb-3 border-b border-border/50 pb-2 text-sm font-semibold uppercase tracking-wider text-accent-light">
         {title}
       </h3>
       {children}
@@ -95,7 +94,68 @@ function normalizeDisplayValue(value) {
   return trimmed;
 }
 
+function parseLegacyEvaluationSummary(value) {
+  if (typeof value !== "string") return null;
+  const labels = [
+    "Source",
+    "Tasks",
+    "Avg Task Score",
+    "Avg Leaf Rate",
+    "Avg User Rating",
+    "Rated Tasks",
+    "Annotated Tasks",
+    "Unannotated Tasks",
+    "Avg Tool Calls",
+    "Avg Trials",
+    "Reflexion Rate",
+    "Tool Mix",
+    "Recent Task Count",
+  ];
+  const matches = [...value.matchAll(
+    /(Source|Tasks|Avg Task Score|Avg Leaf Rate|Avg User Rating|Rated Tasks|Annotated Tasks|Unannotated Tasks|Avg Tool Calls|Avg Trials|Reflexion Rate|Tool Mix|Recent Task Count):\s*/g,
+  )];
+  if (matches.length < 2) return null;
+
+  return matches.map((match, index) => {
+    const next = matches[index + 1];
+    const raw = value.slice(match.index + match[0].length, next?.index ?? value.length);
+    const label = labels.includes(match[1]) ? match[1] : sectionTitle(match[1]);
+    return [label, raw.replace(/\.\s*$/, "").trim()];
+  });
+}
+
 function SectionContent({ value }) {
+  const legacyEvaluation = parseLegacyEvaluationSummary(value);
+  if (legacyEvaluation) {
+    return (
+      <dl className="space-y-2">
+        {legacyEvaluation.map(([key, item]) => (
+          <div key={key} className="grid gap-1 rounded-md border border-border/40 bg-surface/40 p-3 sm:grid-cols-[180px_minmax(0,1fr)]">
+            <dt className="text-xs font-semibold text-text-primary">{key}</dt>
+            <dd className="mt-1 text-sm leading-6 text-text-secondary">
+              {key === "Tool Mix" ? (
+                <ul className="space-y-1 pl-4">
+                  {item
+                    .replace(/^\[\[/, "")
+                    .replace(/\]\]$/, "")
+                    .split(/\],\s*\[/)
+                    .map((entry) => entry.replace(/['"]/g, "").split(",").map((part) => part.trim()))
+                    .map(([tool, count]) => (
+                      <li key={`${tool}-${count}`} className="list-disc marker:text-accent-teal">
+                        {tool}: {count}
+                      </li>
+                    ))}
+                </ul>
+              ) : (
+                item || "Not specified"
+              )}
+            </dd>
+          </div>
+        ))}
+      </dl>
+    );
+  }
+
   const normalized = normalizeDisplayValue(value);
 
   if (Array.isArray(normalized)) {
@@ -115,14 +175,27 @@ function SectionContent({ value }) {
 
   if (typeof normalized === "object") {
     return (
-      <dl className="grid gap-3 sm:grid-cols-2">
+      <dl className="space-y-2">
         {Object.entries(normalized).map(([key, item]) => (
-          <div key={key} className="rounded-md border border-border/40 bg-surface/40 p-3">
-            <dt className="text-[11px] font-semibold uppercase tracking-wider text-accent-light">
-              {sectionTitle(key)}
+          <div key={key} className="grid gap-1 rounded-md border border-border/40 bg-surface/40 p-3 sm:grid-cols-[180px_minmax(0,1fr)]">
+            <dt className="text-xs font-semibold text-text-primary">
+              {key}
             </dt>
             <dd className="mt-1 text-sm leading-6 text-text-secondary">
-              {Array.isArray(item) ? item.join("; ") : String(item ?? "Not specified")}
+              {Array.isArray(item) ? (
+                <ul className="space-y-1 pl-4">
+                  {item.map((entry) => (
+                    <li
+                      key={String(entry)}
+                      className="list-disc marker:text-accent-teal"
+                    >
+                      {String(entry)}
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                String(item ?? "Not specified")
+              )}
             </dd>
           </div>
         ))}
@@ -137,18 +210,48 @@ function SectionContent({ value }) {
   );
 }
 
-export default function EmployeeGovernanceTab({ employee }) {
-  const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(true);
+function formatPercent(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "Not specified";
+  return `${(n * 100).toFixed(1)}%`;
+}
+
+function MetricTile({ label, value, sub }) {
+  return (
+    <div className="rounded-md border border-border/40 bg-surface/40 p-3">
+      <div className="text-[11px] font-semibold uppercase tracking-wider text-text-muted">
+        {label}
+      </div>
+      <div className="mt-1 text-lg font-semibold text-text-primary">
+        {value}
+      </div>
+      {sub ? <div className="mt-1 text-xs text-text-muted">{sub}</div> : null}
+    </div>
+  );
+}
+
+export default function EmployeeGovernanceTab({
+  employee,
+  cachedPackage,
+  onPackageLoaded,
+  approvalNote,
+  onApprovalNoteChange,
+  onApprovalNoteSave,
+}) {
+  const [data, setData] = useState(cachedPackage || null);
+  const [loading, setLoading] = useState(!cachedPackage);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState(null);
+  const lastSavedApprovalNoteRef = useRef(approvalNote ?? "");
 
-  async function load({ showSpinner = true } = {}) {
+  async function load({ showSpinner = true, force = false } = {}) {
     if (showSpinner) setLoading(true);
     setRefreshing(!showSpinner);
     setError(null);
     try {
-      setData(await fetchEmployeeGovernance(employee.id));
+      const packageData = await fetchEmployeeGovernance(employee.id, { force });
+      setData(packageData);
+      onPackageLoaded?.(packageData);
     } catch (err) {
       setError(err?.message || "Failed to load governance package");
     } finally {
@@ -158,12 +261,22 @@ export default function EmployeeGovernanceTab({ employee }) {
   }
 
   useEffect(() => {
+    if (cachedPackage) {
+      setData(cachedPackage);
+      setLoading(false);
+      setError(null);
+      return undefined;
+    }
+
     let cancelled = false;
     setLoading(true);
     setError(null);
     fetchEmployeeGovernance(employee.id)
       .then((res) => {
-        if (!cancelled) setData(res);
+        if (!cancelled) {
+          setData(res);
+          onPackageLoaded?.(res);
+        }
       })
       .catch((err) => {
         if (!cancelled) setError(err.message || "Failed to load governance package");
@@ -174,7 +287,23 @@ export default function EmployeeGovernanceTab({ employee }) {
     return () => {
       cancelled = true;
     };
-  }, [employee.id]);
+  }, [cachedPackage, employee.id, onPackageLoaded]);
+
+  useEffect(() => {
+    const note = approvalNote ?? "";
+    if (note === lastSavedApprovalNoteRef.current) return undefined;
+
+    const timer = window.setTimeout(async () => {
+      try {
+        await onApprovalNoteSave?.(note);
+        lastSavedApprovalNoteRef.current = note;
+      } catch {
+        // Keep the local edit visible; a later edit or blur can retry.
+      }
+    }, 600);
+
+    return () => window.clearTimeout(timer);
+  }, [approvalNote, onApprovalNoteSave]);
 
   if (loading) return <LoadingState />;
   if (error) return <ErrorState message={error} onRetry={() => load()} />;
@@ -185,9 +314,14 @@ export default function EmployeeGovernanceTab({ employee }) {
   const references = context.policy_references || [];
   const controls = context.controls || [];
   const llm = data?.llm || {};
+  const evaluation = context.evaluation || {};
   const narrativeEntries = NARRATIVE_ORDER
     .filter((key) => Object.prototype.hasOwnProperty.call(sections, key))
     .map((key) => [key, sections[key]]);
+  const generatedApprovalNote = String(sections.approval_notes || "").startsWith("Not specified")
+    ? ""
+    : sections.approval_notes || "";
+  const displayedApprovalNote = approvalNote ?? generatedApprovalNote;
 
   return (
     <div className="flex-1 overflow-y-auto">
@@ -209,7 +343,7 @@ export default function EmployeeGovernanceTab({ employee }) {
           <div className="flex items-center gap-2">
             <button
               type="button"
-              onClick={() => load({ showSpinner: false })}
+              onClick={() => load({ showSpinner: false, force: true })}
               className="flex items-center gap-2 rounded-md border border-border/70 px-3 py-2 text-xs font-medium text-text-secondary hover:border-accent-teal/50 hover:text-accent-teal"
             >
               <RefreshCw size={14} className={refreshing ? "animate-spin" : ""} />
@@ -263,6 +397,35 @@ export default function EmployeeGovernanceTab({ employee }) {
           </Section>
         </div>
 
+        <Section title="Evaluation metrics">
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <MetricTile
+              label="Tasks"
+              value={evaluation.tasks ?? 0}
+              sub={`${evaluation.annotated_tasks ?? 0} annotated`}
+            />
+            <MetricTile
+              label="Task score"
+              value={formatPercent(evaluation.avg_task_score)}
+              sub="Weighted trajectory score"
+            />
+            <MetricTile
+              label="User rating"
+              value={
+                Number(evaluation.avg_user_rating)
+                  ? `${Number(evaluation.avg_user_rating).toFixed(2)} / 5`
+                  : "Not specified"
+              }
+              sub={`${evaluation.rated_tasks ?? 0} rated task(s)`}
+            />
+            <MetricTile
+              label="Reflexion"
+              value={formatPercent(evaluation.reflexion_rate)}
+              sub={`${evaluation.avg_trials ?? 0} avg trials`}
+            />
+          </div>
+        </Section>
+
         <Section title="Reference governance policies">
           <div className="space-y-3">
             {references.map((ref) => (
@@ -293,6 +456,19 @@ export default function EmployeeGovernanceTab({ employee }) {
             </Section>
           ))}
         </div>
+
+        <Section title="Approval notes">
+          <textarea
+            value={displayedApprovalNote}
+            onChange={(event) => onApprovalNoteChange?.(event.target.value)}
+            onBlur={(event) => onApprovalNoteSave?.(event.target.value)}
+            placeholder="Add reviewer, admin, or governance approval notes."
+            className="min-h-32 w-full resize-y rounded-md border border-border/60 bg-surface/50 p-3 text-sm leading-6 text-text-primary outline-none transition-colors placeholder:text-text-muted focus:border-accent-teal/70"
+          />
+          <p className="mt-2 text-xs text-text-muted">
+            Notes are preserved while this employee page is open and are not generated by the LLM.
+          </p>
+        </Section>
 
         <div className="grid gap-4 lg:grid-cols-2">
           <Section title="Deterministic risk drivers">

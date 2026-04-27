@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, Response
 from pydantic import BaseModel, Field
 import yaml
@@ -57,6 +57,7 @@ from metrics import (
 )
 from services.governance_package_service import (
     generate_governance_package,
+    normalize_governance_package,
     render_governance_html,
     render_governance_pdf,
 )
@@ -106,6 +107,8 @@ class EmployeeCreate(BaseModel):
     maxTrials: int = 3
     confidenceThreshold: float = 0.7
     files: list[dict] = []
+    governancePackage: dict | None = None
+    governanceApprovalNotes: str = ""
 
 
 class EmployeeUpdate(BaseModel):
@@ -121,6 +124,8 @@ class EmployeeUpdate(BaseModel):
     confidenceThreshold: float | None = None
     chatSessionIds: list[str] | None = None
     files: list[dict] | None = None
+    governancePackage: dict | None = None
+    governanceApprovalNotes: str | None = None
     lastActiveAt: str | None = None
 
 
@@ -411,6 +416,8 @@ def _row_to_dict(row) -> dict:
         "status": _derive_status(row.last_active_at),
         "chatSessionIds": row.chat_session_ids or [],
         "files": row.files or [],
+        "governancePackage": getattr(row, "governance_package", None),
+        "governanceApprovalNotes": getattr(row, "governance_approval_notes", "") or "",
         "lastActiveAt": row.last_active_at.isoformat() if row.last_active_at else None,
         "createdAt": row.created_at.isoformat() if row.created_at else None,
     }
@@ -551,6 +558,8 @@ async def create_employee(body: EmployeeCreate):
                 max_trials=body.maxTrials,
                 confidence_threshold=body.confidenceThreshold,
                 files=body.files,
+                governance_package=body.governancePackage,
+                governance_approval_notes=body.governanceApprovalNotes or "",
             )
             session.add(emp)
             await session.commit()
@@ -571,6 +580,8 @@ async def create_employee(body: EmployeeCreate):
         "confidenceThreshold": body.confidenceThreshold,
         "chatSessionIds": [],
         "files": body.files,
+        "governancePackage": body.governancePackage,
+        "governanceApprovalNotes": body.governanceApprovalNotes or "",
         "status": "idle",
         "lastActiveAt": None,
         "createdAt": datetime.now(timezone.utc).isoformat(),
@@ -617,6 +628,10 @@ async def update_employee(employee_id: str, body: EmployeeUpdate):
                 row.chat_session_ids = body.chatSessionIds
             if body.files is not None:
                 row.files = body.files
+            if body.governancePackage is not None:
+                row.governance_package = body.governancePackage
+            if body.governanceApprovalNotes is not None:
+                row.governance_approval_notes = body.governanceApprovalNotes
             if body.lastActiveAt is not None:
                 row.last_active_at = datetime.fromisoformat(body.lastActiveAt)
 
@@ -1254,11 +1269,27 @@ async def employee_metrics(employee_id: str, limit: int = _RECENT_TASK_LIMIT):
 
 
 @router.get("/{employee_id}/governance")
-async def employee_governance_package(employee_id: str):
+async def employee_governance_package(
+    employee_id: str,
+    force: bool = Query(False),
+):
     """Generate a financial-services governance package for one employee."""
     employee = await get_employee(employee_id)
+    approval_notes = employee.get("governanceApprovalNotes") or ""
+    if not force and employee.get("governancePackage"):
+        package = employee["governancePackage"]
+        if isinstance(package, dict):
+            package = normalize_governance_package(package)
+            package["approval_notes"] = approval_notes
+            package.setdefault("sections", {})["approval_notes"] = approval_notes or "Not specified. Governance approval should be recorded by an authorized reviewer."
+        return package
+
     metrics_payload = await employee_metrics(employee_id, limit=_RECENT_TASK_LIMIT)
-    return await generate_governance_package(employee, metrics_payload)
+    package = await generate_governance_package(employee, metrics_payload)
+    package["approval_notes"] = approval_notes
+    package.setdefault("sections", {})["approval_notes"] = approval_notes or "Not specified. Governance approval should be recorded by an authorized reviewer."
+    await update_employee(employee_id, EmployeeUpdate(governancePackage=package))
+    return package
 
 
 @router.get("/{employee_id}/governance.html")

@@ -1,4 +1,4 @@
-import { createElement, useState, useEffect, useRef } from "react";
+import { createElement, useState, useEffect, useRef, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import {
   ArrowLeft,
@@ -30,7 +30,7 @@ import EmployeeSystemPromptTab from "../components/employee/EmployeeSystemPrompt
 import AutoTestsTab from "../components/employee/AutoTestsTab";
 import EmployeeGovernanceTab from "../components/employee/EmployeeGovernanceTab";
 import PLUGINS from "../data/plugins";
-import { getEmployeeById, deleteEmployee } from "../services/employeeStore";
+import { getEmployeeById, deleteEmployee, updateEmployee } from "../services/employeeStore";
 import { useApp } from "../context/appContextCore";
 
 const TABS = [
@@ -61,6 +61,8 @@ export default function EmployeePage() {
   // but then keep it mounted (with CSS hiding) so in-flight runs survive tab switches.
   const [autoTestsEverActive, setAutoTestsEverActive] = useState(false);
   const [employee, setEmployee] = useState(null);
+  const [governanceCache, setGovernanceCache] = useState({});
+  const [governanceApprovalNotes, setGovernanceApprovalNotes] = useState({});
   const [loading, setLoading] = useState(true);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -71,10 +73,51 @@ export default function EmployeePage() {
     let cancelled = false;
     setLoading(true);
     getEmployeeById(id)
-      .then((emp) => { if (!cancelled) { setEmployee(emp); setLoading(false); } })
+      .then((emp) => {
+        if (!cancelled) {
+          setEmployee(emp);
+          if (emp?.governancePackage) {
+            setGovernanceCache((prev) => ({
+              ...prev,
+              [emp.id]: emp.governancePackage,
+            }));
+          }
+          if (emp?.governanceApprovalNotes) {
+            setGovernanceApprovalNotes((prev) => ({
+              ...prev,
+              [emp.id]: emp.governanceApprovalNotes,
+            }));
+          }
+          setLoading(false);
+        }
+      })
       .catch(() => { if (!cancelled) { setEmployee(null); setLoading(false); } });
     return () => { cancelled = true; };
   }, [id]);
+
+  const handleGovernancePackageLoaded = useCallback((pkg) => {
+    if (!employee?.id) return;
+    setGovernanceCache((prev) => ({ ...prev, [employee.id]: pkg }));
+    setEmployee((prev) => (
+      prev?.id === employee.id ? { ...prev, governancePackage: pkg } : prev
+    ));
+  }, [employee?.id]);
+
+  const handleGovernanceApprovalNoteChange = useCallback((note) => {
+    if (!employee?.id) return;
+    setGovernanceApprovalNotes((prev) => ({
+      ...prev,
+      [employee.id]: note,
+    }));
+    setEmployee((prev) => (
+      prev?.id === employee.id ? { ...prev, governanceApprovalNotes: note } : prev
+    ));
+  }, [employee?.id]);
+
+  const handleGovernanceApprovalNoteSave = useCallback((note) => {
+    if (!employee?.id) return Promise.resolve(null);
+    return updateEmployee(employee.id, { governanceApprovalNotes: note });
+  }, [employee?.id]);
 
   // Auto-restore chat state when the user lands on a new employee page.
   // Runs exactly once per employee id to avoid nuking an in-flight chat
@@ -267,7 +310,15 @@ export default function EmployeePage() {
       {activeTab === "console" && <EmployeeConsole key={id} employee={employee} />}
       {activeTab === "report" && <EmployeeReportCard key={id} employee={employee} />}
       {activeTab === "governance" && (
-        <EmployeeGovernanceTab key={id} employee={employee} />
+        <EmployeeGovernanceTab
+          key={id}
+          employee={employee}
+          cachedPackage={governanceCache[employee.id] || employee.governancePackage}
+          onPackageLoaded={handleGovernancePackageLoaded}
+          approvalNote={governanceApprovalNotes[employee.id] ?? employee.governanceApprovalNotes}
+          onApprovalNoteChange={handleGovernanceApprovalNoteChange}
+          onApprovalNoteSave={handleGovernanceApprovalNoteSave}
+        />
       )}
 
       <ConfirmDialog

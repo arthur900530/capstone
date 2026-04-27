@@ -67,8 +67,9 @@ export function employeeGovernanceUrl(employeeId, format = "pdf") {
   return `${API_BASE}/employees/${employeeId}/${suffix}`;
 }
 
-export async function fetchEmployeeGovernance(employeeId) {
-  const res = await fetch(`${API_BASE}/employees/${employeeId}/governance`);
+export async function fetchEmployeeGovernance(employeeId, { force = false } = {}) {
+  const query = force ? "?force=true" : "";
+  const res = await fetch(`${API_BASE}/employees/${employeeId}/governance${query}`);
   if (!res.ok) throw new Error(`Failed to load governance package: ${res.status}`);
   return res.json();
 }
