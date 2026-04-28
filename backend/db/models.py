@@ -333,6 +333,8 @@ class Employee(Base):
     confidence_threshold: Mapped[float] = mapped_column(Float, nullable=False, default=0.7)
     chat_session_ids: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     files: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    # Cached generated package. Approval notes are denormalized into the JSON
+    # for exports, but governance_approval_notes is the source of truth.
     governance_package: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     governance_approval_notes: Mapped[str] = mapped_column(
         Text, nullable=False, default="", server_default=""

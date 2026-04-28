@@ -34,22 +34,34 @@ POLICY_REFERENCES = [
 SECTION_KEYS = (
     "system_overview",
     "intended_use",
+    "system_metadata",
+    "agent_activity",
+    "evaluation_outputs",
+    "risk_classifications",
     "data_inputs",
-    "evaluation_summary",
-    "risk_summary",
-    "controls_summary",
+    "committee_review_focus",
     "monitoring_plan",
     "limitations",
     "approval_notes",
 )
+
+COMMITTEE_REVIEW_FOCUS = [
+    "What business decision or workflow will this digital employee support?",
+    "Who can be affected by the employee's outputs, including customers, analysts, or downstream control owners?",
+    "What data sources are approved for this use case, and are any customer or confidential data elements involved?",
+    "What independent validation, challenge, or human review is required before production use?",
+    "What usage boundaries, monitoring, and escalation procedures should be required after approval?",
+]
 
 GOVERNANCE_PROMPT = (
     "You draft financial-services AI governance documentation. Use only the "
     "facts in the supplied JSON. Do not invent compliance, validation, approval, "
     "data-source, or performance claims. If a fact is missing, write "
     "'Not specified'. Do not state that the system complies with SR 11-7, OCC "
-    "2011-12, or NIST AI RMF; say the document is aligned to those reference "
-    "frameworks for review. Return strict JSON with string values for: "
+    "2011-12, or NIST AI RMF; say the document is assembled for committee "
+    "review against those reference frameworks. Do not assign a model-risk "
+    "tier or make an approval recommendation. Return strict JSON where every "
+    "key maps to an array of concise bullet strings for: "
     + ", ".join(SECTION_KEYS)
     + "."
 )
@@ -66,62 +78,129 @@ def _pct(value: Any) -> str:
         return "Not specified"
 
 
-def _risk_tier(employee: dict, metrics: dict) -> dict:
+def _format_tool_mix(tool_mix: list) -> list[str]:
+    if not tool_mix:
+        return ["No tools recorded"]
+    return [f"{tool}: {count}" for tool, count in tool_mix]
+
+
+def _recent_task_summaries(recent: list[dict]) -> list[dict]:
+    summaries: list[dict] = []
+    for run in recent[:10]:
+        tool_histogram = run.get("tool_histogram") or {}
+        annotations = run.get("trajectory_annotations") or {}
+        root_annotation = annotations.get("root") if isinstance(annotations, dict) else {}
+        raw_events = run.get("raw_events") or []
+        action_sequence = []
+        for event in raw_events:
+            if not isinstance(event, dict):
+                continue
+            label = event.get("tool") or event.get("type") or event.get("role")
+            if label:
+                action_sequence.append(str(label))
+            if len(action_sequence) >= 8:
+                break
+        summaries.append({
+            "prompt": run.get("prompt_preview") or "Not specified",
+            "started_at": run.get("started_at") or "Not specified",
+            "duration_ms": run.get("duration_ms") or 0,
+            "tool_calls": run.get("n_tool_calls") or 0,
+            "trials": run.get("n_trials") or 1,
+            "reflections": run.get("n_reflections") or 0,
+            "tools": _format_tool_mix(list(tool_histogram.items())),
+            "action_sequence": action_sequence or ["No persisted action trace"],
+            "task_score": run.get("task_score"),
+            "user_rating": run.get("user_rating"),
+            "annotated": bool(run.get("annotated")),
+            "review_status": (
+                root_annotation.get("status")
+                if isinstance(root_annotation, dict)
+                else None
+            ),
+        })
+    return summaries
+
+
+def _risk_classifications(employee: dict, metrics: dict, evaluation_runs: list[dict]) -> list[dict]:
     aggregate = metrics.get("aggregate") or {}
-    score = 0
-    reasons: list[str] = []
-
-    tasks = int(aggregate.get("tasks") or 0)
-    avg_score = float(aggregate.get("avg_task_score") or 0.0)
-    avg_rating = float(aggregate.get("avg_user_rating") or 0.0)
     tool_mix = aggregate.get("tool_mix") or []
-    files = employee.get("files") or []
+    project_files = employee.get("files") or []
+    classifications = [
+        {
+            "category": "Use-case and impact",
+            "classification": "Committee determination required",
+            "evidence": [
+                f"Role: {employee.get('position') or 'Not specified'}",
+                f"Intended use: {employee.get('description') or 'Not specified'}",
+                "Business decision, customer impact, and exposure level must be confirmed by reviewers.",
+            ],
+        },
+        {
+            "category": "Data and confidentiality",
+            "classification": "Review required" if project_files else "Not specified",
+            "evidence": [
+                f"Project files attached: {len(project_files)}",
+                "Reviewers should determine whether customer, confidential, MNPI, or regulated data is in scope.",
+            ],
+        },
+        {
+            "category": "Tooling and external access",
+            "classification": "Review required" if tool_mix else "Insufficient activity evidence",
+            "evidence": [
+                "Observed tools: " + "; ".join(_format_tool_mix(tool_mix)),
+                "Reviewers should assess browser, file-editing, retrieval, and execution permissions before deployment.",
+            ],
+        },
+        {
+            "category": "Evaluation evidence",
+            "classification": "Evidence available" if aggregate.get("tasks") else "Insufficient activity evidence",
+            "evidence": [
+                f"Employee task count: {aggregate.get('tasks', 0)}",
+                f"Average task score: {_pct(aggregate.get('avg_task_score'))}",
+                f"Unannotated tasks: {aggregate.get('unannotated_tasks', 0)}",
+                f"Evaluation Lab runs available: {len(evaluation_runs)}",
+            ],
+        },
+        {
+            "category": "Operational oversight",
+            "classification": "Review required",
+            "evidence": [
+                f"Reflexion enabled: {bool(employee.get('useReflexion'))}",
+                f"Max trials: {employee.get('maxTrials') or 'Not specified'}",
+                f"Confidence threshold: {employee.get('confidenceThreshold') or 'Not specified'}",
+                "Reviewers should define human-in-the-loop, monitoring, escalation, and rollback expectations.",
+            ],
+        },
+    ]
+    return classifications
 
-    if tasks == 0:
-        score += 2
-        reasons.append("No completed task evidence is available yet.")
-    elif avg_score and avg_score < 0.75:
-        score += 2
-        reasons.append(f"Average task score is {_pct(avg_score)}, below the 75% review threshold.")
-    elif avg_score and avg_score < 0.9:
-        score += 1
-        reasons.append(f"Average task score is {_pct(avg_score)}, which warrants monitoring.")
 
-    if aggregate.get("unannotated_tasks"):
-        score += 1
-        reasons.append(f"{aggregate.get('unannotated_tasks')} task(s) lack trajectory annotations.")
-
-    if avg_rating and avg_rating < 3.5:
-        score += 1
-        reasons.append(f"Average user rating is {avg_rating:.2f}/5.")
-
-    if files:
-        score += 1
-        reasons.append(f"{len(files)} project file(s) are attached and should be reviewed for data sensitivity.")
-
-    if any(str(tool).lower() in {"browser", "web_search", "file_editor"} for tool, _ in tool_mix):
-        score += 1
-        reasons.append("The employee uses external browsing or file-editing tools.")
-
-    if employee.get("useReflexion"):
-        reasons.append("Reflexion is enabled, adding automated retry and self-evaluation behavior.")
-
-    if score >= 4:
-        tier = "High"
-    elif score >= 2:
-        tier = "Medium"
-    else:
-        tier = "Low"
-
-    if not reasons:
-        reasons.append("Available evidence does not trigger elevated review thresholds.")
-
-    return {"tier": tier, "score": score, "reasons": reasons}
+def _evaluation_lab_summary(evaluation_runs: list[dict]) -> list[str]:
+    bullets: list[str] = []
+    for run in evaluation_runs[:5]:
+        task_success = run.get("task_success") or {}
+        step_success = run.get("step_success") or {}
+        hallucination = run.get("hallucination") or {}
+        latency = run.get("latency") or {}
+        bullets.append(
+            f"{run.get('agent_id') or 'Unknown agent'} run {run.get('run_id') or 'unknown'}: "
+            f"task success {_pct(task_success.get('rate'))} "
+            f"({task_success.get('passed', 0)}/{task_success.get('total', 0)}), "
+            f"step success {_pct(step_success.get('rate'))}, "
+            f"hallucination rate {_pct(hallucination.get('rate'))}, "
+            f"average latency {latency.get('avg_ms', 'Not specified')}ms."
+        )
+    return bullets or ["No Evaluation Lab benchmark runs available."]
 
 
-def build_governance_context(employee: dict, metrics: dict) -> dict:
+def build_governance_context(
+    employee: dict,
+    metrics: dict,
+    evaluation_runs: list[dict] | None = None,
+) -> dict:
     aggregate = metrics.get("aggregate") or {}
     recent = metrics.get("recent") or []
+    evaluation_runs = evaluation_runs or []
     return {
         "document_type": "Financial Services AI Governance Package",
         "generated_at": _now_iso(),
@@ -162,15 +241,12 @@ def build_governance_context(employee: dict, metrics: dict) -> dict:
             "reflexion_rate": aggregate.get("reflexion_rate", 0.0),
             "tool_mix": aggregate.get("tool_mix") or [],
             "recent_task_count": len(recent),
+            "recent_tasks": _recent_task_summaries(recent),
+            "evaluation_lab_runs": evaluation_runs,
+            "evaluation_lab_summary": _evaluation_lab_summary(evaluation_runs),
         },
-        "risk": _risk_tier(employee, metrics),
-        "controls": [
-            "Human review required before production financial-services use.",
-            "Use only approved data sources and document any customer-impacting use case.",
-            "Retain evaluation evidence, task traces, user ratings, and generated package versions for audit review.",
-            "Revalidate after material prompt, model, tool, skill, or data-source changes.",
-            "Escalate High risk tier packages to model-risk or governance reviewers before deployment.",
-        ],
+        "risk_classifications": _risk_classifications(employee, metrics, evaluation_runs),
+        "committee_review_focus": COMMITTEE_REVIEW_FOCUS,
         "policy_references": POLICY_REFERENCES,
     }
 
@@ -178,45 +254,70 @@ def build_governance_context(employee: dict, metrics: dict) -> dict:
 def _template_draft(context: dict) -> dict:
     employee = context["employee"]
     evaluation = context["evaluation"]
-    risk = context["risk"]
+    risk_classifications = context["risk_classifications"]
     return {
-        "system_overview": (
-            f"{employee['name']} is a digital employee for {employee['position']}. "
-            f"The configured model is {employee['model']}; the system prompt is "
-            f"{'present' if employee['system_prompt_present'] else 'not specified'}."
-        ),
-        "intended_use": employee.get("description") or "Not specified",
-        "data_inputs": (
-            f"{len(employee['project_files'])} project file(s) are attached. "
-            "Specific production data sources must be reviewed before financial-services deployment."
-        ),
-        "evaluation_summary": {
-            "Source": evaluation["source"],
-            "Tasks": evaluation["tasks"],
-            "Average task score": _pct(evaluation["avg_task_score"]),
-            "Average leaf rate": _pct(evaluation["avg_leaf_rate"]),
-            "Average user rating": evaluation["avg_user_rating"] or "Not specified",
-            "Rated tasks": evaluation["rated_tasks"],
-            "Annotated tasks": evaluation["annotated_tasks"],
-            "Unannotated tasks": evaluation["unannotated_tasks"],
-            "Average tool calls": evaluation["avg_tool_calls"],
-            "Average trials": evaluation["avg_trials"],
-            "Reflexion rate": _pct(evaluation["reflexion_rate"]),
-            "Tool mix": [
-                f"{tool}: {count}"
-                for tool, count in (evaluation.get("tool_mix") or [])
-            ] or ["No tools recorded"],
-            "Recent task count": evaluation["recent_task_count"],
-        },
-        "risk_summary": f"Current model-risk tier is {risk['tier']}: {' '.join(risk['reasons'])}",
-        "controls_summary": " ".join(context["controls"]),
-        "monitoring_plan": (
-            "Monitor task outcomes, user ratings, trajectory annotations, tool usage, and material configuration changes."
-        ),
-        "limitations": (
-            "This package is generated from available application evidence and is not an independent validation or legal compliance opinion."
-        ),
-        "approval_notes": "Not specified. Governance approval should be recorded by an authorized reviewer.",
+        "system_overview": [
+            f"{employee['name']} is a digital employee for {employee['position']}.",
+            f"Configured model: {employee['model']}.",
+            f"System prompt present: {employee['system_prompt_present']}.",
+            "This package is assembled for BNY governance committee review, not as an approval decision.",
+        ],
+        "intended_use": [
+            f"Stated employee description: {employee.get('description') or 'Not specified'}.",
+            "Committee reviewers should confirm the business decision, workflow, customer impact, and deployment boundary.",
+        ],
+        "system_metadata": [
+            f"Employee ID: {employee.get('id') or 'Not specified'}.",
+            f"Plugins: {', '.join(employee.get('plugins') or []) or 'None configured'}.",
+            f"Skills: {', '.join(employee.get('skills') or []) or 'None configured'}.",
+            f"Reflexion enabled: {employee.get('use_reflexion')}.",
+            f"Max trials: {employee.get('max_trials') or 'Not specified'}.",
+            f"Confidence threshold: {employee.get('confidence_threshold') or 'Not specified'}.",
+            f"Created at: {employee.get('created_at')}.",
+            f"Last active at: {employee.get('last_active_at')}.",
+        ],
+        "agent_activity": [
+            f"Recent task count included in this package: {evaluation['recent_task_count']}.",
+            f"Average tool calls per task: {evaluation['avg_tool_calls']}.",
+            f"Observed tool mix: {'; '.join(_format_tool_mix(evaluation.get('tool_mix') or []))}.",
+            *[
+                f"Recent task: {task['prompt']} | tools {task['tool_calls']} | trials {task['trials']} | duration {task['duration_ms']}ms | actions: {', '.join(task['action_sequence'])} | review status: {task.get('review_status') or 'Not specified'}."
+                for task in evaluation.get("recent_tasks", [])[:5]
+            ],
+        ],
+        "evaluation_outputs": [
+            f"Employee task metric source: {evaluation['source']}.",
+            f"Tasks observed for this employee: {evaluation['tasks']}.",
+            f"Average task score: {_pct(evaluation['avg_task_score'])}.",
+            f"Average leaf rate: {_pct(evaluation['avg_leaf_rate'])}.",
+            f"Average user rating: {evaluation['avg_user_rating'] or 'Not specified'} across {evaluation['rated_tasks']} rated task(s).",
+            f"Annotated tasks: {evaluation['annotated_tasks']}; unannotated tasks: {evaluation['unannotated_tasks']}.",
+            *evaluation.get("evaluation_lab_summary", []),
+        ],
+        "risk_classifications": [
+            f"{item['category']} — {item['classification']}: {' '.join(item['evidence'])}"
+            for item in risk_classifications
+        ],
+        "data_inputs": [
+            f"Project files attached: {len(employee['project_files'])}.",
+            *[
+                f"{file['name']} ({file['mime']}, {file['size']} bytes)"
+                for file in employee["project_files"]
+            ],
+            "Committee reviewers should confirm approved data sources, sensitivity, retention, and access controls.",
+        ],
+        "committee_review_focus": context["committee_review_focus"],
+        "monitoring_plan": [
+            "Monitor task outcomes, user ratings, trajectory annotations, tool usage, and material configuration changes.",
+            "Define owner review cadence, exception escalation, rollback criteria, and reapproval triggers before deployment.",
+            "Require committee review after material changes to model, prompt, tools, skills, data sources, or intended use.",
+        ],
+        "limitations": [
+            "This package is generated from available application evidence and is not an independent validation or legal compliance opinion.",
+            "The report does not approve deployment and does not claim compliance with SR 11-7, OCC 2011-12, or NIST AI RMF.",
+            "Risk classifications are review prompts based on available evidence; final classification belongs to qualified BNY reviewers.",
+        ],
+        "approval_notes": ["Not specified. Governance approval should be recorded by an authorized reviewer."],
     }
 
 
@@ -242,12 +343,78 @@ def evaluation_summary_items(context: dict) -> dict:
     }
 
 
+def _bullets_from_section(value: Any, fallback: list[str] | str) -> list[str]:
+    """Normalize generated, cached, or LLM-returned section bodies to bullets."""
+    fallback_items = fallback if isinstance(fallback, list) else [fallback]
+    fallback_items = [str(item).strip() for item in fallback_items if str(item).strip()]
+    if value in (None, "", [], {}):
+        return fallback_items or ["Not specified"]
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return fallback_items or ["Not specified"]
+        if (
+            (text.startswith("{") and text.endswith("}"))
+            or (text.startswith("[") and text.endswith("]"))
+        ):
+            for parser in (json.loads, ast.literal_eval):
+                try:
+                    return _bullets_from_section(parser(text), fallback_items)
+                except (ValueError, SyntaxError, json.JSONDecodeError):
+                    continue
+        lines = [
+            line.strip(" \t-*•")
+            for line in text.splitlines()
+            if line.strip(" \t-*•")
+        ]
+        return lines or [text]
+    if isinstance(value, list):
+        bullets: list[str] = []
+        for item in value:
+            if isinstance(item, dict):
+                for key, nested in item.items():
+                    nested_text = "; ".join(_bullets_from_section(nested, []))
+                    if nested_text:
+                        bullets.append(f"{str(key).replace('_', ' ').title()}: {nested_text}")
+            elif isinstance(item, list):
+                bullets.extend(_bullets_from_section(item, []))
+            else:
+                text = str(item).strip()
+                if text:
+                    bullets.append(text)
+        return bullets or fallback_items or ["Not specified"]
+    if isinstance(value, dict):
+        bullets = []
+        for key, item in value.items():
+            if item in (None, "", [], {}):
+                continue
+            item_text = "; ".join(_bullets_from_section(item, []))
+            if item_text:
+                bullets.append(f"{str(key).replace('_', ' ').title()}: {item_text}")
+        return bullets or fallback_items or ["Not specified"]
+    return [str(value)]
+
+
 def normalize_governance_package(package: dict) -> dict:
     """Normalize older cached packages to the current UI-friendly shape."""
     context = package.get("context") or {}
+    context.setdefault("committee_review_focus", COMMITTEE_REVIEW_FOCUS)
     sections = package.setdefault("sections", {})
     if isinstance(sections.get("evaluation_summary"), str):
         sections["evaluation_summary"] = evaluation_summary_items(context)
+    sections.pop("risk_summary", None)
+    sections.pop("controls_summary", None)
+    sections.pop("evaluation_summary", None)
+    sections.setdefault(
+        "committee_review_focus",
+        context.get("committee_review_focus") or COMMITTEE_REVIEW_FOCUS,
+    )
+    defaults = _template_draft(context) if context.get("employee") and context.get("evaluation") else {}
+    for key in SECTION_KEYS:
+        sections[key] = _bullets_from_section(
+            sections.get(key),
+            defaults.get(key, ["Not specified"]),
+        )
     return package
 
 
@@ -261,49 +428,17 @@ def _resolve_model_for_base_url(model: str) -> str:
     return raw or "gpt-4o-mini"
 
 
-def _text_from_llm_section(value: Any, fallback: str) -> str:
-    """Collapse LLM JSON values to readable prose instead of Python repr text."""
-    if value in (None, ""):
-        return fallback
-    if isinstance(value, str):
-        text = value.strip()
-        if not text:
-            return fallback
-        if (
-            (text.startswith("{") and text.endswith("}"))
-            or (text.startswith("[") and text.endswith("]"))
-        ):
-            try:
-                return _text_from_llm_section(ast.literal_eval(text), fallback)
-            except (ValueError, SyntaxError):
-                try:
-                    return _text_from_llm_section(json.loads(text), fallback)
-                except json.JSONDecodeError:
-                    pass
-        return text
-    if isinstance(value, list):
-        items = [str(item).strip() for item in value if str(item).strip()]
-        return " ".join(items) or fallback
-    if isinstance(value, dict):
-        parts: list[str] = []
-        if value.get("tier"):
-            parts.append(f"Tier: {value['tier']}.")
-        if value.get("score") is not None:
-            parts.append(f"Score: {value['score']}.")
-        reasons = value.get("reasons")
-        if isinstance(reasons, list) and reasons:
-            parts.append(" ".join(str(reason).strip() for reason in reasons if str(reason).strip()))
-        for key, item in value.items():
-            if key in {"tier", "score", "reasons"}:
-                continue
-            if item not in (None, "", [], {}):
-                parts.append(f"{str(key).replace('_', ' ').title()}: {item}.")
-        return " ".join(parts).strip() or fallback
-    return str(value)
+def _text_from_llm_section(value: Any, fallback: str | list[str]) -> list[str]:
+    """Backward-compatible alias for tests and older callers."""
+    return _bullets_from_section(value, fallback)
 
 
-async def generate_governance_package(employee: dict, metrics: dict) -> dict:
-    context = build_governance_context(employee, metrics)
+async def generate_governance_package(
+    employee: dict,
+    metrics: dict,
+    evaluation_runs: list[dict] | None = None,
+) -> dict:
+    context = build_governance_context(employee, metrics, evaluation_runs)
     draft = _template_draft(context)
     llm = {
         "available": bool(getattr(config, "API_KEY", None)),
@@ -334,13 +469,12 @@ async def generate_governance_package(employee: dict, metrics: dict) -> dict:
             content = (resp.choices[0].message.content or "").strip()
             parsed = json.loads(content)
             draft = {
-                key: _text_from_llm_section(parsed.get(key), draft[key] or "Not specified")
+                key: _bullets_from_section(parsed.get(key), draft[key])
                 for key in SECTION_KEYS
             }
-            # These two sections are most likely to be returned as raw JSON by
-            # an LLM. Keep them deterministic and prose-shaped in the product.
-            draft["risk_summary"] = _template_draft(context)["risk_summary"]
-            draft["controls_summary"] = _template_draft(context)["controls_summary"]
+            # Review focus and approval notes are human governance fields, not
+            # model conclusions. Keep them deterministic in the product.
+            draft["committee_review_focus"] = _template_draft(context)["committee_review_focus"]
             # Approval notes are a reviewer/admin input field, not model prose.
             draft["approval_notes"] = _template_draft(context)["approval_notes"]
             llm["used"] = True
@@ -363,21 +497,36 @@ def _esc(value: Any) -> str:
     return html.escape(str(value if value is not None else "Not specified"))
 
 
-def _section(title: str, body: str) -> str:
-    return f"<section><h2>{_esc(title)}</h2><p>{_esc(body)}</p></section>"
+def _html_value(value: Any) -> str:
+    if value in (None, ""):
+        return "<ul><li>Not specified</li></ul>"
+    if isinstance(value, dict):
+        rows = []
+        for key, item in value.items():
+            if isinstance(item, list):
+                rendered = "<ul>" + "".join(f"<li>{_esc(entry)}</li>" for entry in item) + "</ul>"
+            else:
+                rendered = _esc(item)
+            rows.append(f"<dt>{_esc(key)}</dt><dd>{rendered}</dd>")
+        return "<dl>" + "".join(rows) + "</dl>"
+    if isinstance(value, list):
+        return "<ul>" + "".join(f"<li>{_esc(item)}</li>" for item in value) + "</ul>"
+    return "<ul>" + f"<li>{_esc(value)}</li>" + "</ul>"
+
+
+def _section(title: str, body: Any) -> str:
+    return f"<section><h2>{_esc(title)}</h2>{_html_value(body)}</section>"
 
 
 def render_governance_html(package: dict) -> str:
+    package = normalize_governance_package(package)
     context = package["context"]
     sections = package["sections"]
     employee = context["employee"]
-    risk = context["risk"]
     refs = "\n".join(
         f'<li><a href="{_esc(ref["url"])}">{_esc(ref["name"])}</a><span>{_esc(ref["summary"])}</span></li>'
         for ref in context["policy_references"]
     )
-    controls = "\n".join(f"<li>{_esc(control)}</li>" for control in context["controls"])
-    risk_reasons = "\n".join(f"<li>{_esc(reason)}</li>" for reason in risk["reasons"])
 
     body = "\n".join(
         _section(key.replace("_", " ").title(), sections[key])
@@ -394,43 +543,23 @@ def render_governance_html(package: dict) -> str:
     h1 {{ color: #0f4c5c; font-size: 28px; margin-bottom: 4px; }}
     h2 {{ border-bottom: 1px solid #d8dee4; color: #1f2937; font-size: 18px; margin-top: 28px; padding-bottom: 6px; }}
     .meta, .notice {{ color: #536471; font-size: 12px; }}
-    .badge {{ background: #e9f5f7; border: 1px solid #b9dce2; border-radius: 999px; color: #0f4c5c; display: inline-block; font-size: 12px; font-weight: 700; padding: 4px 10px; }}
     section, .panel {{ break-inside: avoid; }}
     a {{ color: #05687f; }}
     li {{ margin: 6px 0; }}
     li span {{ color: #536471; display: block; font-size: 12px; }}
+    dl {{ display: grid; grid-template-columns: 180px 1fr; gap: 8px 16px; }}
+    dt {{ font-weight: 700; }}
+    dd {{ margin: 0; }}
   </style>
 </head>
 <body>
   <h1>Financial Services AI Governance Package</h1>
   <p class="meta">Generated {_esc(context["generated_at"])} for {_esc(employee["name"])} · {_esc(employee["position"])}</p>
-  <p><span class="badge">Risk tier: {_esc(risk["tier"])}</span></p>
   <p class="notice">{_esc(package["disclaimer"])}</p>
   <div class="panel">
     <h2>Reference Governance Policies</h2>
     <ul>{refs}</ul>
   </div>
   {body}
-  <div class="panel">
-    <h2>Deterministic Risk Drivers</h2>
-    <ul>{risk_reasons}</ul>
-  </div>
-  <div class="panel">
-    <h2>Required Controls</h2>
-    <ul>{controls}</ul>
-  </div>
 </body>
 </html>"""
-
-
-async def render_governance_pdf(package: dict) -> bytes:
-    from playwright.async_api import async_playwright
-
-    html_doc = render_governance_html(package)
-    async with async_playwright() as p:
-        browser = await p.chromium.launch()
-        page = await browser.new_page()
-        await page.set_content(html_doc, wait_until="networkidle")
-        pdf = await page.pdf(format="Letter", print_background=True)
-        await browser.close()
-        return pdf

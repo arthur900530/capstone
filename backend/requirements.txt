@@ -14,7 +14,6 @@ sqlalchemy[asyncio]>=2.0
 asyncpg>=0.29
 alembic>=1.13
 pyyaml>=6.0
-playwright>=1.48
 
 # Test tooling
 pytest>=8.0

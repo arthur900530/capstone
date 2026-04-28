@@ -62,9 +62,8 @@ export async function fetchEmployeeMetrics(employeeId, { limit } = {}) {
   return res.json();
 }
 
-export function employeeGovernanceUrl(employeeId, format = "pdf") {
-  const suffix = format === "html" ? "governance.html" : "governance.pdf";
-  return `${API_BASE}/employees/${employeeId}/${suffix}`;
+export function employeeGovernanceUrl(employeeId) {
+  return `${API_BASE}/employees/${employeeId}/governance.html`;
 }
 
 export async function fetchEmployeeGovernance(employeeId, { force = false } = {}) {

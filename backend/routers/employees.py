@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel, Field
 import yaml
 from config import SKILL_SELECTION_MODEL
@@ -59,7 +59,6 @@ from services.governance_package_service import (
     generate_governance_package,
     normalize_governance_package,
     render_governance_html,
-    render_governance_pdf,
 )
 from trajectory import build_nodes_from_events, flatten_action_nodes, segment_nodes, to_dict
 from trajectory_llm import annotate_tree, apply_annotations
@@ -76,12 +75,31 @@ _test_case_run_memory_store: dict[str, list[dict[str, Any]]] = {}
 # server restart, which the events drawer surfaces gracefully.
 _test_case_run_events: dict[str, list[dict[str, Any]]] = {}
 _test_case_run_transcripts: dict[str, str] = {}
+_governance_locks: dict[str, asyncio.Lock] = {}
 
 
 def set_db_available(value: bool):
     global _db_available
     _db_available = value
 
+
+def _governance_lock(employee_id: str) -> asyncio.Lock:
+    lock = _governance_locks.get(employee_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _governance_locks[employee_id] = lock
+    return lock
+
+
+async def _evaluation_runs_for_governance() -> list[dict]:
+    try:
+        import server
+
+        runs = await server.evaluations()
+        return runs if isinstance(runs, list) else []
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Unable to load Evaluation tab runs for governance: %s", exc)
+        return []
 
 
 # Length caps on the free-form text fields. ``description`` is a short hint
@@ -401,6 +419,9 @@ def _derive_status(last_active_at) -> str:
 
 
 def _row_to_dict(row) -> dict:
+    governance_package = getattr(row, "governance_package", None)
+    if isinstance(governance_package, dict):
+        governance_package = normalize_governance_package(governance_package)
     return {
         "id": str(row.id),
         "name": row.name,
@@ -416,7 +437,7 @@ def _row_to_dict(row) -> dict:
         "status": _derive_status(row.last_active_at),
         "chatSessionIds": row.chat_session_ids or [],
         "files": row.files or [],
-        "governancePackage": getattr(row, "governance_package", None),
+        "governancePackage": governance_package,
         "governanceApprovalNotes": getattr(row, "governance_approval_notes", "") or "",
         "lastActiveAt": row.last_active_at.isoformat() if row.last_active_at else None,
         "createdAt": row.created_at.isoformat() if row.created_at else None,
@@ -1274,51 +1295,43 @@ async def employee_governance_package(
     force: bool = Query(False),
 ):
     """Generate a financial-services governance package for one employee."""
-    employee = await get_employee(employee_id)
-    approval_notes = employee.get("governanceApprovalNotes") or ""
-    if not force and employee.get("governancePackage"):
-        package = employee["governancePackage"]
-        if isinstance(package, dict):
+    async with _governance_lock(employee_id):
+        employee = await get_employee(employee_id)
+        approval_notes = employee.get("governanceApprovalNotes") or ""
+        if not force and employee.get("governancePackage"):
+            package = employee["governancePackage"]
+            if not isinstance(package, dict):
+                logger.warning(
+                    "Invalid cached governance package shape employee_id=%s type=%s",
+                    employee_id,
+                    type(package).__name__,
+                )
+                raise HTTPException(500, "Cached governance package is invalid")
             package = normalize_governance_package(package)
             package["approval_notes"] = approval_notes
-            package.setdefault("sections", {})["approval_notes"] = approval_notes or "Not specified. Governance approval should be recorded by an authorized reviewer."
-        return package
+            package["sections"]["approval_notes"] = [
+                approval_notes or "Not specified. Governance approval should be recorded by an authorized reviewer."
+            ]
+            return package
 
-    metrics_payload = await employee_metrics(employee_id, limit=_RECENT_TASK_LIMIT)
-    package = await generate_governance_package(employee, metrics_payload)
-    package["approval_notes"] = approval_notes
-    package.setdefault("sections", {})["approval_notes"] = approval_notes or "Not specified. Governance approval should be recorded by an authorized reviewer."
-    await update_employee(employee_id, EmployeeUpdate(governancePackage=package))
-    return package
+        metrics_payload = await employee_metrics(employee_id, limit=_RECENT_TASK_LIMIT)
+        evaluation_runs = await _evaluation_runs_for_governance()
+        package = await generate_governance_package(employee, metrics_payload, evaluation_runs)
+        package["approval_notes"] = approval_notes
+        package["sections"]["approval_notes"] = [
+            approval_notes or "Not specified. Governance approval should be recorded by an authorized reviewer."
+        ]
+        await update_employee(employee_id, EmployeeUpdate(governancePackage=package))
+        return package
 
 
 @router.get("/{employee_id}/governance.html")
-async def employee_governance_html(employee_id: str):
-    package = await employee_governance_package(employee_id)
+async def employee_governance_html(
+    employee_id: str,
+    force: bool = Query(False),
+):
+    package = await employee_governance_package(employee_id, force=force)
     return HTMLResponse(render_governance_html(package))
-
-
-@router.get("/{employee_id}/governance.pdf")
-async def employee_governance_pdf(employee_id: str):
-    package = await employee_governance_package(employee_id)
-    try:
-        pdf = await render_governance_pdf(package)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Governance PDF generation failed: %s", exc)
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                "PDF generation is unavailable. Install Playwright Chromium "
-                "with `python -m playwright install chromium` or use the HTML export."
-            ),
-        ) from exc
-    safe_name = re.sub(r"[^A-Za-z0-9_-]+", "-", employee.get("name") or employee_id).strip("-")
-    filename = f"governance-{safe_name or employee_id}.pdf"
-    return Response(
-        pdf,
-        media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-    )
 
 
 @router.get("/{employee_id}/task_runs/{session_id}/{task_index}/trajectory")

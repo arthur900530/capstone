@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import {
   AlertCircle,
-  Download,
   ExternalLink,
   FileText,
   Loader2,
@@ -44,10 +43,12 @@ function ErrorState({ message, onRetry }) {
 const NARRATIVE_ORDER = [
   "system_overview",
   "intended_use",
+  "system_metadata",
+  "agent_activity",
+  "evaluation_outputs",
+  "risk_classifications",
   "data_inputs",
-  "evaluation_summary",
-  "risk_summary",
-  "controls_summary",
+  "committee_review_focus",
   "monitoring_plan",
   "limitations",
 ];
@@ -94,76 +95,15 @@ function normalizeDisplayValue(value) {
   return trimmed;
 }
 
-function parseLegacyEvaluationSummary(value) {
-  if (typeof value !== "string") return null;
-  const labels = [
-    "Source",
-    "Tasks",
-    "Avg Task Score",
-    "Avg Leaf Rate",
-    "Avg User Rating",
-    "Rated Tasks",
-    "Annotated Tasks",
-    "Unannotated Tasks",
-    "Avg Tool Calls",
-    "Avg Trials",
-    "Reflexion Rate",
-    "Tool Mix",
-    "Recent Task Count",
-  ];
-  const matches = [...value.matchAll(
-    /(Source|Tasks|Avg Task Score|Avg Leaf Rate|Avg User Rating|Rated Tasks|Annotated Tasks|Unannotated Tasks|Avg Tool Calls|Avg Trials|Reflexion Rate|Tool Mix|Recent Task Count):\s*/g,
-  )];
-  if (matches.length < 2) return null;
-
-  return matches.map((match, index) => {
-    const next = matches[index + 1];
-    const raw = value.slice(match.index + match[0].length, next?.index ?? value.length);
-    const label = labels.includes(match[1]) ? match[1] : sectionTitle(match[1]);
-    return [label, raw.replace(/\.\s*$/, "").trim()];
-  });
-}
-
 function SectionContent({ value }) {
-  const legacyEvaluation = parseLegacyEvaluationSummary(value);
-  if (legacyEvaluation) {
-    return (
-      <dl className="space-y-2">
-        {legacyEvaluation.map(([key, item]) => (
-          <div key={key} className="grid gap-1 rounded-md border border-border/40 bg-surface/40 p-3 sm:grid-cols-[180px_minmax(0,1fr)]">
-            <dt className="text-xs font-semibold text-text-primary">{key}</dt>
-            <dd className="mt-1 text-sm leading-6 text-text-secondary">
-              {key === "Tool Mix" ? (
-                <ul className="space-y-1 pl-4">
-                  {item
-                    .replace(/^\[\[/, "")
-                    .replace(/\]\]$/, "")
-                    .split(/\],\s*\[/)
-                    .map((entry) => entry.replace(/['"]/g, "").split(",").map((part) => part.trim()))
-                    .map(([tool, count]) => (
-                      <li key={`${tool}-${count}`} className="list-disc marker:text-accent-teal">
-                        {tool}: {count}
-                      </li>
-                    ))}
-                </ul>
-              ) : (
-                item || "Not specified"
-              )}
-            </dd>
-          </div>
-        ))}
-      </dl>
-    );
-  }
-
   const normalized = normalizeDisplayValue(value);
 
   if (Array.isArray(normalized)) {
     return (
       <ul className="space-y-2 pl-4">
-        {normalized.map((item) => (
+        {normalized.map((item, index) => (
           <li
-            key={String(item)}
+            key={`${String(item)}-${index}`}
             className="list-disc text-sm leading-6 text-text-secondary marker:text-accent-teal"
           >
             {String(item)}
@@ -184,9 +124,9 @@ function SectionContent({ value }) {
             <dd className="mt-1 text-sm leading-6 text-text-secondary">
               {Array.isArray(item) ? (
                 <ul className="space-y-1 pl-4">
-                  {item.map((entry) => (
+                  {item.map((entry, index) => (
                     <li
-                      key={String(entry)}
+                      key={`${String(entry)}-${index}`}
                       className="list-disc marker:text-accent-teal"
                     >
                       {String(entry)}
@@ -204,9 +144,11 @@ function SectionContent({ value }) {
   }
 
   return (
-    <p className="text-sm leading-6 text-text-secondary">
-      {normalized}
-    </p>
+    <ul className="space-y-2 pl-4">
+      <li className="list-disc text-sm leading-6 text-text-secondary marker:text-accent-teal">
+        {normalized}
+      </li>
+    </ul>
   );
 }
 
@@ -310,17 +252,18 @@ export default function EmployeeGovernanceTab({
 
   const context = data?.context || {};
   const sections = data?.sections || {};
-  const risk = context.risk || {};
   const references = context.policy_references || [];
-  const controls = context.controls || [];
   const llm = data?.llm || {};
   const evaluation = context.evaluation || {};
   const narrativeEntries = NARRATIVE_ORDER
     .filter((key) => Object.prototype.hasOwnProperty.call(sections, key))
     .map((key) => [key, sections[key]]);
-  const generatedApprovalNote = String(sections.approval_notes || "").startsWith("Not specified")
-    ? ""
+  const approvalSection = Array.isArray(sections.approval_notes)
+    ? sections.approval_notes.join("\n")
     : sections.approval_notes || "";
+  const generatedApprovalNote = String(approvalSection).startsWith("Not specified")
+    ? ""
+    : approvalSection;
   const displayedApprovalNote = approvalNote ?? generatedApprovalNote;
 
   return (
@@ -350,7 +293,7 @@ export default function EmployeeGovernanceTab({
               Refresh
             </button>
             <a
-              href={employeeGovernanceUrl(employee.id, "html")}
+              href={employeeGovernanceUrl(employee.id)}
               target="_blank"
               rel="noreferrer"
               className="flex items-center gap-2 rounded-md border border-border/70 px-3 py-2 text-xs font-medium text-text-secondary hover:border-accent-teal/50 hover:text-accent-teal"
@@ -358,25 +301,10 @@ export default function EmployeeGovernanceTab({
               <ExternalLink size={14} />
               HTML
             </a>
-            <a
-              href={employeeGovernanceUrl(employee.id, "pdf")}
-              className="flex items-center gap-2 rounded-md bg-accent-teal px-3 py-2 text-xs font-semibold text-white hover:bg-accent-deep"
-            >
-              <Download size={14} />
-              PDF
-            </a>
           </div>
         </div>
 
-        <div className="grid gap-3 md:grid-cols-3">
-          <Section title="Risk tier">
-            <div className="text-2xl font-semibold text-text-primary">
-              {risk.tier || "Not specified"}
-            </div>
-            <p className="mt-1 text-xs text-text-muted">
-              Deterministic score {risk.score ?? "Not specified"}
-            </p>
-          </Section>
+        <div className="grid gap-3 md:grid-cols-2">
           <Section title="LLM drafting">
             <div className="text-sm font-medium text-text-primary">
               {llm.used ? "LLM narrative used" : "Template fallback used"}
@@ -397,7 +325,7 @@ export default function EmployeeGovernanceTab({
           </Section>
         </div>
 
-        <Section title="Evaluation metrics">
+        <Section title="Evidence snapshot">
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             <MetricTile
               label="Tasks"
@@ -466,36 +394,9 @@ export default function EmployeeGovernanceTab({
             className="min-h-32 w-full resize-y rounded-md border border-border/60 bg-surface/50 p-3 text-sm leading-6 text-text-primary outline-none transition-colors placeholder:text-text-muted focus:border-accent-teal/70"
           />
           <p className="mt-2 text-xs text-text-muted">
-            Notes are preserved while this employee page is open and are not generated by the LLM.
+            Notes are saved to the employee record and are not generated by the LLM.
           </p>
         </Section>
-
-        <div className="grid gap-4 lg:grid-cols-2">
-          <Section title="Deterministic risk drivers">
-            <ul className="space-y-2 pl-4">
-              {(risk.reasons || []).map((reason) => (
-                <li
-                  key={reason}
-                  className="list-disc text-sm leading-6 text-text-secondary marker:text-accent-teal"
-                >
-                  {reason}
-                </li>
-              ))}
-            </ul>
-          </Section>
-          <Section title="Required controls">
-            <ul className="space-y-2 pl-4">
-              {controls.map((control) => (
-                <li
-                  key={control}
-                  className="list-disc text-sm leading-6 text-text-secondary marker:text-accent-teal"
-                >
-                  {control}
-                </li>
-              ))}
-            </ul>
-          </Section>
-        </div>
       </div>
     </div>
   );
