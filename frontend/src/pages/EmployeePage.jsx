@@ -254,7 +254,11 @@ export default function EmployeePage() {
           in-flight test runs survive tab switches. CSS hides it rather than
           unmounting, which would kill in-progress fetches. */}
       {autoTestsEverActive && (
-        <div style={activeTab !== "auto_tests" ? { display: "none" } : undefined}>
+        <div
+          className={`flex flex-1 flex-col overflow-hidden ${
+            activeTab !== "auto_tests" ? "hidden" : ""
+          }`}
+        >
           <AutoTestsTab key={id} employee={employee} />
         </div>
       )}

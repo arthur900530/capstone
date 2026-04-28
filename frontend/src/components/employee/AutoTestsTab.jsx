@@ -5,13 +5,29 @@ import {
   generateTestCases,
   listTestCaseRuns,
   listTestCases,
-  runAllTestCases,
   runTestCase,
   updateTestCase,
 } from "../../services/api";
 import TaskTrajectoryDrawer from "./TaskTrajectoryDrawer";
 import TestCaseCard from "./TestCaseCard";
 import TestCaseRunDetail from "./TestCaseRunDetail";
+
+// Pretty-print a millisecond duration as "Xm Ys" (or "Ys" under a minute).
+// Used by the Run-all progress panel for elapsed + ETA.
+function formatDuration(ms) {
+  const totalSeconds = Math.max(0, Math.round(ms / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
+}
+
+// Estimate remaining time using the rolling average of completed durations.
+// Caller guarantees `progress.durations.length > 0`.
+function estimateRemaining(progress) {
+  const sum = progress.durations.reduce((acc, d) => acc + d, 0);
+  const avg = sum / progress.durations.length;
+  return avg * (progress.total - progress.completed);
+}
 
 export default function AutoTestsTab({ employee }) {
   const [count, setCount] = useState(5);
@@ -24,6 +40,18 @@ export default function AutoTestsTab({ employee }) {
   const [error, setError] = useState(null);
   const [activeRun, setActiveRun] = useState(null);
   const [trajectoryTask, setTrajectoryTask] = useState(null);
+  // Live progress for the "Run all draft tests" batch. Null when idle.
+  // Shape: { total, completed, currentTitle, startedAt (Date.now), durations: ms[] }
+  const [runAllProgress, setRunAllProgress] = useState(null);
+  // Tick state — its only job is to force a re-render every second so the
+  // elapsed-time label in the progress panel updates between case completions.
+  const [, setNowTick] = useState(0);
+
+  useEffect(() => {
+    if (!runningAll) return undefined;
+    const id = setInterval(() => setNowTick((n) => n + 1), 1000);
+    return () => clearInterval(id);
+  }, [runningAll]);
 
   const load = async () => {
     setLoading(true);
@@ -83,15 +111,48 @@ export default function AutoTestsTab({ employee }) {
   };
 
   const handleRunAll = async () => {
+    // Snapshot the draft cases up-front so newly-created drafts mid-run
+    // don't sneak into this batch.
+    const drafts = cases.filter((item) => item.status === "draft");
+    if (drafts.length === 0) return;
+
     setRunningAll(true);
     setError(null);
+    setRunAllProgress({
+      total: drafts.length,
+      completed: 0,
+      currentTitle: drafts[0]?.title ?? null,
+      startedAt: Date.now(),
+      durations: [],
+    });
+
     try {
-      await runAllTestCases(employee.id);
+      for (let i = 0; i < drafts.length; i += 1) {
+        const tc = drafts[i];
+        setRunAllProgress((p) => (p ? { ...p, currentTitle: tc.title } : p));
+        const t0 = Date.now();
+        try {
+          await runTestCase(employee.id, tc.id);
+        } catch (err) {
+          // Per-case failure shouldn't abort the batch — surface the most
+          // recent error in the banner and continue with the remaining cases.
+          setError(err.message || `Failed to run "${tc.title}"`);
+        }
+        const dt = Date.now() - t0;
+        setRunAllProgress((p) =>
+          p
+            ? {
+                ...p,
+                completed: p.completed + 1,
+                durations: [...p.durations, dt],
+              }
+            : p,
+        );
+      }
       await load();
-    } catch (err) {
-      setError(err.message || "Failed to run all test cases");
     } finally {
       setRunningAll(false);
+      setRunAllProgress(null);
     }
   };
 
@@ -149,6 +210,40 @@ export default function AutoTestsTab({ employee }) {
 
         {error ? (
           <div className="rounded-lg bg-red-500/10 px-3 py-2 text-sm text-red-400">{error}</div>
+        ) : null}
+
+        {runAllProgress ? (
+          <div className="space-y-2 rounded-xl border border-border/40 bg-surface p-4">
+            <div className="flex items-center justify-between text-sm">
+              <span className="font-medium text-text-primary">
+                Running tests: {runAllProgress.completed} of {runAllProgress.total}
+              </span>
+              <span className="text-text-muted">
+                elapsed {formatDuration(Date.now() - runAllProgress.startedAt)}
+                {runAllProgress.durations.length > 0
+                  ? ` · ETA ${formatDuration(estimateRemaining(runAllProgress))}`
+                  : ""}
+              </span>
+            </div>
+            <div className="h-2 w-full overflow-hidden rounded-full bg-workspace">
+              <div
+                className="h-full bg-accent-teal transition-[width] duration-300"
+                style={{
+                  width: `${
+                    runAllProgress.total > 0
+                      ? (runAllProgress.completed / runAllProgress.total) * 100
+                      : 0
+                  }%`,
+                }}
+              />
+            </div>
+            {runAllProgress.currentTitle ? (
+              <p className="truncate text-xs text-text-muted">
+                Now running:{" "}
+                <span className="text-text-secondary">{runAllProgress.currentTitle}</span>
+              </p>
+            ) : null}
+          </div>
         ) : null}
 
         {cases.length === 0 ? (
