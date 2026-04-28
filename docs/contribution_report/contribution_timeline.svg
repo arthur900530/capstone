@@ -1,0 +1,87 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="620" viewBox="0 0 1120 620" role="img" aria-labelledby="title desc">
+<title id="title">Merged non-merge commit timeline by week</title>
+<desc id="desc">Weekly merged non-merge commit counts by contributor from git history.</desc>
+<rect width="100%" height="100%" fill="#ffffff"/>
+<text x="80" y="32" font-family="Inter, Arial, sans-serif" font-size="22" font-weight="700" fill="#102a43">Merged non-merge commit timeline by week</text>
+<text x="80" y="52" font-family="Inter, Arial, sans-serif" font-size="12" fill="#52606d">Evidence ref: origin/main. Merge commits excluded.</text>
+<line x1="80" y1="492.0" x2="1096" y2="492.0" stroke="#e5e7eb" stroke-width="1"/>
+<text x="70" y="496.0" text-anchor="end" font-family="Inter, Arial, sans-serif" font-size="11" fill="#52606d">0</text>
+<line x1="80" y1="430.9" x2="1096" y2="430.9" stroke="#e5e7eb" stroke-width="1"/>
+<text x="70" y="434.9" text-anchor="end" font-family="Inter, Arial, sans-serif" font-size="11" fill="#52606d">10</text>
+<line x1="80" y1="369.7" x2="1096" y2="369.7" stroke="#e5e7eb" stroke-width="1"/>
+<text x="70" y="373.7" text-anchor="end" font-family="Inter, Arial, sans-serif" font-size="11" fill="#52606d">20</text>
+<line x1="80" y1="308.6" x2="1096" y2="308.6" stroke="#e5e7eb" stroke-width="1"/>
+<text x="70" y="312.6" text-anchor="end" font-family="Inter, Arial, sans-serif" font-size="11" fill="#52606d">30</text>
+<line x1="80" y1="247.4" x2="1096" y2="247.4" stroke="#e5e7eb" stroke-width="1"/>
+<text x="70" y="251.4" text-anchor="end" font-family="Inter, Arial, sans-serif" font-size="11" fill="#52606d">40</text>
+<line x1="80" y1="186.3" x2="1096" y2="186.3" stroke="#e5e7eb" stroke-width="1"/>
+<text x="70" y="190.3" text-anchor="end" font-family="Inter, Arial, sans-serif" font-size="11" fill="#52606d">50</text>
+<line x1="80" y1="125.1" x2="1096" y2="125.1" stroke="#e5e7eb" stroke-width="1"/>
+<text x="70" y="129.1" text-anchor="end" font-family="Inter, Arial, sans-serif" font-size="11" fill="#52606d">60</text>
+<line x1="80" y1="64.0" x2="1096" y2="64.0" stroke="#e5e7eb" stroke-width="1"/>
+<text x="70" y="68.0" text-anchor="end" font-family="Inter, Arial, sans-serif" font-size="11" fill="#52606d">70</text>
+<line x1="80" y1="64" x2="80" y2="492" stroke="#9aa5b1" stroke-width="1"/>
+<line x1="80" y1="492" x2="1096" y2="492" stroke="#9aa5b1" stroke-width="1"/>
+<rect x="89.0" y="492.0" width="19.6" height="0.0" fill="#2563eb"><title>Aditya Kumar: 0 commits in week of 2026-03-16</title></rect>
+<rect x="110.6" y="492.0" width="19.6" height="0.0" fill="#dc2626"><title>Andrew Zhang: 0 commits in week of 2026-03-16</title></rect>
+<rect x="132.2" y="461.4" width="19.6" height="30.6" fill="#7c3aed"><title>Arthur Chien: 5 commits in week of 2026-03-16</title></rect>
+<rect x="153.9" y="492.0" width="19.6" height="0.0" fill="#059669"><title>Aspen Chen: 0 commits in week of 2026-03-16</title></rect>
+<rect x="175.5" y="492.0" width="19.6" height="0.0" fill="#d97706"><title>Danni Qu / Angela: 0 commits in week of 2026-03-16</title></rect>
+<rect x="197.1" y="492.0" width="19.6" height="0.0" fill="#0891b2"><title>Hin Kit Eric Wong: 0 commits in week of 2026-03-16</title></rect>
+<rect x="218.7" y="492.0" width="19.6" height="0.0" fill="#4b5563"><title>Yuling Wang: 0 commits in week of 2026-03-16</title></rect>
+<text x="164.7" y="510" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="11" fill="#52606d">03-16</text>
+<rect x="258.3" y="492.0" width="19.6" height="0.0" fill="#2563eb"><title>Aditya Kumar: 0 commits in week of 2026-03-23</title></rect>
+<rect x="280.0" y="492.0" width="19.6" height="0.0" fill="#dc2626"><title>Andrew Zhang: 0 commits in week of 2026-03-23</title></rect>
+<rect x="301.6" y="437.0" width="19.6" height="55.0" fill="#7c3aed"><title>Arthur Chien: 9 commits in week of 2026-03-23</title></rect>
+<rect x="323.2" y="455.3" width="19.6" height="36.7" fill="#059669"><title>Aspen Chen: 6 commits in week of 2026-03-23</title></rect>
+<rect x="344.8" y="461.4" width="19.6" height="30.6" fill="#d97706"><title>Danni Qu / Angela: 5 commits in week of 2026-03-23</title></rect>
+<rect x="366.4" y="485.9" width="19.6" height="6.1" fill="#0891b2"><title>Hin Kit Eric Wong: 1 commits in week of 2026-03-23</title></rect>
+<rect x="388.0" y="492.0" width="19.6" height="0.0" fill="#4b5563"><title>Yuling Wang: 0 commits in week of 2026-03-23</title></rect>
+<text x="334.0" y="510" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="11" fill="#52606d">03-23</text>
+<rect x="427.7" y="461.4" width="19.6" height="30.6" fill="#2563eb"><title>Aditya Kumar: 5 commits in week of 2026-03-30</title></rect>
+<rect x="449.3" y="492.0" width="19.6" height="0.0" fill="#dc2626"><title>Andrew Zhang: 0 commits in week of 2026-03-30</title></rect>
+<rect x="470.9" y="485.9" width="19.6" height="6.1" fill="#7c3aed"><title>Arthur Chien: 1 commits in week of 2026-03-30</title></rect>
+<rect x="492.5" y="479.8" width="19.6" height="12.2" fill="#059669"><title>Aspen Chen: 2 commits in week of 2026-03-30</title></rect>
+<rect x="514.1" y="485.9" width="19.6" height="6.1" fill="#d97706"><title>Danni Qu / Angela: 1 commits in week of 2026-03-30</title></rect>
+<rect x="535.8" y="492.0" width="19.6" height="0.0" fill="#0891b2"><title>Hin Kit Eric Wong: 0 commits in week of 2026-03-30</title></rect>
+<rect x="557.4" y="492.0" width="19.6" height="0.0" fill="#4b5563"><title>Yuling Wang: 0 commits in week of 2026-03-30</title></rect>
+<text x="503.3" y="510" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="11" fill="#52606d">03-30</text>
+<rect x="597.0" y="161.8" width="19.6" height="330.2" fill="#2563eb"><title>Aditya Kumar: 54 commits in week of 2026-04-06</title></rect>
+<rect x="618.6" y="492.0" width="19.6" height="0.0" fill="#dc2626"><title>Andrew Zhang: 0 commits in week of 2026-04-06</title></rect>
+<rect x="640.2" y="492.0" width="19.6" height="0.0" fill="#7c3aed"><title>Arthur Chien: 0 commits in week of 2026-04-06</title></rect>
+<rect x="661.9" y="492.0" width="19.6" height="0.0" fill="#059669"><title>Aspen Chen: 0 commits in week of 2026-04-06</title></rect>
+<rect x="683.5" y="492.0" width="19.6" height="0.0" fill="#d97706"><title>Danni Qu / Angela: 0 commits in week of 2026-04-06</title></rect>
+<rect x="705.1" y="461.4" width="19.6" height="30.6" fill="#0891b2"><title>Hin Kit Eric Wong: 5 commits in week of 2026-04-06</title></rect>
+<rect x="726.7" y="485.9" width="19.6" height="6.1" fill="#4b5563"><title>Yuling Wang: 1 commits in week of 2026-04-06</title></rect>
+<text x="672.7" y="510" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="11" fill="#52606d">04-06</text>
+<rect x="766.3" y="119.0" width="19.6" height="373.0" fill="#2563eb"><title>Aditya Kumar: 61 commits in week of 2026-04-13</title></rect>
+<rect x="788.0" y="492.0" width="19.6" height="0.0" fill="#dc2626"><title>Andrew Zhang: 0 commits in week of 2026-04-13</title></rect>
+<rect x="809.6" y="492.0" width="19.6" height="0.0" fill="#7c3aed"><title>Arthur Chien: 0 commits in week of 2026-04-13</title></rect>
+<rect x="831.2" y="492.0" width="19.6" height="0.0" fill="#059669"><title>Aspen Chen: 0 commits in week of 2026-04-13</title></rect>
+<rect x="852.8" y="492.0" width="19.6" height="0.0" fill="#d97706"><title>Danni Qu / Angela: 0 commits in week of 2026-04-13</title></rect>
+<rect x="874.4" y="492.0" width="19.6" height="0.0" fill="#0891b2"><title>Hin Kit Eric Wong: 0 commits in week of 2026-04-13</title></rect>
+<rect x="896.0" y="492.0" width="19.6" height="0.0" fill="#4b5563"><title>Yuling Wang: 0 commits in week of 2026-04-13</title></rect>
+<text x="842.0" y="510" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="11" fill="#52606d">04-13</text>
+<rect x="935.7" y="216.9" width="19.6" height="275.1" fill="#2563eb"><title>Aditya Kumar: 45 commits in week of 2026-04-20</title></rect>
+<rect x="957.3" y="455.3" width="19.6" height="36.7" fill="#dc2626"><title>Andrew Zhang: 6 commits in week of 2026-04-20</title></rect>
+<rect x="978.9" y="388.1" width="19.6" height="103.9" fill="#7c3aed"><title>Arthur Chien: 17 commits in week of 2026-04-20</title></rect>
+<rect x="1000.5" y="394.2" width="19.6" height="97.8" fill="#059669"><title>Aspen Chen: 16 commits in week of 2026-04-20</title></rect>
+<rect x="1022.1" y="485.9" width="19.6" height="6.1" fill="#d97706"><title>Danni Qu / Angela: 1 commits in week of 2026-04-20</title></rect>
+<rect x="1043.8" y="492.0" width="19.6" height="0.0" fill="#0891b2"><title>Hin Kit Eric Wong: 0 commits in week of 2026-04-20</title></rect>
+<rect x="1065.4" y="430.9" width="19.6" height="61.1" fill="#4b5563"><title>Yuling Wang: 10 commits in week of 2026-04-20</title></rect>
+<text x="1011.3" y="510" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="11" fill="#52606d">04-20</text>
+<rect x="80" y="527" width="13" height="13" fill="#2563eb"/>
+<text x="99" y="538" font-family="Inter, Arial, sans-serif" font-size="12" fill="#243b53">Aditya Kumar (165)</text>
+<rect x="238" y="527" width="13" height="13" fill="#dc2626"/>
+<text x="257" y="538" font-family="Inter, Arial, sans-serif" font-size="12" fill="#243b53">Andrew Zhang (6)</text>
+<rect x="396" y="527" width="13" height="13" fill="#7c3aed"/>
+<text x="415" y="538" font-family="Inter, Arial, sans-serif" font-size="12" fill="#243b53">Arthur Chien (32)</text>
+<rect x="554" y="527" width="13" height="13" fill="#059669"/>
+<text x="573" y="538" font-family="Inter, Arial, sans-serif" font-size="12" fill="#243b53">Aspen Chen (24)</text>
+<rect x="80" y="553" width="13" height="13" fill="#d97706"/>
+<text x="99" y="564" font-family="Inter, Arial, sans-serif" font-size="12" fill="#243b53">Danni Qu / Angela (7)</text>
+<rect x="238" y="553" width="13" height="13" fill="#0891b2"/>
+<text x="257" y="564" font-family="Inter, Arial, sans-serif" font-size="12" fill="#243b53">Hin Kit Eric Wong (6)</text>
+<rect x="396" y="553" width="13" height="13" fill="#4b5563"/>
+<text x="415" y="564" font-family="Inter, Arial, sans-serif" font-size="12" fill="#243b53">Yuling Wang (11)</text>
+</svg>

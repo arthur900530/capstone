@@ -56,5 +56,6 @@ frontend/.env.*.local
 # User-uploaded project files (employee "Project Files" tab + chat uploads)
 backend/uploads/
 
-# Internal docs (not tracked)
-docs/
+# Internal docs (not tracked by default)
+docs/*
+!docs/employee-creation-wizard-technical-design.md
