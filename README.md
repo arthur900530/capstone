@@ -12,6 +12,57 @@ A React-based chat interface for a multi-trial self-evolving AI system that answ
 - **Skills Management** — Browse, create, edit, and delete agent skills. Inspect skill definitions and associated files with an inline file viewer.
 - **File Uploads** — Attach data files to conversations; uploaded files are tracked per chat.
 - **Configurable Parameters** — Adjust the model, max trials, and confidence threshold directly from the input box.
+- **Auto-Test Suite** — Generate, run, and inspect adversarial test cases for any AI employee directly from the UI (see _Auto-Test Suite_ section below).
+
+---
+
+## Auto-Test Suite
+
+The auto-test feature lets you generate edge-case tests for an AI employee, run them individually or all at once, and inspect the agent's step-by-step reasoning for each run.
+
+### What's new (this PR)
+
+**Trajectory viewer — "View trajectory" button now shows real agent reasoning**
+
+- Clicking **View trajectory** on any test run now opens a structured, step-by-step drawer instead of a list of empty event cards.
+- Each step is labelled and colour-coded: **ACTION** (blue) → **REASONING** (purple) → **OBSERVATION** (amber, collapsed by default) → **MESSAGE** (teal).
+- Powered by `serialize_trajectory()` in `backend/agent_event_utils.py` — the same serializer the reflexion evaluator uses, now shared across both code paths.
+- For simple runs (no tool calls) you'll see the agent's message. For complex runs (browser, file-editor, bash) you'll see the full ReAct loop with tool names, arguments, and tool output.
+
+**Adversarial test generator — stronger edge-case prompts**
+
+The generator system prompt was rewritten to produce tests that exercise the agent's tools, not just its chat behaviour. Key changes:
+- Tests are now required to use at least one skill/plugin to answer; questions answerable from memory alone are explicitly rejected.
+- An **8-category adversarial taxonomy** (Tool-failure resilience, Conflicting sources, Multi-step dependency, Ambiguous input, Scope/policy boundary, Adversarial/jailbreak, Data unavailability, Contradictory constraints) ensures the generated suite covers a range of failure modes rather than repeating the same pattern.
+- `hard_failure_signals` is now required to be non-empty — forces the model to commit to a specific failure condition the verifier can use.
+- Few-shot example updated to a financial research assistant that uses `web-search`, `parse-html`, and `retrieve-info` tools — matching the target domain.
+
+**Shared event utilities (`backend/agent_event_utils.py`)**
+
+- `_extract_text` and `_parse_tool_args` (previously duplicated across `server.py` and `reflexion_agent/agent.py`) are now consolidated here.
+- `serialize_trajectory()` moved here from `reflexion_agent/agent.py` so `test_case_runner.py` can call it without a circular import.
+- `reflexion_agent/agent.py` now imports from `agent_event_utils` — no behaviour change, just deduplication.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `backend/agent_event_utils.py` | **New.** Shared event extraction + `serialize_trajectory()` |
+| `backend/test_case_generator.py` | Rewritten system prompt with adversarial taxonomy + tool-grounding requirement |
+| `backend/test_case_runner.py` | Collects raw SDK events in `_callback`; calls `serialize_trajectory` after each run; adds `transcript` to all return paths |
+| `backend/routers/employees.py` | Stores `transcript` alongside compact events; serves it via the existing `GET .../events` endpoint |
+| `backend/reflexion_agent/agent.py` | Removed local `_extract_trajectory_text` + `_serialize_trajectory`; imports from shared module |
+| `backend/server.py` | Removed local `_extract_text` + `_parse_tool_args`; imports from shared module |
+| `frontend/src/components/employee/TestCaseRunEventsDrawer.jsx` | Rewritten: parses transcript into structured sections, renders with icons/colours |
+| `frontend/src/components/employee/AutoTestsTab.jsx` | Wired to new drawer; swapped `TaskTrajectoryDrawer` → `TestCaseRunEventsDrawer` |
+| `frontend/src/services/api.js` | Added `fetchTestCaseRunEvents()` API client function |
+
+### Caveats
+
+- Trajectory data is **memory-only** — it is lost on server restart. Re-running the test case captures a fresh trajectory.
+- For tests where the agent answers without using any tool (e.g. a policy-refusal), the trajectory will show only a USER and MESSAGE step — this is expected and correct.
+
+---
 
 ## Tech Stack
 

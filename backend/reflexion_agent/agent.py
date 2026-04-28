@@ -27,6 +27,10 @@ from openhands.workspace.docker.workspace import check_port_available
 
 from reflexion_agent import evaluate_trajectory, generate_reflection, ReflexionMemory
 from config import BASE_URL, API_KEY, AGENT_MODEL
+from agent_event_utils import (
+    extract_text as _extract_trajectory_text,
+    serialize_trajectory as _serialize_trajectory,
+)
 
 dotenv.load_dotenv()
 
@@ -636,170 +640,9 @@ def runtime(
         return _run(owned_ws)
 
 
-def _extract_trajectory_text(obj) -> str:
-    """Extract plain text from whatever the SDK puts in a content field.
 
-    Handles: str, a single TextContent-like object (.text), a list of them,
-    and arbitrary objects (fallback to empty string rather than crashing).
-    This is a local mirror of server.py's _extract_text so agent.py has no
-    import dependency on server.py.
-    """
-    if obj is None:
-        return ""
-    if isinstance(obj, str):
-        return obj
-    if hasattr(obj, "text") and isinstance(getattr(obj, "text"), str):
-        return obj.text
-    if isinstance(obj, (list, tuple)):
-        parts = []
-        for item in obj:
-            if hasattr(item, "text") and isinstance(getattr(item, "text"), str):
-                parts.append(item.text)
-            elif isinstance(item, str):
-                parts.append(item)
-        return " ".join(parts)
-    return ""
-
-
-def _serialize_trajectory(events) -> str:
-    """Convert OpenHands event objects into a clean, labeled text transcript.
-
-    Replaces the raw Python repr dump — str(list(events)) — with a
-    human-readable log that the LLM judge can evaluate reliably.
-
-    Design principles
-    -----------------
-    - Pure function: events in → string out.  Both the evaluator and the
-      reflector receive this same string; neither module needs to change.
-    - Defensive: every attribute access uses getattr so an unexpected SDK
-      event type never crashes the loop — it just increments the 'other'
-      counter and is skipped silently.
-    - Dual-attribute checks: the SDK has evolved (e.g. 'action' → 'tool_call',
-      'result' → 'observation'), so we check both names for each event type.
-
-    Event type detection (duck typing, no SDK class imports needed)
-    ---------------------------------------------------------------
-    MessageEvent   → has a non-None 'role' attribute
-    ActionEvent    → has 'tool_call' or 'action' (older SDK) attribute
-    ObservationEvent → has 'observation' or 'result' (older SDK) attribute
-    Error events   → has 'error' or 'message' attribute
-    """
-    lines = []
-    turn = 0
-    counts = {"message": 0, "action": 0, "observation": 0, "error": 0, "other": 0}
-
-    for event in events:
-
-        # ── MessageEvent ──────────────────────────────────────────────
-        role = getattr(event, "role", None)
-        if role is not None:
-            text = _extract_trajectory_text(getattr(event, "extended_content", None))
-            if not text:
-                text = getattr(event, "reasoning_content", None) or ""
-            if not text:
-                text = _extract_trajectory_text(getattr(event, "content", None))
-            if text:
-                lines.append(f"[{str(role).upper()}] {text.strip()}")
-            counts["message"] += 1
-            continue
-
-        # ── ActionEvent (tool call) ───────────────────────────────────
-        tool_call = getattr(event, "tool_call", None)
-        action_attr = getattr(event, "action", None)  # older SDK fallback
-
-        if tool_call is not None or action_attr is not None:
-            turn += 1
-            tool_name = (
-                getattr(event, "tool_name", None)
-                or getattr(event, "tool", None)
-                or "unknown"
-            )
-            lines.append(f"[Turn {turn}] [ACTION] {tool_name}")
-
-            # Parse structured args from the tool_call (current SDK)
-            if tool_call is not None:
-                fn = getattr(tool_call, "function", None)
-                args_str = (getattr(fn, "arguments", None) or "") if fn else ""
-                try:
-                    args_dict = json.loads(args_str) if args_str else {}
-                except (json.JSONDecodeError, TypeError):
-                    args_dict = {}
-                if args_dict:
-                    args_display = ", ".join(
-                        f"{k}={repr(str(v))[:80]}" for k, v in args_dict.items()
-                    )
-                    lines.append(f"  Arguments: {args_display}")
-                elif args_str:
-                    lines.append(f"  Arguments: {args_str[:300]}")
-            else:
-                # Older SDK: action is an object like BashAction(command='ls -la')
-                lines.append(f"  Arguments: {str(action_attr)[:300]}")
-
-            # Capture any reasoning the agent attached to this action
-            thought = _extract_trajectory_text(getattr(event, "thought", None))
-            if not thought:
-                thought = getattr(event, "reasoning_content", None) or ""
-            if thought:
-                lines.append(f"  [Agent reasoning] {thought.strip()[:400]}")
-
-            counts["action"] += 1
-            continue
-
-        # ── ObservationEvent (tool result) ────────────────────────────
-        observation = getattr(event, "observation", None)
-        result_attr = getattr(event, "result", None)  # older SDK fallback
-
-        if observation is not None or result_attr is not None:
-            tool_name = getattr(event, "tool_name", None) or ""
-
-            if observation is not None:
-                raw = (
-                    getattr(observation, "content", None)
-                    or getattr(observation, "text", None)
-                )
-                content = _extract_trajectory_text(raw) or str(observation)
-            else:
-                content = _extract_trajectory_text(result_attr) or str(result_attr)
-
-            content = content.strip()
-            # Truncate long outputs (e.g. full file contents) to stay readable
-            if len(content) > 800:
-                content = content[:800] + f"\n  ... [{len(content) - 800} chars truncated]"
-
-            prefix = f"[OBSERVATION] {tool_name}: " if tool_name else "[OBSERVATION] "
-            lines.append(f"{prefix}{content}")
-            counts["observation"] += 1
-            continue
-
-        # ── Error events ──────────────────────────────────────────────
-        error_msg = getattr(event, "error", None) or getattr(event, "message", None)
-        if error_msg:
-            lines.append(f"[ERROR] {str(error_msg)[:400]}")
-            counts["error"] += 1
-            continue
-
-        counts["other"] += 1
-
-    total = sum(counts.values())
-    logger.info(
-        "[trajectory] Serialized %d events — message=%d action=%d observation=%d error=%d other=%d",
-        total,
-        counts["message"],
-        counts["action"],
-        counts["observation"],
-        counts["error"],
-        counts["other"],
-    )
-
-    if not lines:
-        logger.warning(
-            "[trajectory] No serializable events found after processing %d raw events — "
-            "returning placeholder",
-            total,
-        )
-        return "[trajectory: no events captured]"
-
-    return "\n".join(lines)
+# _extract_trajectory_text and _serialize_trajectory have been moved to
+# agent_event_utils.py and are imported at the top of this file.
 
 
 def _event_to_dict(event) -> dict:

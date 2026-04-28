@@ -64,6 +64,12 @@ _db_available = False
 _memory_store: list[dict] = []
 _test_case_memory_store: dict[str, list[dict[str, Any]]] = {}
 _test_case_run_memory_store: dict[str, list[dict[str, Any]]] = {}
+# Captured agent event stream per test-case run, keyed by the run's id (the
+# DB row's UUID string, or the in-memory uuid). Memory-only by design — events
+# are large and only useful for debugging the latest run; they vanish on
+# server restart, which the events drawer surfaces gracefully.
+_test_case_run_events: dict[str, list[dict[str, Any]]] = {}
+_test_case_run_transcripts: dict[str, str] = {}
 
 
 def set_db_available(value: bool):
@@ -958,6 +964,11 @@ async def _run_single_test_case(employee_id: str, case_payload: dict[str, Any]) 
             detail=f"Test case run failed: {exc}",
         ) from exc
 
+    # Pull events and transcript out before any persistence work — the DB
+    # schema doesn't store them and the memory dict is keyed separately.
+    captured_events: list[dict[str, Any]] = run_result.get("events") or []
+    captured_transcript: str = run_result.get("transcript") or ""
+
     if _db_available:
         from db.engine import async_session
         from db.models import TestCaseRun
@@ -981,7 +992,10 @@ async def _run_single_test_case(employee_id: str, case_payload: dict[str, Any]) 
             session.add(row)
             await session.commit()
             await session.refresh(row)
-            return _serialize_test_case_run(row)
+            run_dict = _serialize_test_case_run(row)
+            _test_case_run_events[run_dict["id"]] = captured_events
+            _test_case_run_transcripts[run_dict["id"]] = captured_transcript
+            return run_dict
 
     run_entry = {
         "id": str(uuid.uuid4()),
@@ -1000,6 +1014,8 @@ async def _run_single_test_case(employee_id: str, case_payload: dict[str, Any]) 
         "deterministic_checks": run_result["deterministic_checks"],
     }
     _test_case_run_memory_store.setdefault(case_payload["id"], []).append(run_entry)
+    _test_case_run_events[run_entry["id"]] = captured_events
+    _test_case_run_transcripts[run_entry["id"]] = captured_transcript
     return run_entry
 
 
@@ -1103,6 +1119,44 @@ async def list_employee_test_case_runs(employee_id: str, case_id: str):
     rows = _test_case_run_memory_store.get(case_id, [])
     sorted_rows = sorted(rows, key=lambda row: row.get("started_at") or "", reverse=True)
     return {"employee_id": employee_id, "case_id": case_id, "runs": sorted_rows}
+
+
+@router.get("/{employee_id}/test_cases/{case_id}/runs/{run_id}/events")
+async def get_employee_test_case_run_events(
+    employee_id: str, case_id: str, run_id: str
+):
+    """Return the captured agent event stream for a single test-case run.
+
+    Events are kept in an in-memory dict (``_test_case_run_events``) keyed by
+    run id and are NOT persisted to Postgres. They survive only until the
+    server restarts, which is intentional: this is a debug aid for the latest
+    runs, not a replayable archive. When events are unavailable (e.g. the
+    server was restarted after the run completed) we return ``available:
+    false`` with an empty list so the drawer can render a friendly message
+    instead of a 404.
+    """
+    await _assert_employee_exists(employee_id)
+    events = _test_case_run_events.get(run_id)
+    transcript = _test_case_run_transcripts.get(run_id, "")
+    if events is None:
+        return {
+            "employee_id": employee_id,
+            "case_id": case_id,
+            "run_id": run_id,
+            "available": False,
+            "events": [],
+            "transcript": "",
+            "count": 0,
+        }
+    return {
+        "employee_id": employee_id,
+        "case_id": case_id,
+        "run_id": run_id,
+        "available": True,
+        "events": events,
+        "transcript": transcript,
+        "count": len(events),
+    }
 
 
 # ── Metrics / Report Card ────────────────────────────────────────────────────

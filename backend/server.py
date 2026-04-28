@@ -86,6 +86,10 @@ from routers.skills import router as skills_router
 from routers.marketplace import router as marketplace_router
 from routers.submissions import router as submissions_router
 from routers.employees import router as employees_router
+from agent_event_utils import (
+    extract_text as _extract_text,
+    parse_tool_args as _parse_tool_args,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -846,48 +850,6 @@ async def _stream_conversation(question: str, session_id: str, agent: dict):
 # ---------------------------------------------------------------------------
 
 _turn_counter: dict[str, int] = {}
-
-
-def _extract_text(obj: Any) -> str:
-    """Safely extract plain text from SDK content types.
-
-    Handles: str, TextContent (has .text), Sequence[TextContent], Observation
-    (has .content which may itself be str or list), and arbitrary objects.
-    """
-    if obj is None:
-        return ""
-    if isinstance(obj, str):
-        return obj
-    # Single TextContent-like object
-    if hasattr(obj, "text") and isinstance(getattr(obj, "text"), str):
-        return obj.text
-    # Sequence of TextContent-like objects (Sequence[TextContent])
-    if isinstance(obj, (list, tuple)):
-        parts = []
-        for item in obj:
-            if hasattr(item, "text") and isinstance(getattr(item, "text"), str):
-                parts.append(item.text)
-            elif isinstance(item, str):
-                parts.append(item)
-        if parts:
-            return " ".join(parts)
-    # Last resort — but avoid repr of SDK objects
-    return ""
-
-
-def _parse_tool_args(tc: Any) -> tuple[str, dict]:
-    """Extract (args_string, args_dict) from a MessageToolCall.
-
-    MessageToolCall uses OpenAI format: tc.function.name / tc.function.arguments
-    where arguments is a JSON-encoded string.
-    """
-    fn = getattr(tc, "function", None)
-    args_str = (getattr(fn, "arguments", None) or "") if fn else ""
-    try:
-        args_dict = json.loads(args_str) if args_str else {}
-    except (json.JSONDecodeError, TypeError):
-        args_dict = {}
-    return args_str, args_dict
 
 
 # Path segments whose file edits/creations should never be surfaced to the

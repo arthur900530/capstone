@@ -561,6 +561,18 @@ export async function listTestCaseRuns(employeeId, caseId) {
   return res.json();
 }
 
+// Memory-only: backend keeps the captured agent event stream for each
+// test-case run in a process-local dict. After a server restart the events
+// for older runs are gone — the response will have `available: false` and
+// an empty list, which the drawer renders as a friendly empty state.
+export async function fetchTestCaseRunEvents(employeeId, caseId, runId) {
+  const res = await fetch(
+    `${API_BASE}/employees/${encodeURIComponent(employeeId)}/test_cases/${encodeURIComponent(caseId)}/runs/${encodeURIComponent(runId)}/events`,
+  );
+  if (!res.ok) throw new Error(await _extractDetail(res, "Failed to load run events"));
+  return res.json();
+}
+
 // ---------------------------------------------------------------------------
 // Workspace browsing
 // ---------------------------------------------------------------------------

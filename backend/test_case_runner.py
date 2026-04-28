@@ -8,6 +8,7 @@ from typing import Any
 
 from config import TEST_CASE_DEFAULT_MAX_LATENCY_MS
 from test_case_verifier import verify_test_case_run
+from agent_event_utils import compact_event as _compact_event, serialize_trajectory
 
 try:
     from reflexion_agent.agent import runtime as _agent_runtime
@@ -20,6 +21,13 @@ def _now() -> datetime:
 
 
 def _extract_tool_name(event: Any) -> str | None:
+    """Return the event's tool name, if any, for deterministic-check tracking.
+
+    We keep this thin helper local because the deterministic-checks bookkeeping
+    (``used_tools`` set in ``_callback``) needs the tool name even for events
+    we *don't* end up appending to the compact trajectory (e.g. when the cap
+    is hit, or when ``_compact_event`` returns None for filtered events).
+    """
     name = getattr(event, "tool_name", None)
     if name:
         return str(name).strip()
@@ -28,23 +36,10 @@ def _extract_tool_name(event: Any) -> str | None:
     return str(fallback).strip() if fallback else None
 
 
-def _compact_event(event: Any) -> dict[str, Any]:
-    if hasattr(event, "model_dump"):
-        event_dict = event.model_dump()
-    else:
-        event_dict = {}
-    tool_name = _extract_tool_name(event)
-    etype = event_dict.get("event_type") or event.__class__.__name__
-    return {
-        "event_type": str(etype),
-        "tool_name": tool_name,
-        "content": str(
-            event_dict.get("content")
-            or event_dict.get("message")
-            or event_dict.get("thought")
-            or ""
-        )[:800],
-    }
+# Hard cap on events captured per test run. Prevents a runaway agent (or a
+# huge tool dump) from ballooning memory when the events drawer renders.
+# 500 covers any realistic test trajectory; anything longer is truncated.
+_MAX_EVENTS_PER_RUN = 500
 
 
 
@@ -85,6 +80,7 @@ async def run_test_case(
     _dbg("run_test_case entry", {"latency_cap_ms": latency_cap_ms, "agent_runtime_available": _agent_runtime is not None, "workspace_provided": workspace is not None, "host_dir": effective_dir, "prompt_snippet": case_prompt[:80]}, "H-A,H-B,H-D")
     # endregion
     compact_trajectory: list[dict[str, Any]] = []
+    raw_events: list[Any] = []
     used_tools: set[str] = set()
     final_answer = ""
     deterministic_checks: dict[str, Any] = {}
@@ -109,10 +105,25 @@ async def run_test_case(
                 "latency_within_budget": False,
                 "expected_tool_families": False,
             },
+            "events": list(compact_trajectory),
+            "transcript": serialize_trajectory(raw_events),
         }
 
     def _callback(event: Any):
-        compact_trajectory.append(_compact_event(event))
+        # Collect the raw SDK event object for serialize_trajectory() which
+        # runs after the agent finishes. This list is never persisted — it's
+        # consumed once and then discarded.
+        if len(raw_events) < _MAX_EVENTS_PER_RUN:
+            raw_events.append(event)
+
+        # Compact events for the LLM judge. _compact_event returns None for
+        # events we deliberately drop (ConversationStateUpdateEvent, etc.).
+        if len(compact_trajectory) < _MAX_EVENTS_PER_RUN:
+            compact = _compact_event(event)
+            if compact is not None:
+                compact_trajectory.append(
+                    {**compact, "ts": _now().isoformat()}
+                )
         tool_name = _extract_tool_name(event)
         if tool_name:
             used_tools.add(tool_name)
@@ -179,6 +190,8 @@ async def run_test_case(
                 "latency_within_budget": False,
                 "expected_tool_families": False,
             },
+            "events": list(compact_trajectory),
+            "transcript": serialize_trajectory(raw_events),
         }
     except Exception as exc:  # noqa: BLE001
         finished_at = _now()
@@ -204,6 +217,8 @@ async def run_test_case(
                 "latency_within_budget": False,
                 "expected_tool_families": False,
             },
+            "events": list(compact_trajectory),
+            "transcript": serialize_trajectory(raw_events),
         }
 
     finished_at = _now()
@@ -239,6 +254,8 @@ async def run_test_case(
             "failure_reason": "empty final output",
             "agent_session_id": session_id,
             "deterministic_checks": deterministic_checks,
+            "events": list(compact_trajectory),
+            "transcript": serialize_trajectory(raw_events),
         }
     if not latency_within_budget:
         return {
@@ -254,6 +271,8 @@ async def run_test_case(
             "failure_reason": "latency budget exceeded",
             "agent_session_id": session_id,
             "deterministic_checks": deterministic_checks,
+            "events": list(compact_trajectory),
+            "transcript": serialize_trajectory(raw_events),
         }
 
     try:
@@ -299,4 +318,6 @@ async def run_test_case(
         "failure_reason": None if judged["verdict"] == "pass" else "judge_failed_criteria",
         "agent_session_id": session_id,
         "deterministic_checks": deterministic_checks,
+        "events": list(compact_trajectory),
+        "transcript": serialize_trajectory(raw_events),
     }

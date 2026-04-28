@@ -8,9 +8,9 @@ import {
   runTestCase,
   updateTestCase,
 } from "../../services/api";
-import TaskTrajectoryDrawer from "./TaskTrajectoryDrawer";
 import TestCaseCard from "./TestCaseCard";
 import TestCaseRunDetail from "./TestCaseRunDetail";
+import TestCaseRunEventsDrawer from "./TestCaseRunEventsDrawer";
 
 // Pretty-print a millisecond duration as "Xm Ys" (or "Ys" under a minute).
 // Used by the Run-all progress panel for elapsed + ETA.
@@ -39,7 +39,11 @@ export default function AutoTestsTab({ employee }) {
   const [runningCaseId, setRunningCaseId] = useState(null);
   const [error, setError] = useState(null);
   const [activeRun, setActiveRun] = useState(null);
-  const [trajectoryTask, setTrajectoryTask] = useState(null);
+  // The id of the test-case run whose event stream is currently displayed
+  // in the drawer. Stage 1 only needs the run id — the drawer fetches the
+  // events itself.
+  const [trajectoryRunId, setTrajectoryRunId] = useState(null);
+  const [trajectoryCaseId, setTrajectoryCaseId] = useState(null);
   // Live progress for the "Run all draft tests" batch. Null when idle.
   // Shape: { total, completed, currentTitle, startedAt (Date.now), durations: ms[] }
   const [runAllProgress, setRunAllProgress] = useState(null);
@@ -289,19 +293,20 @@ export default function AutoTestsTab({ employee }) {
           onClose={() => setActiveRun(null)}
           onOpenTrajectory={(run) => {
             setActiveRun(null);
-            setTrajectoryTask({
-              sessionId: run.agent_session_id,
-              taskIndex: 0,
-              run: { prompt_preview: "Auto test trajectory" },
-            });
+            setTrajectoryRunId(run.id);
+            setTrajectoryCaseId(run.test_case_id);
           }}
         />
       ) : null}
-      {trajectoryTask ? (
-        <TaskTrajectoryDrawer
+      {trajectoryRunId ? (
+        <TestCaseRunEventsDrawer
           employeeId={employee.id}
-          task={trajectoryTask}
-          onClose={() => setTrajectoryTask(null)}
+          caseId={trajectoryCaseId}
+          runId={trajectoryRunId}
+          onClose={() => {
+            setTrajectoryRunId(null);
+            setTrajectoryCaseId(null);
+          }}
         />
       ) : null}
     </div>
