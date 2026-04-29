@@ -41,16 +41,13 @@ function ErrorState({ message, onRetry }) {
 }
 
 const NARRATIVE_ORDER = [
-  "system_overview",
-  "intended_use",
-  "system_metadata",
-  "agent_activity",
+  "document_control_governance",
+  "purpose_scope_intended_use",
+  "model_data_overview",
+  "risk_assessment_controls",
   "evaluation_outputs",
-  "risk_classifications",
-  "data_inputs",
-  "committee_review_focus",
-  "monitoring_plan",
-  "limitations",
+  "performance_testing_validation",
+  "deployment_monitoring_lifecycle",
 ];
 
 function Section({ title, children, className = "" }) {
@@ -97,6 +94,51 @@ function normalizeDisplayValue(value) {
 
 function SectionContent({ value }) {
   const normalized = normalizeDisplayValue(value);
+
+  if (
+    normalized &&
+    typeof normalized === "object" &&
+    Array.isArray(normalized.rows)
+  ) {
+    const columns = Array.isArray(normalized.columns)
+      ? normalized.columns
+      : ["Metric", "Value"];
+    return (
+      <div className="overflow-x-auto">
+        <table className="w-full border-collapse text-sm">
+          <thead>
+            <tr>
+              {columns.map((column) => (
+                <th
+                  key={column}
+                  className="border border-border/50 bg-surface/60 px-3 py-2 text-left text-xs font-semibold uppercase tracking-wider text-text-primary"
+                >
+                  {column}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {normalized.rows.map((row, rowIndex) => {
+              const cells = Array.isArray(row) ? row : [row];
+              return (
+                <tr key={rowIndex} className="odd:bg-workspace/30">
+                  {cells.map((cell, cellIndex) => (
+                    <td
+                      key={`${rowIndex}-${cellIndex}`}
+                      className="border border-border/40 px-3 py-2 align-top leading-6 text-text-secondary"
+                    >
+                      {String(cell ?? "Not specified")}
+                    </td>
+                  ))}
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    );
+  }
 
   if (Array.isArray(normalized)) {
     return (
@@ -149,26 +191,6 @@ function SectionContent({ value }) {
         {normalized}
       </li>
     </ul>
-  );
-}
-
-function formatPercent(value) {
-  const n = Number(value);
-  if (!Number.isFinite(n)) return "Not specified";
-  return `${(n * 100).toFixed(1)}%`;
-}
-
-function MetricTile({ label, value, sub }) {
-  return (
-    <div className="rounded-md border border-border/40 bg-surface/40 p-3">
-      <div className="text-[11px] font-semibold uppercase tracking-wider text-text-muted">
-        {label}
-      </div>
-      <div className="mt-1 text-lg font-semibold text-text-primary">
-        {value}
-      </div>
-      {sub ? <div className="mt-1 text-xs text-text-muted">{sub}</div> : null}
-    </div>
   );
 }
 
@@ -254,7 +276,6 @@ export default function EmployeeGovernanceTab({
   const sections = data?.sections || {};
   const references = context.policy_references || [];
   const llm = data?.llm || {};
-  const evaluation = context.evaluation || {};
   const narrativeEntries = NARRATIVE_ORDER
     .filter((key) => Object.prototype.hasOwnProperty.call(sections, key))
     .map((key) => [key, sections[key]]);
@@ -324,35 +345,6 @@ export default function EmployeeGovernanceTab({
             </p>
           </Section>
         </div>
-
-        <Section title="Evidence snapshot">
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            <MetricTile
-              label="Tasks"
-              value={evaluation.tasks ?? 0}
-              sub={`${evaluation.annotated_tasks ?? 0} annotated`}
-            />
-            <MetricTile
-              label="Task score"
-              value={formatPercent(evaluation.avg_task_score)}
-              sub="Weighted trajectory score"
-            />
-            <MetricTile
-              label="User rating"
-              value={
-                Number(evaluation.avg_user_rating)
-                  ? `${Number(evaluation.avg_user_rating).toFixed(2)} / 5`
-                  : "Not specified"
-              }
-              sub={`${evaluation.rated_tasks ?? 0} rated task(s)`}
-            />
-            <MetricTile
-              label="Reflexion"
-              value={formatPercent(evaluation.reflexion_rate)}
-              sub={`${evaluation.avg_trials ?? 0} avg trials`}
-            />
-          </div>
-        </Section>
 
         <Section title="Reference governance policies">
           <div className="space-y-3">

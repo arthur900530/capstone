@@ -6,12 +6,14 @@ from typing import Any
 
 from openai import AsyncOpenAI
 
-from config import (
-    OPENAI_API_KEY,
-    TEST_CASE_DEFAULT_MAX_LATENCY_MS,
-    TEST_CASE_MIN_LATENCY_MS,
-    VERIFIER_MODEL,
+import config
+
+OPENAI_API_KEY = getattr(config, "OPENAI_API_KEY", None) or getattr(config, "API_KEY", "")
+TEST_CASE_DEFAULT_MAX_LATENCY_MS = int(
+    getattr(config, "TEST_CASE_DEFAULT_MAX_LATENCY_MS", 240000)
 )
+TEST_CASE_MIN_LATENCY_MS = int(getattr(config, "TEST_CASE_MIN_LATENCY_MS", 120000))
+VERIFIER_MODEL = getattr(config, "VERIFIER_MODEL", "openai/gpt-4o-mini")
 
 # Module logger — wired into the same uvicorn/FastAPI handler tree so anything
 # we emit here shows up in `server.log` alongside request lines. Testers can

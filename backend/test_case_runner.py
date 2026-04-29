@@ -6,9 +6,13 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from config import TEST_CASE_DEFAULT_MAX_LATENCY_MS
+import config
 from test_case_verifier import verify_test_case_run
 from agent_event_utils import compact_event as _compact_event, serialize_trajectory
+
+TEST_CASE_DEFAULT_MAX_LATENCY_MS = int(
+    getattr(config, "TEST_CASE_DEFAULT_MAX_LATENCY_MS", 240000)
+)
 
 try:
     from reflexion_agent.agent import runtime as _agent_runtime

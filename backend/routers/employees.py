@@ -18,12 +18,17 @@ from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel, Field
 import yaml
-from config import SKILL_SELECTION_MODEL
-from config import TEST_CASE_DEFAULT_MAX_LATENCY_MS, TEST_CASE_MIN_LATENCY_MS
+import config
 from test_case_generator import generate_test_cases
 from test_case_runner import run_test_case
 
 logger = logging.getLogger(__name__)
+
+SKILL_SELECTION_MODEL = getattr(config, "SKILL_SELECTION_MODEL", "openai/gpt-4o")
+TEST_CASE_DEFAULT_MAX_LATENCY_MS = int(
+    getattr(config, "TEST_CASE_DEFAULT_MAX_LATENCY_MS", 240000)
+)
+TEST_CASE_MIN_LATENCY_MS = int(getattr(config, "TEST_CASE_MIN_LATENCY_MS", 120000))
 
 # ── Project file storage ─────────────────────────────────────────────────────
 # Files users attach to an employee (via the Project Files tab) live on the

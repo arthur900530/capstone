@@ -352,11 +352,16 @@ PIDS+=($!)
 
 info "Waiting for API..."
 for i in $(seq 1 15); do
-  if curl -s -o /dev/null http://localhost:8000/api/skills 2>/dev/null; then
+  if curl -fsS -o /dev/null http://localhost:8000/api/skills 2>/dev/null; then
     break
   fi
   sleep 1
 done
+if ! curl -fsS -o /dev/null http://localhost:8000/api/skills 2>/dev/null; then
+  warn "API did not become healthy. Last backend log lines:"
+  tail -n 60 "$BACKEND_LOG" | sed "s/^/       /"
+  die "Backend startup failed"
+fi
 step "API server running"
 
 # Start frontend with env vars

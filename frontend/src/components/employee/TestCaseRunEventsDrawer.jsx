@@ -21,26 +21,31 @@ export default function TestCaseRunEventsDrawer({
   runId,
   onClose,
 }) {
-  const [loading, setLoading] = useState(false);
-  const [data, setData] = useState(null);
-  const [error, setError] = useState(null);
+  const [requestState, setRequestState] = useState({
+    key: null,
+    data: null,
+    error: null,
+  });
 
   useEffect(() => {
     if (!runId) return undefined;
     let cancelled = false;
-    setLoading(true);
-    setError(null);
-    setData(null);
+    const key = `${employeeId}:${caseId}:${runId}`;
 
     fetchTestCaseRunEvents(employeeId, caseId, runId)
       .then((result) => {
-        if (!cancelled) setData(result);
+        if (!cancelled) {
+          setRequestState({ key, data: result, error: null });
+        }
       })
       .catch((err) => {
-        if (!cancelled) setError(err.message || "Failed to load run events");
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
+        if (!cancelled) {
+          setRequestState({
+            key,
+            data: null,
+            error: err.message || "Failed to load run events",
+          });
+        }
       });
 
     return () => {
@@ -50,6 +55,11 @@ export default function TestCaseRunEventsDrawer({
 
   if (!runId) return null;
 
+  const requestKey = `${employeeId}:${caseId}:${runId}`;
+  const isCurrentRequest = requestState.key === requestKey;
+  const loading = !isCurrentRequest;
+  const data = isCurrentRequest ? requestState.data : null;
+  const error = isCurrentRequest ? requestState.error : null;
   const available = data?.available !== false;
   const transcript = data?.transcript || "";
   const sections = available && transcript ? parseTranscript(transcript) : [];
@@ -265,8 +275,8 @@ function parseTranscript(text) {
       let args = "";
       let reasoning = "";
       let j = i + 1;
-      while (j < lines.length && /^  /.test(lines[j])) {
-        const stripped = lines[j].replace(/^  /, "");
+      while (j < lines.length && /^ {2}/.test(lines[j])) {
+        const stripped = lines[j].replace(/^ {2}/, "");
         if (stripped.startsWith("[Agent reasoning] ")) {
           reasoning = stripped.replace("[Agent reasoning] ", "");
         } else if (stripped.startsWith("Arguments: ")) {
@@ -302,8 +312,8 @@ function parseTranscript(text) {
       const toolName = obsMatch[1] || null;
       let content = obsMatch[2] || "";
       let j = i + 1;
-      while (j < lines.length && /^  /.test(lines[j])) {
-        content += "\n" + lines[j].replace(/^  /, "");
+      while (j < lines.length && /^ {2}/.test(lines[j])) {
+        content += "\n" + lines[j].replace(/^ {2}/, "");
         j++;
       }
       sections.push({

@@ -5,7 +5,10 @@ from typing import Any
 
 from openai import AsyncOpenAI
 
-from config import OPENAI_API_KEY, VERIFIER_MODEL
+import config
+
+OPENAI_API_KEY = getattr(config, "OPENAI_API_KEY", None) or getattr(config, "API_KEY", "")
+VERIFIER_MODEL = getattr(config, "VERIFIER_MODEL", "openai/gpt-4o-mini")
 
 _VERIFIER_PROMPT = (
     "You are an external evaluator grading one completed agent run.\n"

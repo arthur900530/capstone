@@ -12,7 +12,7 @@ const PLUGINS = [
     bestFor: "Equity research, market intelligence, earnings analysis",
     icon: "TrendingUp",
     skillIds: ["web-search", "edgar-search", "parse-html", "retrieve-info"],
-    defaultModel: "anthropic/claude-sonnet-4-5-20250929",
+    defaultModel: "openai/gpt-5.4",
   },
   {
     id: "data-engineer",
@@ -21,7 +21,7 @@ const PLUGINS = [
     bestFor: "CSV cleanup, schema validation, ETL pipelines",
     icon: "Database",
     skillIds: ["parse-html", "retrieve-info"],
-    defaultModel: "openai/gpt-4o",
+    defaultModel: "openai/gpt-5.4",
   },
   {
     id: "compliance-reviewer",
@@ -30,7 +30,7 @@ const PLUGINS = [
     bestFor: "Policy review, regulatory gap analysis, audit prep",
     icon: "ShieldCheck",
     skillIds: ["retrieve-info", "web-search"],
-    defaultModel: "anthropic/claude-sonnet-4-5-20250929",
+    defaultModel: "openai/gpt-5.4",
   },
   {
     id: "report-writer",
@@ -39,7 +39,7 @@ const PLUGINS = [
     bestFor: "Earnings summaries, investment memos, status reports",
     icon: "FileText",
     skillIds: ["retrieve-info"],
-    defaultModel: "openai/gpt-4o",
+    defaultModel: "openai/gpt-5.4",
   },
   {
     id: "general-assistant",
@@ -48,7 +48,7 @@ const PLUGINS = [
     bestFor: "Quick lookups, brainstorming, drafting emails",
     icon: "Sparkles",
     skillIds: [],
-    defaultModel: "openai/gpt-4o",
+    defaultModel: "openai/gpt-5.4",
   },
 ];
 

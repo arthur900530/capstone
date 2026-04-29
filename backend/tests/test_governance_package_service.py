@@ -10,7 +10,7 @@ def _employee():
         "position": "Credit Risk",
         "description": "Reviews credit exposure and prepares risk summaries.",
         "task": "You are a credit risk analyst.",
-        "model": "openai/gpt-4o-mini",
+        "model": "anthropic/claude-sonnet-4-5-20250929",
         "pluginIds": ["web-search"],
         "skillIds": ["edgar-search"],
         "useReflexion": True,
@@ -35,10 +35,14 @@ def _metrics():
             "unannotated_tasks": 1,
             "avg_tool_calls": 2.5,
             "avg_trials": 1.5,
+            "avg_reflections": 0.5,
+            "avg_latency_ms": 3100,
+            "p50_latency_ms": 2800,
+            "p95_latency_ms": 6400,
             "reflexion_rate": 0.25,
             "tool_mix": [["web_search", 3], ["file_editor", 1]],
         },
-        "recent": [{"session_id": "s1"}],
+        "recent": [{"session_id": "s1", "prompt_preview": "write a KYC report on NVDA"}],
     }
 
 
@@ -62,8 +66,11 @@ def test_build_governance_context_includes_financial_policy_references():
     assert any("SR 11-7" in name for name in names)
     assert any("OCC Bulletin 2011-12" in name for name in names)
     assert any("NIST AI Risk Management Framework" in name for name in names)
-    assert "committee_review_focus" in context
     assert context["evaluation"]["evaluation_lab_runs"]
+    assert context["evaluation"]["hallucination_rate"] == 0.122
+    assert context["evaluation"]["output_stability_rate"] == 0.54
+    assert context["employee"]["model"] == svc.config.AGENT_MODEL
+    assert context["employee"]["stored_model"] == "anthropic/claude-sonnet-4-5-20250929"
     assert context["risk_classifications"]
     assert "risk" not in context
 
@@ -74,13 +81,53 @@ def test_generate_governance_package_uses_template_without_api_key(monkeypatch):
     package = asyncio.run(svc.generate_governance_package(_employee(), _metrics(), _evaluation_runs()))
 
     assert package["llm"]["used"] is False
-    assert package["sections"]["committee_review_focus"]
-    assert package["sections"]["agent_activity"]
-    assert package["sections"]["evaluation_outputs"]
-    assert package["sections"]["risk_classifications"]
-    assert all(isinstance(package["sections"][key], list) for key in svc.SECTION_KEYS)
+    assert package["sections"]["document_control_governance"]
+    assert package["sections"]["model_data_overview"]
+    assert any("architecture/workflow" in item.lower() for item in package["sections"]["model_data_overview"])
+    assert any("KYC" in item for item in package["sections"]["purpose_scope_intended_use"])
+    assert any("KYC" in item for item in package["sections"]["document_control_governance"])
+    assert package["sections"]["risk_assessment_controls"]
+    assert package["sections"]["performance_testing_validation"]
+    assert isinstance(package["sections"]["evaluation_outputs"], dict)
+    assert package["sections"]["evaluation_outputs"]["columns"] == ["Report card metric", "Value"]
+    assert all(
+        isinstance(package["sections"][key], list)
+        for key in svc.NARRATIVE_SECTION_KEYS
+    )
+    assert "committee_review_focus" not in package["sections"]
     assert "risk_summary" not in package["sections"]
     assert "legal, regulatory" in package["disclaimer"]
+
+
+def test_sparse_llm_sections_are_enriched_with_inferred_context():
+    context = svc.build_governance_context(_employee(), _metrics(), _evaluation_runs())
+    package = {
+        "context": context,
+        "sections": {
+            "document_control_governance": [
+                "Model Name/ID: anthropic/claude-sonnet-4-5-20250929",
+                "Owners: Not specified",
+                "Intended Audience: Not specified",
+            ],
+            "purpose_scope_intended_use": [
+                "Business Objective: Not specified",
+                "In-scope Use: test",
+                "Out-of-scope Use: Not specified",
+            ],
+            "model_data_overview": ["Agent Architecture/Workflow: Not specified"],
+        },
+    }
+
+    normalized = svc.normalize_governance_package(package)
+    text = " ".join(
+        normalized["sections"]["document_control_governance"]
+        + normalized["sections"]["purpose_scope_intended_use"]
+        + normalized["sections"]["model_data_overview"]
+    )
+
+    assert "KYC" in text
+    assert "customer due diligence" in text
+    assert "Agent architecture/workflow" in text
 
 
 def test_render_governance_html_links_policy_references():
@@ -111,11 +158,9 @@ def test_render_governance_html_formats_dict_sections():
         },
         "disclaimer": "Generated for review.",
     }
-    package["sections"]["evaluation_outputs"] = svc.evaluation_summary_items(context)
-
     html = svc.render_governance_html(package)
 
-    assert "<ul>" in html
+    assert "<table>" in html
     assert "web_search: 3" in html
     assert "{&#x27;Source&#x27;" not in html
 
@@ -145,7 +190,7 @@ def test_normalize_governance_package_migrates_old_cached_shape():
     normalized = svc.normalize_governance_package(package)
 
     assert "evaluation_summary" not in normalized["sections"]
-    assert isinstance(normalized["sections"]["evaluation_outputs"], list)
-    assert "committee_review_focus" in normalized["sections"]
+    assert isinstance(normalized["sections"]["evaluation_outputs"], dict)
+    assert "committee_review_focus" not in normalized["sections"]
     assert "risk_summary" not in normalized["sections"]
     assert "controls_summary" not in normalized["sections"]
