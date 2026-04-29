@@ -181,7 +181,20 @@ async def lifespan(application):
             _SHARED_WS["host_dir"] = None
             _SHARED_WS["lock"] = None
 
+    # Spin up the Slack bot once the rest of the app is ready. Returns None
+    # (and logs a one-line "disabled" notice) when SLACK_BOT_TOKEN /
+    # SLACK_APP_TOKEN are not set, so dev environments are unaffected.
+    from slack_bot import start_in_background as _start_slack
+    slack_task = await _start_slack()
+
     yield
+
+    if slack_task is not None:
+        slack_task.cancel()
+        try:
+            await slack_task
+        except (asyncio.CancelledError, Exception):
+            pass
 
     if _SHARED_WS.get("workspace") is not None:
         try:
