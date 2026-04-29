@@ -1266,36 +1266,31 @@ def _sync_current_owner_back_sync() -> None:
         )
 
 
-def _try_get_skill_from_db(skill_id: str) -> dict | None:
-    """Try to fetch skill materialization data from DB. Returns None if DB unavailable."""
+async def _try_get_skill_from_db(skill_id: str) -> dict | None:
+    """Fetch skill materialization data from the DB on the running event loop.
+
+    Returns ``None`` if the DB layer is disabled or the query raises. Stays
+    on the caller's loop so the SQLAlchemy/asyncpg pool's connections (which
+    are loop-pinned) can be used safely.
+    """
     from routers.skills import _db_available
     if not _db_available:
         return None
     try:
-        import asyncio
         from db import async_session
         from services.skill_service import get_skill_for_materialization
 
-        async def _fetch():
-            async with async_session() as session:
-                return await get_skill_for_materialization(session, skill_id)
-
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            # We're in an async context — use to_thread with a new loop
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor() as pool:
-                return pool.submit(lambda: asyncio.run(_fetch())).result(timeout=5)
-        return asyncio.run(_fetch())
+        async with async_session() as session:
+            return await get_skill_for_materialization(session, skill_id)
     except Exception:
         return None
 
 
-def _validate_skills_for_runtime(skill_ids: list[str]) -> None:
+async def _validate_skills_for_runtime(skill_ids: list[str]) -> None:
     """Ensure each skill can be materialized under workspace/skills/."""
     for sid in skill_ids:
         # Check DB first, then in-memory
-        db_skill = _try_get_skill_from_db(sid)
+        db_skill = await _try_get_skill_from_db(sid)
         if db_skill:
             continue
         if sid not in _SKILLS:
@@ -1318,10 +1313,10 @@ def _validate_skills_for_runtime(skill_ids: list[str]) -> None:
             )
 
 
-def _materialize_skill_package(skills_root: str, skill_id: str) -> None:
+async def _materialize_skill_package(skills_root: str, skill_id: str) -> None:
     """Write one skill package (SKILL.md + auxiliary files) under skills_root/skill_id/."""
     # Try DB first for marketplace skills
-    db_data = _try_get_skill_from_db(skill_id)
+    db_data = await _try_get_skill_from_db(skill_id)
     if db_data:
         pkg = os.path.join(skills_root, skill_id)
         os.makedirs(pkg, exist_ok=True)
@@ -1370,7 +1365,7 @@ def _materialize_skill_package(skills_root: str, skill_id: str) -> None:
             f.write(text)
 
 
-def _resolve_workspace_for_runtime(
+async def _resolve_workspace_for_runtime(
     session_id: str,
     mount_dir: str | None,
     skill_ids: list[str] | None,
@@ -1417,7 +1412,7 @@ def _resolve_workspace_for_runtime(
             skill_ids,
         )
         for sid in skill_ids:
-            _materialize_skill_package(skills_dir, sid)
+            await _materialize_skill_package(skills_dir, sid)
     except Exception:
         if staging:
             _upload_dirs[session_id] = staging
@@ -1616,7 +1611,7 @@ async def _stream_real_task(
     queue: asyncio.Queue = asyncio.Queue()
     loop = asyncio.get_running_loop()
 
-    effective_mount, cleanup_dirs = _resolve_workspace_for_runtime(
+    effective_mount, cleanup_dirs = await _resolve_workspace_for_runtime(
         session_id, mount_dir, skill_ids
     )
     if skill_ids:
@@ -2083,7 +2078,7 @@ async def chat(req: ChatRequest):
                 skill_ids,
             )
     if skill_ids:
-        _validate_skills_for_runtime(skill_ids)
+        await _validate_skills_for_runtime(skill_ids)
 
     # Remember the session→employee mapping in-process so subsequent turns on
     # the same uvicorn keep resolving the persona even if the frontend drops
