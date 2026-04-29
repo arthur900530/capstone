@@ -268,12 +268,23 @@ async def _handle_event(event: dict, client, is_dm: bool = False) -> None:
     name, task = _parse_agent_name(cleaned)
     key = _thread_key(channel, thread_ts, is_dm)
 
-    if not name:
+    employee = await _find_employee_by_name(name) if name else None
+
+    # Look up the employee before judging "no task" — that way a single-word
+    # greeting like "@bot hello" lands in the friendly "I don't know hello"
+    # path rather than asking what `hello` should do.
+    if not name or employee is None:
+        prefix = (
+            f"I don't know an employee named `{name}`. "
+            if name and employee is None
+            else ""
+        )
         await client.chat_postMessage(
             channel=channel,
             thread_ts=thread_ts,
             text=(
-                "Tag an employee by name, e.g. `@BNY Agent Walter, summarize "
+                prefix
+                + "Tag an employee by name, e.g. `@BNY Agent Walter, summarize "
                 "the 10-K`. For multi-word names use a comma "
                 "(`@BNY Agent Big Boss, do X`) or underscores "
                 "(`@BNY Agent Big_Boss do X`). Case-insensitive match "
@@ -281,27 +292,15 @@ async def _handle_event(event: dict, client, is_dm: bool = False) -> None:
             ),
         )
         return
+
+    display_name = employee.get("name") or name
     if not task:
         await client.chat_postMessage(
             channel=channel,
             thread_ts=thread_ts,
-            text=f"What should `{name}` do? Try `@BNY Agent {name}, <task>`.",
+            text=f"What should `{display_name}` do? Try `@BNY Agent {display_name}, <task>`.",
         )
         return
-
-    employee = await _find_employee_by_name(name)
-    if employee is None:
-        await client.chat_postMessage(
-            channel=channel,
-            thread_ts=thread_ts,
-            text=(
-                f"I don't know an employee named `{name}`. "
-                "Create one in the BNY Agent UI first."
-            ),
-        )
-        return
-
-    display_name = employee.get("name") or name
     placeholder = await client.chat_postMessage(
         channel=channel,
         thread_ts=thread_ts,
@@ -378,7 +377,19 @@ def _register_handlers(app: AsyncApp) -> None:
         # Only handle DMs here; channel messages would loop with app_mention.
         if event.get("channel_type") != "im":
             return
-        if event.get("bot_id") or event.get("subtype") == "bot_message":
+        # Drop edits, deletes, joins, and other non-user-typed system events.
+        subtype = event.get("subtype")
+        if subtype and subtype not in {"file_share"}:
+            return
+        # Identify the message as coming from the bot itself across every
+        # delivery shape Slack uses. ``bot_id`` and ``subtype: bot_message``
+        # cover the documented cases; the ``user == bot_uid`` check is the
+        # backstop that catches chat.postMessage replies Slack delivers
+        # without a bot_id (the cause of the DM self-reply loop).
+        if event.get("bot_id") or event.get("app_id"):
+            return
+        bot_uid = await _ensure_bot_user_id(client)
+        if event.get("user") == bot_uid:
             return
         await _handle_event(event, client, is_dm=True)
 
