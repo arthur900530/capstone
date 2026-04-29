@@ -66,22 +66,44 @@ def _strip_bot_mention(text: str, bot_user_id: str) -> str:
 def _parse_agent_name(text: str) -> tuple[Optional[str], str]:
     """Return ``(agent_name, remaining_task)``.
 
-    Pulls the first word as the candidate name. Accepts an optional leading
-    ``@`` (literal text, not a real Slack mention) and a trailing comma or
-    colon. Returns ``(None, "")`` for empty input, ``(name, "")`` for a single
-    word with no task body, ``(None, text)`` when the first token doesn't
-    look like a name.
+    Two parsing modes, tried in order:
+
+    1. **Comma/colon delimited** — if the message contains a ``,`` or ``:``,
+       everything before the first one is the candidate name and may contain
+       spaces. ``"Big Boss, do X"`` → ``("Big Boss", "do X")``.
+    2. **First-word** — fallback when no delimiter is present. The first
+       whitespace-separated token is the name; underscores and dashes inside
+       it are allowed so users who skip the comma can still hit a multi-word
+       employee via ``"Big_Boss do X"`` (the lookup normalizes ``_``/``-`` to
+       spaces).
+
+    Returns ``(None, "")`` for empty input, ``(name, "")`` for a single token
+    with no task body, ``(None, text)`` when nothing looks like a name.
     """
     stripped = (text or "").strip()
     if not stripped:
         return None, ""
-    match = re.match(
-        r"^@?([A-Za-z][A-Za-z0-9 _-]*?)[,:]?\s+(.*)$",
+
+    # Mode 1: explicit `,` or `:` separates name from task — spaces allowed
+    # in the name, so multi-word names work.
+    delim_match = re.match(
+        r"^@?([A-Za-z][A-Za-z0-9 _-]*?)\s*[,:]\s*(.*)$",
         stripped,
         re.DOTALL,
     )
-    if match:
-        return match.group(1).strip(), match.group(2).strip()
+    if delim_match:
+        return delim_match.group(1).strip(), delim_match.group(2).strip()
+
+    # Mode 2: first token (no spaces inside) is the name. Underscores and
+    # dashes are kept so the lookup can map them back to spaces.
+    space_match = re.match(
+        r"^@?([A-Za-z][A-Za-z0-9_-]*)\s+(.*)$",
+        stripped,
+        re.DOTALL,
+    )
+    if space_match:
+        return space_match.group(1).strip(), space_match.group(2).strip()
+
     if " " not in stripped and "\n" not in stripped:
         return stripped.lstrip("@").rstrip(",:").strip() or None, ""
     return None, stripped
@@ -92,15 +114,27 @@ def _parse_agent_name(text: str) -> tuple[Optional[str], str]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+def _normalize_name(name: str) -> str:
+    """Lower-case, trim, and treat ``_`` / ``-`` as spaces for matching.
+
+    This lets a Slack user write ``Big_Boss`` or ``big-boss`` and still hit an
+    employee literally named ``Big Boss``. Multiple consecutive separators
+    collapse to one space so ``Big__Boss`` also matches.
+    """
+    swapped = re.sub(r"[_\-\s]+", " ", (name or "").strip())
+    return swapped.lower()
+
+
 async def _find_employee_by_name(name: str) -> Optional[dict]:
-    """Look up an Employee row by name (case-insensitive exact match)."""
+    """Look up an Employee row by name, case-insensitive and tolerant of
+    ``_``/``-`` in place of spaces (see ``_normalize_name``)."""
     async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.get(f"{_BACKEND_BASE}/api/employees")
         resp.raise_for_status()
         rows = resp.json()
-    target = name.strip().lower()
+    target = _normalize_name(name)
     for row in rows:
-        if (row.get("name") or "").strip().lower() == target:
+        if _normalize_name(row.get("name") or "") == target:
             return row
     return None
 
@@ -240,8 +274,10 @@ async def _handle_event(event: dict, client, is_dm: bool = False) -> None:
             thread_ts=thread_ts,
             text=(
                 "Tag an employee by name, e.g. `@BNY Agent Walter, summarize "
-                "the 10-K`. I match the name (case-insensitive) against the "
-                "employees you've created in the BNY Agent UI."
+                "the 10-K`. For multi-word names use a comma "
+                "(`@BNY Agent Big Boss, do X`) or underscores "
+                "(`@BNY Agent Big_Boss do X`). Case-insensitive match "
+                "against the employees you've created in the BNY Agent UI."
             ),
         )
         return
