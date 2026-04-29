@@ -124,11 +124,10 @@ _SHARED_WS: dict[str, Any] = {
 async def lifespan(application):
     """Start DB engine, seed skills, and warm the shared DockerWorkspace."""
     from routers.skills import set_db_available
-    from routers.employees import set_db_available as set_emp_db, seed_dev_employee
+    from routers.employees import set_db_available as set_emp_db
     if not DATABASE_URL:
         set_db_available(False)
         set_emp_db(False)
-        seed_dev_employee()
         logger.info("DATABASE_URL not configured — using in-memory stores.")
     else:
         try:
@@ -143,7 +142,6 @@ async def lifespan(application):
         except Exception as exc:
             set_db_available(False)
             set_emp_db(False)
-            seed_dev_employee()
             logger.warning("DB init skipped — falling back to in-memory skills: %s", exc)
 
     # Warm the shared DockerWorkspace once, before accepting requests.
