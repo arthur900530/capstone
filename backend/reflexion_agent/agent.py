@@ -572,7 +572,15 @@ def runtime(
         Path(repo_dir, "workspace", "conversations").mkdir(parents=True, exist_ok=True)
     if workspace is not None and hasattr(workspace, "execute_command"):
         try:
-            workspace.execute_command("mkdir -p /workspace/conversations /workspace/bash_events")
+            # Run inside the container so the openhands user (UID 10001)
+            # can write into the bind-mounted host dir even when the host's
+            # WSL2 perms expose it as 0o755 owned by UID 1000. ``sudo`` is
+            # available because openhands is in the sudo group; chmod
+            # without sudo would fail because the dirs are host-owned.
+            workspace.execute_command(
+                "sudo mkdir -p /workspace/conversations /workspace/bash_events && "
+                "sudo chmod 0777 /workspace /workspace/conversations /workspace/bash_events"
+            )
         except Exception:
             logger.debug("Failed to pre-create OpenHands server directories", exc_info=True)
 
