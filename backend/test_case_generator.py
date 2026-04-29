@@ -255,7 +255,7 @@ async def generate_test_cases(
             model=target_model,
             messages=messages,
             temperature=0.1,
-            max_tokens=2200,
+            max_completion_tokens=2200,
             response_format={"type": "json_object"},
         )
     except Exception as json_mode_err:
@@ -270,7 +270,7 @@ async def generate_test_cases(
             model=target_model,
             messages=messages,
             temperature=0.1,
-            max_tokens=2200,
+            max_completion_tokens=2200,
         )
 
     content = ((resp.choices or [{}])[0].message.content or "").strip()

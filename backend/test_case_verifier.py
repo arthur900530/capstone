@@ -72,7 +72,7 @@ async def verify_test_case_run(
             model=target_model,
             messages=messages,
             temperature=0,
-            max_tokens=700,
+            max_completion_tokens=700,
             response_format={"type": "json_object"},
         )
     except Exception:
@@ -80,7 +80,7 @@ async def verify_test_case_run(
             model=target_model,
             messages=messages,
             temperature=0,
-            max_tokens=700,
+            max_completion_tokens=700,
         )
     content = ((resp.choices or [{}])[0].message.content or "").strip()
     parsed = json.loads(content) if content else {}
