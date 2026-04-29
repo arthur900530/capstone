@@ -321,8 +321,15 @@ def build_workspace(mount_host_dir: str | None = None) -> DockerWorkspace:
     """
     if mount_host_dir:
         abs_mount = str(Path(mount_host_dir).resolve())
-        Path(abs_mount, "conversations").mkdir(parents=True, exist_ok=True)
-        Path(abs_mount, "bash_events").mkdir(parents=True, exist_ok=True)
+        # Pre-create the dirs the container writes to. Open the perms so the
+        # container's non-root user can write in WSL2/Docker-Desktop setups
+        # where the bind-mount maps to the host UID (defaulting to 0o755) and
+        # the in-container UID doesn't match. /tmp is already user-private so
+        # 0o777 here doesn't widen any real attack surface.
+        for sub in ("", "conversations", "bash_events"):
+            p = Path(abs_mount, sub) if sub else Path(abs_mount)
+            p.mkdir(parents=True, exist_ok=True)
+            os.chmod(p, 0o777)
         volumes = [f"{abs_mount}:/workspace:rw"]
     else:
         volumes = []
