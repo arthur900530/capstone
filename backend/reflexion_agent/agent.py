@@ -329,7 +329,11 @@ def build_workspace(mount_host_dir: str | None = None) -> DockerWorkspace:
     os.environ.setdefault("OH_CONVERSATIONS_PATH", "/workspace/conversations")
     os.environ.setdefault("OH_BASH_EVENTS_DIR", "/workspace/bash_events")
     return BrowserDockerWorkspace(
-        server_image="ghcr.io/openhands/agent-server:latest-python",
+        # Pin to the version that matches our installed openhands-sdk. The
+        # ``latest-python`` floating tag has drifted past what the SDK's
+        # health-check polling expects, causing __enter__ to time out and
+        # SIGTERM the container ~21s after a clean start.
+        server_image="ghcr.io/openhands/agent-server:1.16.1-python",
         host_port=_find_port(),
         platform=_detect_platform(),
         volumes=volumes,
