@@ -41,6 +41,13 @@ _THREAD_SESSIONS: dict[str, str] = {}
 # events faster than the debounce interval.
 _THREAD_LOCKS: dict[str, asyncio.Lock] = {}
 
+# Per-DM sticky employee. Once a user invokes someone in a DM, follow-up
+# messages without an explicit name route to the same employee — so the DM
+# feels like talking to one digital colleague. Channels intentionally don't
+# get this fallback because multiple employees coexist there and routing has
+# to be unambiguous.
+_DM_LAST_EMPLOYEE: dict[str, dict] = {}  # dm channel id -> employee row
+
 # Cache the bot's own Slack user id so we can strip <@U…> prefixes without
 # hitting auth.test on every event.
 _bot_user_id: Optional[str] = None
@@ -270,13 +277,22 @@ async def _handle_event(event: dict, client, is_dm: bool = False) -> None:
 
     employee = await _find_employee_by_name(name) if name else None
 
+    # In a DM, fall back to the last employee invoked here when the message
+    # doesn't resolve to a known one. The full user text becomes the task,
+    # so "what about Q3?" routes to whoever the user was just talking to.
+    if is_dm and employee is None:
+        sticky = _DM_LAST_EMPLOYEE.get(channel)
+        if sticky:
+            employee = sticky
+            task = cleaned.strip() or task
+
     # Look up the employee before judging "no task" — that way a single-word
     # greeting like "@bot hello" lands in the friendly "I don't know hello"
     # path rather than asking what `hello` should do.
-    if not name or employee is None:
+    if employee is None:
         prefix = (
             f"I don't know an employee named `{name}`. "
-            if name and employee is None
+            if name
             else ""
         )
         await client.chat_postMessage(
@@ -294,6 +310,11 @@ async def _handle_event(event: dict, client, is_dm: bool = False) -> None:
         return
 
     display_name = employee.get("name") or name
+    # Pin the active employee for this DM so the next message without a name
+    # defaults to them. Set this before the no-task branch — typing just a
+    # name to switch focus is a valid intent worth remembering.
+    if is_dm:
+        _DM_LAST_EMPLOYEE[channel] = employee
     if not task:
         await client.chat_postMessage(
             channel=channel,
