@@ -11,6 +11,7 @@ import {
   Sparkles,
   Trash2,
   Loader2,
+  ShieldCheck,
 } from "lucide-react";
 import ConfirmDialog from "../components/skills/ConfirmDialog";
 import * as Icons from "lucide-react";
@@ -26,6 +27,7 @@ import EmployeeReportCard from "../components/employee/EmployeeReportCard";
 import EmployeeSkillsTab from "../components/employee/EmployeeSkillsTab";
 import EmployeeProjectFilesTab from "../components/employee/EmployeeProjectFilesTab";
 import EmployeeSystemPromptTab from "../components/employee/EmployeeSystemPromptTab";
+import AutoTestsTab from "../components/employee/AutoTestsTab";
 import PLUGINS from "../data/plugins";
 import { getEmployeeById, deleteEmployee } from "../services/employeeStore";
 import { useApp } from "../context/appContextCore";
@@ -35,6 +37,7 @@ const TABS = [
   { id: "skills", label: "Skills", icon: Wrench },
   { id: "project_files", label: "Project Files", icon: Files },
   { id: "system_prompt", label: "System Prompt", icon: Sparkles },
+  { id: "auto_tests", label: "Auto Tests", icon: ShieldCheck },
   // { id: "console", label: "Console", icon: Terminal },
   { id: "report", label: "Report Card", icon: BarChart3 },
 ];
@@ -52,6 +55,9 @@ export default function EmployeePage() {
     handleNewChat,
   } = useApp();
   const [activeTab, setActiveTab] = useState("chat");
+  // Track whether the Auto Tests tab has been visited so we mount it lazily
+  // but then keep it mounted (with CSS hiding) so in-flight runs survive tab switches.
+  const [autoTestsEverActive, setAutoTestsEverActive] = useState(false);
   const [employee, setEmployee] = useState(null);
   const [loading, setLoading] = useState(true);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
@@ -181,7 +187,10 @@ export default function EmployeePage() {
           {TABS.map(({ id, label, icon }) => (
             <button
               key={id}
-              onClick={() => setActiveTab(id)}
+              onClick={() => {
+                setActiveTab(id);
+                if (id === "auto_tests") setAutoTestsEverActive(true);
+              }}
               className={`flex items-center gap-2 border-b-2 px-4 py-3 text-sm font-medium transition-colors ${
                 activeTab === id
                   ? "border-accent-teal text-accent-teal"
@@ -240,6 +249,18 @@ export default function EmployeePage() {
             refreshEmployees?.();
           }}
         />
+      )}
+      {/* AutoTestsTab is mounted lazily on first visit, then stays mounted so
+          in-flight test runs survive tab switches. CSS hides it rather than
+          unmounting, which would kill in-progress fetches. */}
+      {autoTestsEverActive && (
+        <div
+          className={`flex flex-1 flex-col overflow-hidden ${
+            activeTab !== "auto_tests" ? "hidden" : ""
+          }`}
+        >
+          <AutoTestsTab key={id} employee={employee} />
+        </div>
       )}
       {activeTab === "console" && <EmployeeConsole key={id} employee={employee} />}
       {activeTab === "report" && <EmployeeReportCard key={id} employee={employee} />}

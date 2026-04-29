@@ -56,5 +56,8 @@ frontend/.env.*.local
 # User-uploaded project files (employee "Project Files" tab + chat uploads)
 backend/uploads/
 
+# Runtime conversation sessions (generated per chat, not source code)
+backend/conversations/
+
 # Internal docs (not tracked)
 docs/

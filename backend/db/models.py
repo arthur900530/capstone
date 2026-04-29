@@ -397,3 +397,69 @@ class TaskRun(Base):
     __table_args__ = (
         UniqueConstraint("session_id", "task_index", name="ix_task_runs_session"),
     )
+
+
+# ── Auto Test Cases ──────────────────────────────────────────────────────────
+
+
+class TestCase(Base):
+    __tablename__ = "test_cases"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    employee_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("employees.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    title: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    prompt: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    success_criteria: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    hard_failure_signals: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    expected_tool_families: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    max_latency_ms: Mapped[int] = mapped_column(Integer, nullable=False, default=20000)
+    generated_by_model: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="draft")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow
+    )
+
+    employee: Mapped[Employee] = relationship()
+    runs: Mapped[list["TestCaseRun"]] = relationship(
+        back_populates="test_case", cascade="all, delete-orphan"
+    )
+
+
+class TestCaseRun(Base):
+    __tablename__ = "test_case_runs"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    test_case_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("test_cases.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    duration_ms: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    verdict: Mapped[str] = mapped_column(String(20), nullable=False, default="error")
+    verdict_source: Mapped[str] = mapped_column(String(30), nullable=False, default="deterministic")
+    judge_rationale: Mapped[str | None] = mapped_column(Text, nullable=True)
+    judge_evidence_quote: Mapped[str | None] = mapped_column(Text, nullable=True)
+    judge_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    raw_output: Mapped[str | None] = mapped_column(Text, nullable=True)
+    failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    agent_session_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    deterministic_checks: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    test_case: Mapped[TestCase] = relationship(back_populates="runs")

@@ -484,6 +484,95 @@ export function projectFileRawUrl(employeeId, fileId) {
   return `${API_BASE}/employees/${encodeURIComponent(employeeId)}/project_files/${encodeURIComponent(fileId)}/raw`;
 }
 
+async function _extractDetail(res, fallback) {
+  try {
+    const body = await res.json();
+    if (typeof body?.detail === "string") return body.detail;
+    if (typeof body?.detail === "object") return JSON.stringify(body.detail);
+  } catch {
+    // ignore parse errors
+  }
+  return `${fallback} (HTTP ${res.status})`;
+}
+
+export async function generateTestCases(employeeId, count = 5) {
+  const query = `?count=${encodeURIComponent(count)}`;
+  const res = await fetch(
+    `${API_BASE}/employees/${encodeURIComponent(employeeId)}/test_cases/generate${query}`,
+    { method: "POST" },
+  );
+  if (!res.ok) throw new Error(await _extractDetail(res, "Failed to generate test cases"));
+  return res.json();
+}
+
+export async function listTestCases(employeeId) {
+  const res = await fetch(
+    `${API_BASE}/employees/${encodeURIComponent(employeeId)}/test_cases`,
+  );
+  if (!res.ok) throw new Error(await _extractDetail(res, "Failed to load test cases"));
+  return res.json();
+}
+
+export async function updateTestCase(employeeId, caseId, updates) {
+  const res = await fetch(
+    `${API_BASE}/employees/${encodeURIComponent(employeeId)}/test_cases/${encodeURIComponent(caseId)}`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(updates),
+    },
+  );
+  if (!res.ok) throw new Error(await _extractDetail(res, "Failed to update test case"));
+  return res.json();
+}
+
+export async function deleteTestCase(employeeId, caseId) {
+  const res = await fetch(
+    `${API_BASE}/employees/${encodeURIComponent(employeeId)}/test_cases/${encodeURIComponent(caseId)}`,
+    { method: "DELETE" },
+  );
+  if (!res.ok) throw new Error(await _extractDetail(res, "Failed to delete test case"));
+  return res.json();
+}
+
+export async function runTestCase(employeeId, caseId) {
+  const res = await fetch(
+    `${API_BASE}/employees/${encodeURIComponent(employeeId)}/test_cases/${encodeURIComponent(caseId)}/run`,
+    { method: "POST" },
+  );
+  if (!res.ok) throw new Error(await _extractDetail(res, "Failed to run test case"));
+  return res.json();
+}
+
+export async function runAllTestCases(employeeId) {
+  const res = await fetch(
+    `${API_BASE}/employees/${encodeURIComponent(employeeId)}/test_cases/run_all`,
+    { method: "POST" },
+  );
+  if (!res.ok) throw new Error(await _extractDetail(res, "Failed to run all test cases"));
+  return res.json();
+}
+
+export async function listTestCaseRuns(employeeId, caseId) {
+  const res = await fetch(
+    `${API_BASE}/employees/${encodeURIComponent(employeeId)}/test_cases/${encodeURIComponent(caseId)}/runs`,
+  );
+  if (!res.ok) throw new Error(await _extractDetail(res, "Failed to load test case runs"));
+  return res.json();
+}
+
+// Memory-only: backend keeps the captured agent event stream for each
+// test-case run in a process-local dict. After a server restart the events
+// for older runs are gone — the response will have `available: false` and
+// an empty list, which the drawer renders as a friendly empty state.
+export async function fetchTestCaseRunEvents(employeeId, caseId, runId) {
+  const res = await fetch(
+    `${API_BASE}/employees/${encodeURIComponent(employeeId)}/test_cases/${encodeURIComponent(caseId)}/runs/${encodeURIComponent(runId)}/events`,
+  );
+  if (!res.ok) throw new Error(await _extractDetail(res, "Failed to load run events"));
+  return res.json();
+}
+
 // ---------------------------------------------------------------------------
 // Workspace browsing
 // ---------------------------------------------------------------------------

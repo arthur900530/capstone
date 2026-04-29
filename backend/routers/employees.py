@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import mimetypes
 import os
@@ -11,12 +12,16 @@ import uuid
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 import yaml
 from config import SKILL_SELECTION_MODEL
+from config import TEST_CASE_DEFAULT_MAX_LATENCY_MS, TEST_CASE_MIN_LATENCY_MS
+from test_case_generator import generate_test_cases
+from test_case_runner import run_test_case
 
 logger = logging.getLogger(__name__)
 
@@ -57,11 +62,20 @@ router = APIRouter(prefix="/api/employees", tags=["employees"])
 
 _db_available = False
 _memory_store: list[dict] = []
+_test_case_memory_store: dict[str, list[dict[str, Any]]] = {}
+_test_case_run_memory_store: dict[str, list[dict[str, Any]]] = {}
+# Captured agent event stream per test-case run, keyed by the run's id (the
+# DB row's UUID string, or the in-memory uuid). Memory-only by design — events
+# are large and only useful for debugging the latest run; they vanish on
+# server restart, which the events drawer surfaces gracefully.
+_test_case_run_events: dict[str, list[dict[str, Any]]] = {}
+_test_case_run_transcripts: dict[str, str] = {}
 
 
 def set_db_available(value: bool):
     global _db_available
     _db_available = value
+
 
 
 # Length caps on the free-form text fields. ``description`` is a short hint
@@ -258,7 +272,7 @@ async def _auto_select_skills(description: str) -> list[str]:
                 {"role": "user", "content": json.dumps(payload, ensure_ascii=True)},
             ],
             temperature=0.1,
-            max_tokens=600,
+            max_completion_tokens=600,
             response_format={"type": "json_object"},
         )
     except Exception:
@@ -316,7 +330,7 @@ async def _generate_system_prompt(description: str, model: str) -> str:
     from openai import AsyncOpenAI
 
     # ``timeout`` bounds a hung OpenAI call so the wizard's submit button
-    # doesn't spin forever on a stalled upstream. ``max_tokens`` bounds the
+    # doesn't spin forever on a stalled upstream. ``max_completion_tokens`` bounds the
     # response size so a runaway model can't produce a 100KB system prompt.
     client = AsyncOpenAI(api_key=api_key, timeout=30.0)
     target_model = _resolve_openai_model(model)
@@ -329,7 +343,7 @@ async def _generate_system_prompt(description: str, model: str) -> str:
                 {"role": "user", "content": desc},
             ],
             temperature=0.4,
-            max_tokens=1500,
+            max_completion_tokens=1500,
         )
     except Exception as exc:  # noqa: BLE001
         # Don't leak raw exception strings to the client — they can embed
@@ -357,6 +371,13 @@ def _parse_uuid(employee_id: str) -> uuid.UUID:
         return uuid.UUID(employee_id)
     except ValueError:
         raise HTTPException(400, "Invalid employee ID format")
+
+
+def _parse_case_uuid(case_id: str) -> uuid.UUID:
+    try:
+        return uuid.UUID(case_id)
+    except ValueError:
+        raise HTTPException(400, "Invalid test case ID format")
 
 
 _ACTIVE_THRESHOLD_SECS = 600  # 10 minutes
@@ -388,6 +409,74 @@ def _row_to_dict(row) -> dict:
         "lastActiveAt": row.last_active_at.isoformat() if row.last_active_at else None,
         "createdAt": row.created_at.isoformat() if row.created_at else None,
     }
+
+
+class TestCaseUpdate(BaseModel):
+    title: str | None = None
+    prompt: str | None = None
+    success_criteria: str | None = None
+    hard_failure_signals: list[str] | None = None
+    expected_tool_families: list[str] | None = None
+    max_latency_ms: int | None = Field(default=None, gt=0)
+    status: str | None = None
+
+
+def _serialize_test_case(row) -> dict:
+    return {
+        "id": str(row.id),
+        "employee_id": str(row.employee_id),
+        "title": row.title,
+        "prompt": row.prompt,
+        "success_criteria": row.success_criteria,
+        "hard_failure_signals": row.hard_failure_signals or [],
+        "expected_tool_families": row.expected_tool_families or [],
+        "max_latency_ms": row.max_latency_ms,
+        "generated_by_model": row.generated_by_model or "",
+        "status": row.status,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+    }
+
+
+def _serialize_test_case_run(row) -> dict:
+    return {
+        "id": str(row.id),
+        "test_case_id": str(row.test_case_id),
+        "started_at": row.started_at.isoformat() if row.started_at else None,
+        "finished_at": row.finished_at.isoformat() if row.finished_at else None,
+        "duration_ms": int(row.duration_ms or 0),
+        "verdict": row.verdict,
+        "verdict_source": row.verdict_source,
+        "judge_rationale": row.judge_rationale,
+        "judge_evidence_quote": row.judge_evidence_quote,
+        "judge_confidence": row.judge_confidence,
+        "raw_output": row.raw_output,
+        "failure_reason": row.failure_reason,
+        "agent_session_id": row.agent_session_id,
+        "deterministic_checks": row.deterministic_checks or {},
+    }
+
+
+async def _assert_employee_exists(employee_id: str) -> dict:
+    if _db_available:
+        from db.engine import async_session
+        from db.models import Employee
+        from sqlalchemy import select
+
+        async with async_session() as session:
+            row = (
+                await session.execute(
+                    select(Employee).where(Employee.id == _parse_uuid(employee_id))
+                )
+            ).scalar_one_or_none()
+            if row is None:
+                raise HTTPException(404, "Employee not found")
+            return _row_to_dict(row)
+
+    emp = next((e for e in _memory_store if e.get("id") == employee_id), None)
+    if emp is None:
+        raise HTTPException(404, "Employee not found")
+    return emp
 
 
 # ── Routes ───────────────────────────────────────────────────────────────────
@@ -558,6 +647,471 @@ async def delete_employee(employee_id: str):
     global _memory_store
     _memory_store = [e for e in _memory_store if e["id"] != employee_id]
     return {"ok": True}
+
+
+# ── Auto Tests ───────────────────────────────────────────────────────────────
+
+
+@router.post("/{employee_id}/test_cases/generate")
+async def generate_employee_test_cases(employee_id: str, count: int = 5):
+    employee = await _assert_employee_exists(employee_id)
+    skill_ids = employee.get("skillIds") or []
+    plugin_ids = employee.get("pluginIds") or []
+    skill_summaries = [{"id": sid, "name": sid, "description": ""} for sid in skill_ids]
+    plugin_summaries = [{"id": pid, "name": pid, "description": ""} for pid in plugin_ids]
+
+    try:
+        generated_cases, generated_model = await generate_test_cases(
+            employee_description=employee.get("description") or "",
+            employee_task=employee.get("task") or "",
+            skills=skill_summaries,
+            plugins=plugin_summaries,
+            count=count,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Test case generation failed for employee=%s", employee_id)
+        raise HTTPException(
+            status_code=502,
+            detail=f"Test case generation failed: {exc}",
+        ) from exc
+
+    if _db_available:
+        from db.engine import async_session
+        from db.models import TestCase
+
+        created: list[dict] = []
+        async with async_session() as session:
+            for item in generated_cases:
+                row = TestCase(
+                    employee_id=_parse_uuid(employee_id),
+                    title=item["title"],
+                    prompt=item["prompt"],
+                    success_criteria=item["success_criteria"],
+                    hard_failure_signals=item["hard_failure_signals"],
+                    expected_tool_families=item.get("expected_tool_families") or [],
+                    max_latency_ms=item["max_latency_ms"],
+                    generated_by_model=generated_model,
+                    status="draft",
+                )
+                session.add(row)
+                await session.flush()
+                created.append(_serialize_test_case(row))
+            await session.commit()
+        return {"employee_id": employee_id, "cases": created}
+
+    created = []
+    store = _test_case_memory_store.setdefault(employee_id, [])
+    now_iso = datetime.now(timezone.utc).isoformat()
+    for item in generated_cases:
+        case_id = str(uuid.uuid4())
+        entry = {
+            "id": case_id,
+            "employee_id": employee_id,
+            "title": item["title"],
+            "prompt": item["prompt"],
+            "success_criteria": item["success_criteria"],
+            "hard_failure_signals": item["hard_failure_signals"],
+            "expected_tool_families": item.get("expected_tool_families") or [],
+            "max_latency_ms": item["max_latency_ms"],
+            "generated_by_model": generated_model,
+            "status": "draft",
+            "created_at": now_iso,
+            "updated_at": now_iso,
+        }
+        store.append(entry)
+        created.append(entry)
+    return {"employee_id": employee_id, "cases": created}
+
+
+@router.get("/{employee_id}/test_cases")
+async def list_employee_test_cases(employee_id: str):
+    await _assert_employee_exists(employee_id)
+    if _db_available:
+        from db.engine import async_session
+        from db.models import TestCase
+        from sqlalchemy import select
+
+        async with async_session() as session:
+            rows = (
+                await session.execute(
+                    select(TestCase)
+                    .where(TestCase.employee_id == _parse_uuid(employee_id))
+                    .order_by(TestCase.created_at.desc())
+                )
+            ).scalars().all()
+        return {"employee_id": employee_id, "cases": [_serialize_test_case(r) for r in rows]}
+
+    rows = sorted(
+        _test_case_memory_store.get(employee_id, []),
+        key=lambda row: row.get("created_at") or "",
+        reverse=True,
+    )
+    return {"employee_id": employee_id, "cases": rows}
+
+
+@router.patch("/{employee_id}/test_cases/{case_id}")
+async def update_employee_test_case(employee_id: str, case_id: str, body: TestCaseUpdate):
+    await _assert_employee_exists(employee_id)
+    updates = body.model_dump(exclude_none=True)
+    if _db_available:
+        from db.engine import async_session
+        from db.models import TestCase
+        from sqlalchemy import select
+
+        async with async_session() as session:
+            row = (
+                await session.execute(
+                    select(TestCase).where(
+                        TestCase.id == _parse_case_uuid(case_id),
+                        TestCase.employee_id == _parse_uuid(employee_id),
+                    )
+                )
+            ).scalar_one_or_none()
+            if row is None:
+                raise HTTPException(404, "Test case not found")
+            for key, value in updates.items():
+                setattr(row, key, value)
+            await session.commit()
+            await session.refresh(row)
+            return _serialize_test_case(row)
+
+    cases = _test_case_memory_store.get(employee_id, [])
+    row = next((item for item in cases if item.get("id") == case_id), None)
+    if row is None:
+        raise HTTPException(404, "Test case not found")
+    row.update(updates)
+    row["updated_at"] = datetime.now(timezone.utc).isoformat()
+    return row
+
+
+@router.delete("/{employee_id}/test_cases/{case_id}")
+async def delete_employee_test_case(employee_id: str, case_id: str):
+    await _assert_employee_exists(employee_id)
+    if _db_available:
+        from db.engine import async_session
+        from db.models import TestCase
+        from sqlalchemy import select
+
+        async with async_session() as session:
+            row = (
+                await session.execute(
+                    select(TestCase).where(
+                        TestCase.id == _parse_case_uuid(case_id),
+                        TestCase.employee_id == _parse_uuid(employee_id),
+                    )
+                )
+            ).scalar_one_or_none()
+            if row is None:
+                raise HTTPException(404, "Test case not found")
+            await session.delete(row)
+            await session.commit()
+            return {"ok": True}
+
+    cases = _test_case_memory_store.get(employee_id, [])
+    _test_case_memory_store[employee_id] = [item for item in cases if item.get("id") != case_id]
+    _test_case_run_memory_store.pop(case_id, None)
+    return {"ok": True}
+
+
+async def _run_single_test_case(employee_id: str, case_payload: dict[str, Any]) -> dict:
+    employee = await _assert_employee_exists(employee_id)
+
+    # Reuse the pre-warmed Docker workspace (H-A fix) AND prime it with the
+    # employee's assigned skills so the agent has access to the right tools.
+    try:
+        from server import (  # type: ignore
+            _SHARED_WS,
+            _owner_key,
+            _prime_shared_workspace_sync,
+            _resolve_workspace_for_runtime,
+        )
+        _ws = _SHARED_WS.get("workspace")
+        _host_dir = _SHARED_WS.get("host_dir")
+        _ws_lock = _SHARED_WS.get("lock")
+        _server_available = True
+    except Exception:
+        _ws, _host_dir, _ws_lock = None, None, None
+        _server_available = False
+
+    skill_ids: list[str] = employee.get("skillIds") or []
+    test_session_id = f"autotest-{uuid.uuid4().hex[:12]}"
+
+    # Build a temp workspace directory containing the employee's skill packages.
+    # This runs outside the lock (pure disk I/O, no Docker interaction).
+    effective_mount: str | None = None
+    cleanup_dirs: list[str] = []
+    if _server_available and _host_dir:
+        try:
+            effective_mount, cleanup_dirs = await asyncio.to_thread(
+                _resolve_workspace_for_runtime,
+                test_session_id,
+                None,
+                skill_ids or None,
+            )
+        except Exception:
+            logger.warning("Failed to resolve skill workspace for test run; continuing without skills")
+            effective_mount, cleanup_dirs = None, []
+
+    async def _prime_and_run() -> dict:
+        """Prime the shared workspace with the employee's skills, then run the agent.
+        Must be called while the caller already holds _ws_lock (if any)."""
+        primed_skills: list[str] = []
+        if _server_available and _host_dir:
+            try:
+                okey = _owner_key(test_session_id, None, skill_ids)
+                await asyncio.to_thread(
+                    _prime_shared_workspace_sync,
+                    test_session_id,
+                    effective_mount,
+                    None,
+                    cleanup_dirs,
+                    okey,
+                )
+                primed_skills = skill_ids
+            except Exception:
+                logger.warning("Workspace priming failed; continuing with unprimed workspace")
+        # region agent log
+        import json as _j, time as _t
+        _log_path = "/Users/hinkitericwong/Library/Mobile Documents/com~apple~CloudDocs/Personal - HKEW/Education/Carnegie Mellon University/Classes/4. 2026 Spring/11-699 Capstone/Capstone Frontend/.cursor/debug-3f5e2b.log"
+        try:
+            with open(_log_path, "a") as _lf:
+                _lf.write(_j.dumps({"sessionId": "3f5e2b", "timestamp": int(_t.time() * 1000), "location": "employees.py:_prime_and_run", "message": "workspace primed for test run", "data": {"skill_ids": skill_ids, "primed_skills": primed_skills, "effective_mount": effective_mount, "host_dir": _host_dir}}) + "\n")
+        except Exception:
+            pass
+        # endregion
+
+        return await run_test_case(
+            case_prompt=case_payload["prompt"],
+            success_criteria=case_payload["success_criteria"],
+            hard_failure_signals=case_payload.get("hard_failure_signals") or [],
+            expected_tool_families=case_payload.get("expected_tool_families") or [],
+            employee_profile={
+                "name": employee.get("name"),
+                "position": employee.get("position"),
+                "task": employee.get("task"),
+            },
+            max_latency_ms=max(
+                case_payload.get("max_latency_ms") or TEST_CASE_DEFAULT_MAX_LATENCY_MS,
+                TEST_CASE_MIN_LATENCY_MS,
+            ),
+            use_reflexion=bool(employee.get("useReflexion")),
+            workspace=_ws,
+            host_dir=_host_dir,
+            # Lock is managed by _run_single_test_case; pass None to avoid
+            # run_test_case trying to acquire it a second time.
+            workspace_lock=None,
+        )
+
+    try:
+        if _ws_lock is not None:
+            async with _ws_lock:
+                run_result = await _prime_and_run()
+        else:
+            run_result = await _prime_and_run()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Test case run failed case_id=%s employee=%s", case_payload.get("id"), employee_id)
+        raise HTTPException(
+            status_code=502,
+            detail=f"Test case run failed: {exc}",
+        ) from exc
+
+    # Pull events and transcript out before any persistence work — the DB
+    # schema doesn't store them and the memory dict is keyed separately.
+    captured_events: list[dict[str, Any]] = run_result.get("events") or []
+    captured_transcript: str = run_result.get("transcript") or ""
+
+    if _db_available:
+        from db.engine import async_session
+        from db.models import TestCaseRun
+
+        async with async_session() as session:
+            row = TestCaseRun(
+                test_case_id=uuid.UUID(case_payload["id"]),
+                started_at=run_result["started_at"],
+                finished_at=run_result["finished_at"],
+                duration_ms=run_result["duration_ms"],
+                verdict=run_result["verdict"],
+                verdict_source=run_result["verdict_source"],
+                judge_rationale=run_result["judge_rationale"],
+                judge_evidence_quote=run_result["judge_evidence_quote"],
+                judge_confidence=run_result["judge_confidence"],
+                raw_output=run_result["raw_output"],
+                failure_reason=run_result["failure_reason"],
+                agent_session_id=run_result["agent_session_id"],
+                deterministic_checks=run_result["deterministic_checks"],
+            )
+            session.add(row)
+            await session.commit()
+            await session.refresh(row)
+            run_dict = _serialize_test_case_run(row)
+            _test_case_run_events[run_dict["id"]] = captured_events
+            _test_case_run_transcripts[run_dict["id"]] = captured_transcript
+            return run_dict
+
+    run_entry = {
+        "id": str(uuid.uuid4()),
+        "test_case_id": case_payload["id"],
+        "started_at": run_result["started_at"].isoformat(),
+        "finished_at": run_result["finished_at"].isoformat() if run_result.get("finished_at") else None,
+        "duration_ms": run_result["duration_ms"],
+        "verdict": run_result["verdict"],
+        "verdict_source": run_result["verdict_source"],
+        "judge_rationale": run_result["judge_rationale"],
+        "judge_evidence_quote": run_result["judge_evidence_quote"],
+        "judge_confidence": run_result["judge_confidence"],
+        "raw_output": run_result["raw_output"],
+        "failure_reason": run_result["failure_reason"],
+        "agent_session_id": run_result["agent_session_id"],
+        "deterministic_checks": run_result["deterministic_checks"],
+    }
+    _test_case_run_memory_store.setdefault(case_payload["id"], []).append(run_entry)
+    _test_case_run_events[run_entry["id"]] = captured_events
+    _test_case_run_transcripts[run_entry["id"]] = captured_transcript
+    return run_entry
+
+
+@router.post("/{employee_id}/test_cases/{case_id}/run")
+async def run_employee_test_case(employee_id: str, case_id: str):
+    await _assert_employee_exists(employee_id)
+    if _db_available:
+        from db.engine import async_session
+        from db.models import TestCase
+        from sqlalchemy import select
+
+        async with async_session() as session:
+            row = (
+                await session.execute(
+                    select(TestCase).where(
+                        TestCase.id == _parse_case_uuid(case_id),
+                        TestCase.employee_id == _parse_uuid(employee_id),
+                    )
+                )
+            ).scalar_one_or_none()
+            if row is None:
+                raise HTTPException(404, "Test case not found")
+            case_payload = _serialize_test_case(row)
+    else:
+        row = next(
+            (item for item in _test_case_memory_store.get(employee_id, []) if item.get("id") == case_id),
+            None,
+        )
+        if row is None:
+            raise HTTPException(404, "Test case not found")
+        case_payload = row
+
+    run = await _run_single_test_case(employee_id, case_payload)
+    return {"employee_id": employee_id, "case_id": case_id, "run": run}
+
+
+@router.post("/{employee_id}/test_cases/run_all")
+async def run_all_employee_test_cases(employee_id: str):
+    await _assert_employee_exists(employee_id)
+    if _db_available:
+        from db.engine import async_session
+        from db.models import TestCase
+        from sqlalchemy import select
+
+        async with async_session() as session:
+            rows = (
+                await session.execute(
+                    select(TestCase)
+                    .where(
+                        TestCase.employee_id == _parse_uuid(employee_id),
+                        TestCase.status == "draft",
+                    )
+                    .order_by(TestCase.created_at.asc())
+                )
+            ).scalars().all()
+            cases = [_serialize_test_case(r) for r in rows]
+    else:
+        cases = [
+            item
+            for item in _test_case_memory_store.get(employee_id, [])
+            if item.get("status") == "draft"
+        ]
+        cases.sort(key=lambda row: row.get("created_at") or "")
+
+    runs = []
+    for case_payload in cases:
+        run = await _run_single_test_case(employee_id, case_payload)
+        runs.append({"case_id": case_payload["id"], "run": run})
+    return {"employee_id": employee_id, "count": len(runs), "runs": runs}
+
+
+@router.get("/{employee_id}/test_cases/{case_id}/runs")
+async def list_employee_test_case_runs(employee_id: str, case_id: str):
+    await _assert_employee_exists(employee_id)
+    if _db_available:
+        from db.engine import async_session
+        from db.models import TestCase, TestCaseRun
+        from sqlalchemy import select
+
+        async with async_session() as session:
+            case_exists = (
+                await session.execute(
+                    select(TestCase.id).where(
+                        TestCase.id == _parse_case_uuid(case_id),
+                        TestCase.employee_id == _parse_uuid(employee_id),
+                    )
+                )
+            ).scalar_one_or_none()
+            if case_exists is None:
+                raise HTTPException(404, "Test case not found")
+
+            rows = (
+                await session.execute(
+                    select(TestCaseRun)
+                    .where(TestCaseRun.test_case_id == _parse_case_uuid(case_id))
+                    .order_by(TestCaseRun.started_at.desc())
+                )
+            ).scalars().all()
+        return {"employee_id": employee_id, "case_id": case_id, "runs": [_serialize_test_case_run(r) for r in rows]}
+
+    rows = _test_case_run_memory_store.get(case_id, [])
+    sorted_rows = sorted(rows, key=lambda row: row.get("started_at") or "", reverse=True)
+    return {"employee_id": employee_id, "case_id": case_id, "runs": sorted_rows}
+
+
+@router.get("/{employee_id}/test_cases/{case_id}/runs/{run_id}/events")
+async def get_employee_test_case_run_events(
+    employee_id: str, case_id: str, run_id: str
+):
+    """Return the captured agent event stream for a single test-case run.
+
+    Events are kept in an in-memory dict (``_test_case_run_events``) keyed by
+    run id and are NOT persisted to Postgres. They survive only until the
+    server restarts, which is intentional: this is a debug aid for the latest
+    runs, not a replayable archive. When events are unavailable (e.g. the
+    server was restarted after the run completed) we return ``available:
+    false`` with an empty list so the drawer can render a friendly message
+    instead of a 404.
+    """
+    await _assert_employee_exists(employee_id)
+    events = _test_case_run_events.get(run_id)
+    transcript = _test_case_run_transcripts.get(run_id, "")
+    if events is None:
+        return {
+            "employee_id": employee_id,
+            "case_id": case_id,
+            "run_id": run_id,
+            "available": False,
+            "events": [],
+            "transcript": "",
+            "count": 0,
+        }
+    return {
+        "employee_id": employee_id,
+        "case_id": case_id,
+        "run_id": run_id,
+        "available": True,
+        "events": events,
+        "transcript": transcript,
+        "count": len(events),
+    }
 
 
 # ── Metrics / Report Card ────────────────────────────────────────────────────
