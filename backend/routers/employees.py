@@ -317,7 +317,7 @@ async def _auto_select_skills(description: str) -> list[str]:
                 {"role": "user", "content": json.dumps(payload, ensure_ascii=True)},
             ],
             temperature=0.1,
-            max_tokens=600,
+            max_completion_tokens=600,
             response_format={"type": "json_object"},
         )
     except Exception:
@@ -375,7 +375,7 @@ async def _generate_system_prompt(description: str, model: str) -> str:
     from openai import AsyncOpenAI
 
     # ``timeout`` bounds a hung OpenAI call so the wizard's submit button
-    # doesn't spin forever on a stalled upstream. ``max_tokens`` bounds the
+    # doesn't spin forever on a stalled upstream. ``max_completion_tokens`` bounds the
     # response size so a runaway model can't produce a 100KB system prompt.
     client = AsyncOpenAI(api_key=api_key, timeout=30.0)
     target_model = _resolve_openai_model(model)
@@ -388,7 +388,7 @@ async def _generate_system_prompt(description: str, model: str) -> str:
                 {"role": "user", "content": desc},
             ],
             temperature=0.4,
-            max_tokens=1500,
+            max_completion_tokens=1500,
         )
     except Exception as exc:  # noqa: BLE001
         # Don't leak raw exception strings to the client — they can embed
