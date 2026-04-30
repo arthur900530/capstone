@@ -130,7 +130,7 @@ async def verify_test_case_run(
         resp = await client.chat.completions.create(
             model=target_model,
             messages=messages,
-            temperature=0,
+            temperature=1.0,
             max_completion_tokens=900 if expected_workflow else 700,
             response_format={"type": "json_object"},
         )
@@ -138,7 +138,7 @@ async def verify_test_case_run(
         resp = await client.chat.completions.create(
             model=target_model,
             messages=messages,
-            temperature=0,
+            temperature=1.0,
             max_completion_tokens=900 if expected_workflow else 700,
         )
     content = ((resp.choices or [{}])[0].message.content or "").strip()
