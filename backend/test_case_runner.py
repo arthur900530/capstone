@@ -22,6 +22,12 @@ _WORKSPACE_FILE_CHAR_CAP = 32_000
 # files (.agents/skills/, .openhands/, .git/, etc.).
 _HIDDEN_DIR_PREFIXES = (".", "__pycache__")
 
+# Agent-internal top-level directories that hold session state, event
+# logs, and conversation metadata — NOT output artifacts produced by the
+# agent. Filtering these keeps workspace_files focused on meaningful
+# results and prevents the judge from being given irrelevant JSON blobs.
+_INTERNAL_WORKSPACE_DIRS = frozenset({"conversations"})
+
 try:
     from reflexion_agent.agent import runtime as _agent_runtime
 except Exception:  # noqa: BLE001
@@ -100,7 +106,8 @@ def _snapshot_workspace_filenames(host_dir: str) -> set[str]:
 
     Called BEFORE the agent runs to establish a baseline so we can detect
     new or modified files after it finishes. Hidden directories
-    (names starting with '.' or '__pycache__') are skipped entirely.
+    (names starting with '.' or '__pycache__') and agent-internal
+    directories (e.g. 'conversations/') are skipped entirely.
     """
     result: set[str] = set()
     for dirpath, dirnames, filenames in os.walk(host_dir):
@@ -109,6 +116,7 @@ def _snapshot_workspace_filenames(host_dir: str) -> set[str]:
         dirnames[:] = [
             d for d in dirnames
             if not any(d.startswith(p) for p in _HIDDEN_DIR_PREFIXES)
+            and d not in _INTERNAL_WORKSPACE_DIRS
         ]
         for fname in filenames:
             if any(fname.startswith(p) for p in _HIDDEN_DIR_PREFIXES):
@@ -160,6 +168,7 @@ def _harvest_workspace_files(
         dirnames[:] = [
             d for d in dirnames
             if not any(d.startswith(p) for p in _HIDDEN_DIR_PREFIXES)
+            and d not in _INTERNAL_WORKSPACE_DIRS
         ]
         for fname in filenames:
             if any(fname.startswith(p) for p in _HIDDEN_DIR_PREFIXES):
