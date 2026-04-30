@@ -10,6 +10,18 @@ from config import TEST_CASE_DEFAULT_MAX_LATENCY_MS
 from test_case_verifier import verify_test_case_run
 from agent_event_utils import compact_event as _compact_event, serialize_trajectory
 
+# Files larger than this threshold are included up to this limit with a
+# truncation marker appended. This is a pure engineering guardrail against
+# pathological cases (e.g. the agent writing a binary blob or a megabyte
+# of log output). Normal KYC reports, CSVs, or JSON files are well under
+# this limit and will always be included in full.
+_WORKSPACE_FILE_CHAR_CAP = 32_000
+
+# Hidden-directory prefixes to skip when scanning the workspace. This
+# prevents the judge from being flooded with agent-internal scaffolding
+# files (.agents/skills/, .openhands/, .git/, etc.).
+_HIDDEN_DIR_PREFIXES = (".", "__pycache__")
+
 try:
     from reflexion_agent.agent import runtime as _agent_runtime
 except Exception:  # noqa: BLE001
@@ -82,6 +94,101 @@ def _dbg(msg: str, data: dict, hyp: str) -> None:
         pass
 
 
+def _snapshot_workspace_filenames(host_dir: str) -> set[str]:
+    """Return a set of all non-hidden file paths (relative to host_dir) that
+    currently exist in the workspace.
+
+    Called BEFORE the agent runs to establish a baseline so we can detect
+    new or modified files after it finishes. Hidden directories
+    (names starting with '.' or '__pycache__') are skipped entirely.
+    """
+    result: set[str] = set()
+    for dirpath, dirnames, filenames in os.walk(host_dir):
+        # Prune hidden/internal directories in-place so os.walk doesn't
+        # descend into them.
+        dirnames[:] = [
+            d for d in dirnames
+            if not any(d.startswith(p) for p in _HIDDEN_DIR_PREFIXES)
+        ]
+        for fname in filenames:
+            if any(fname.startswith(p) for p in _HIDDEN_DIR_PREFIXES):
+                continue
+            full = os.path.join(dirpath, fname)
+            rel = os.path.relpath(full, host_dir)
+            result.add(rel)
+    return result
+
+
+def _harvest_workspace_files(
+    compact_trajectory: list[dict[str, Any]],
+    host_dir: str,
+    pre_run_snapshot: set[str],
+) -> dict[str, str]:
+    """Collect the content of files the agent wrote during the run.
+
+    Two complementary strategies are used so neither file_editor nor
+    terminal-written files are missed:
+
+    A. Trajectory scan — extract every ``path`` arg from ``file_editor``
+       events in the compact trajectory. This is the most targeted source
+       and captures the agent's explicit write intent.
+
+    B. Workspace diff — compare the current workspace against the
+       ``pre_run_snapshot`` taken before the agent started. Any file that
+       is new (created via terminal redirection, curl -o, python open(),
+       etc.) is included even if it has no file_editor entry.
+
+    Both sources are merged; duplicates are deduplicated by path. Content
+    is capped at ``_WORKSPACE_FILE_CHAR_CAP`` chars per file to guard
+    against accidental binary or enormous log files.
+    """
+    candidate_paths: set[str] = set()
+
+    # Strategy A: file_editor trajectory entries
+    for event in compact_trajectory:
+        if (event.get("tool_name") or "").lower() in ("file_editor", "fileeditor", "fileeditortool"):
+            args = event.get("args") or {}
+            raw_path = args.get("path") or args.get("file_path") or ""
+            if raw_path:
+                # Normalize /workspace/foo.md → foo.md
+                if raw_path.startswith("/workspace/"):
+                    raw_path = raw_path[len("/workspace/"):]
+                candidate_paths.add(raw_path.lstrip("/"))
+
+    # Strategy B: workspace diff (catches terminal-written files)
+    for dirpath, dirnames, filenames in os.walk(host_dir):
+        dirnames[:] = [
+            d for d in dirnames
+            if not any(d.startswith(p) for p in _HIDDEN_DIR_PREFIXES)
+        ]
+        for fname in filenames:
+            if any(fname.startswith(p) for p in _HIDDEN_DIR_PREFIXES):
+                continue
+            full = os.path.join(dirpath, fname)
+            rel = os.path.relpath(full, host_dir)
+            if rel not in pre_run_snapshot:
+                candidate_paths.add(rel)
+
+    workspace_files: dict[str, str] = {}
+    for rel_path in sorted(candidate_paths):
+        full_path = os.path.join(host_dir, rel_path)
+        if not os.path.isfile(full_path):
+            continue
+        try:
+            with open(full_path, "r", encoding="utf-8", errors="replace") as fh:
+                content = fh.read()
+            if len(content) > _WORKSPACE_FILE_CHAR_CAP:
+                content = (
+                    content[:_WORKSPACE_FILE_CHAR_CAP]
+                    + f"\n\n[...file truncated — {len(content) - _WORKSPACE_FILE_CHAR_CAP} additional chars not shown]"
+                )
+            workspace_files[rel_path] = content
+        except OSError:
+            # Binary, device, or permission-denied file — skip silently.
+            pass
+    return workspace_files
+
+
 async def run_test_case(
     *,
     case_prompt: str,
@@ -144,6 +251,47 @@ async def run_test_case(
             "events": list(compact_trajectory),
             "transcript": serialize_trajectory(raw_events),
         }
+
+    # The judge reads files the agent wrote to /workspace. Without a real
+    # bind-mounted host_dir those files never exist on disk, so the judge
+    # would have no artifact evidence to grade against. Failing here early
+    # is intentional: tests that require file output are meaningless in a
+    # workspace-less environment and would produce misleadingly low scores.
+    if not host_dir or not os.path.isdir(host_dir):
+        finished_at = _now()
+        return {
+            "started_at": started_at,
+            "finished_at": finished_at,
+            "duration_ms": int((finished_at - started_at).total_seconds() * 1000),
+            "verdict": "error",
+            "verdict_source": "deterministic",
+            "judge_rationale": (
+                "Shared workspace is not available (host_dir is missing or not a directory). "
+                "Auto-test runs require a running Docker workspace so the judge can read "
+                "file artifacts the agent writes to /workspace. "
+                "Ensure REAL_AGENT_ENABLED is configured and the Docker workspace started "
+                "successfully before running test cases."
+            ),
+            "judge_evidence_quote": None,
+            "judge_confidence": None,
+            "raw_output": None,
+            "failure_reason": "Shared workspace unavailable — set REAL_AGENT_ENABLED and ensure Docker is running",
+            "agent_session_id": session_id,
+            "deterministic_checks": {
+                "finished_cleanly": False,
+                "non_empty_output": False,
+                "latency_within_budget": False,
+                "expected_tool_families": False,
+            },
+            "run_telemetry": run_telemetry,
+            "events": [],
+            "transcript": "[trajectory: no events captured — workspace unavailable]",
+        }
+
+    # Snapshot the workspace before the agent runs so the post-run diff
+    # can identify files the agent created via terminal (curl, python
+    # open(), shell redirection, etc.) that have no file_editor event.
+    pre_run_snapshot = await asyncio.to_thread(_snapshot_workspace_filenames, host_dir)
 
     def _callback(event: Any):
         # Collect the raw SDK event object for serialize_trajectory() which
@@ -282,6 +430,17 @@ async def run_test_case(
     }, "H-E,H-F,H-G")
     # endregion
 
+    # Harvest files the agent wrote during the run. Must happen while the
+    # workspace lock is still held (i.e. before the next session evicts
+    # the current bind-mount contents). This call is sync I/O so we run
+    # it on a thread to avoid blocking the event loop.
+    workspace_files: dict[str, str] = await asyncio.to_thread(
+        _harvest_workspace_files, compact_trajectory, host_dir, pre_run_snapshot
+    )
+    # Store just the file paths (not content) in telemetry — the content
+    # is large and already available via the export payload.
+    run_telemetry["workspace_files_written"] = sorted(workspace_files.keys())
+
     if not non_empty_output:
         return {
             "started_at": started_at,
@@ -334,6 +493,7 @@ async def run_test_case(
             final_answer=final_answer,
             compact_trajectory=compact_trajectory,
             tools_used=sorted(used_tools),
+            workspace_files=workspace_files,
         )
         # region agent log
         _dbg("llm_judge result", {

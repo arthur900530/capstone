@@ -22,59 +22,68 @@ from config import OPENAI_API_KEY, VERIFIER_MODEL
 _VERIFIER_PROMPT = (
     "You are an external evaluator grading one completed agent run.\n"
     "This is NOT self-reflection. You grade strictly against the supplied "
-    "success_criteria, hard_failure_signals, and the agent's TRAJECTORY "
-    "(the list of tool calls and tool outputs).\n"
+    "success_criteria, hard_failure_signals, and the evidence in the agent's "
+    "TRAJECTORY and WORKSPACE FILES.\n"
     "\n"
     "# What you receive\n"
     "- test_case.prompt — the user instruction the agent was given.\n"
     "- test_case.success_criteria — the observable workflow + artifact required.\n"
     "- test_case.hard_failure_signals — definite-failure phrases or behaviors.\n"
     "- agent_run.tools_used — the set of tool names the agent ACTUALLY invoked. "
-    "This is observed by the runtime, not self-reported. Empty list means the "
-    "agent invoked no tools at all.\n"
-    "- agent_run.trajectory — the compacted event log the agent produced.\n"
-    "- agent_run.final_answer — the agent's free-text response.\n"
+    "Observed by the runtime, not self-reported. Empty list means the agent "
+    "invoked no tools at all.\n"
+    "- agent_run.trajectory — the compacted event log (tool calls + observations).\n"
+    "- agent_run.final_answer — the agent's free-text closing response.\n"
+    "- agent_run.workspace_files — a dict mapping relative file paths to their "
+    "FULL content as found on disk after the run. This is the GROUND TRUTH for "
+    "any test that requires a written artifact. It is more reliable than the "
+    "trajectory args, which may be truncated.\n"
     "\n"
-    "# Process integrity (load-bearing rule)\n"
+    "# Process integrity (load-bearing rule — evaluate first)\n"
     "Workflow > output. A well-formatted final answer that lacks supporting "
-    "tool evidence in the trajectory is a HALLUCINATION, not a pass.\n"
-    "Apply these gates BEFORE looking at output quality:\n"
-    "1. If success_criteria explicitly names a skill, plugin, tool, or "
-    "   methodology AND tools_used is empty → set hallucination_detected=true "
-    "   and verdict=\"fail\". The agent cannot have followed a workflow it "
-    "   never invoked.\n"
+    "tool evidence is a HALLUCINATION, not a pass.\n"
+    "Apply these gates IN ORDER before scoring output quality:\n"
+    "1. If success_criteria names a tool, skill, or methodology AND tools_used "
+    "   is empty → hallucination_detected=true, verdict=\"fail\".\n"
     "2. If the final answer claims a concrete action was performed (e.g. "
-    "   'I verified', 'I screened', 'I looked up', 'verification: success', "
-    "   'sanctions: clear') but the trajectory shows no corresponding tool "
-    "   call → set hallucination_detected=true and verdict=\"fail\". The "
-    "   evidence_quote MUST quote the unsupported claim from final_answer.\n"
+    "   'I verified', 'I screened', 'I browsed', 'I saved the file') but the "
+    "   trajectory shows no corresponding tool call → hallucination_detected=true, "
+    "   verdict=\"fail\". Quote the unsupported claim in evidence_quote.\n"
     "3. If the agent fabricates a fact a real tool would have produced "
-    "   (a verification id, a screening hit list, a numeric score, an LEI, "
-    "   a registry record) without a trajectory entry that produced it → "
+    "   (a registry record, a sanctions verdict, an LEI, a numeric score) "
+    "   without a trajectory entry or workspace_files entry that produced it → "
     "   hallucination_detected=true, verdict=\"fail\".\n"
     "\n"
-    "# Output quality (only when process gates pass)\n"
-    "Once process integrity is satisfied, judge whether the final answer "
-    "delivers the observable artifact named in success_criteria (a verdict, "
-    "score, decision, structured table, etc.). Pass requires BOTH process "
-    "and output to be acceptable. Any hard_failure_signals match → fail.\n"
+    "# Output quality — file artifacts (evaluate after process gates pass)\n"
+    "When success_criteria requires a written file:\n"
+    "- Check workspace_files FIRST. If the required path is absent → "
+    "  the file was not written. output_score = 0, verdict = \"fail\".\n"
+    "- If the file is present, evaluate its content against success_criteria "
+    "  (correct fields, structure, key facts, verdict wording, etc.).\n"
+    "- The trajectory's file_editor entry confirms the workflow step happened; "
+    "  workspace_files confirms what was actually written to disk.\n"
+    "- A file that exists but is empty or missing required fields still fails.\n"
+    "\n"
+    "# Output quality — non-file artifacts (evaluate after process gates pass)\n"
+    "When success_criteria requires a non-file deliverable (a verdict in the "
+    "final answer, a score, a structured table, a decision), evaluate the "
+    "final_answer against success_criteria. Any hard_failure_signals match → fail.\n"
     "\n"
     "# Required JSON output\n"
     "Return a single JSON object with exactly these keys:\n"
     "  verdict                — \"pass\" | \"fail\" | \"error\"\n"
-    "  rationale              — 1-3 sentences citing trajectory evidence first, "
-    "then output evidence.\n"
-    "  evidence_quote         — verbatim quote from final_answer or trajectory "
-    "supporting the verdict.\n"
+    "  rationale              — 2-4 sentences: cite trajectory evidence first, "
+    "then workspace_files evidence, then final_answer quality.\n"
+    "  evidence_quote         — verbatim quote from workspace_files, "
+    "final_answer, or trajectory supporting the verdict.\n"
     "  confidence             — number in [0, 1].\n"
-    "  process_score          — number in [0, 1]: 1.0 means the agent invoked "
-    "the right tools in the right order with real outputs; 0.0 means it acted "
-    "without any tools.\n"
-    "  output_score           — number in [0, 1]: how well the final answer "
-    "satisfies the observable artifact in success_criteria.\n"
-    "  hallucination_detected — boolean: true if any of the process-integrity "
-    "gates above triggered, false otherwise.\n"
-    "Be concise; quote verbatim from final_answer for evidence when possible."
+    "  process_score          — number in [0, 1]: 1.0 = agent invoked the "
+    "right tools in the right order with real evidence; 0.0 = no tools called.\n"
+    "  output_score           — number in [0, 1]: how well the artifact "
+    "(file content or final answer) satisfies success_criteria.\n"
+    "  hallucination_detected — boolean: true if any process-integrity gate "
+    "above triggered, false otherwise.\n"
+    "Quote verbatim from workspace_files or final_answer for evidence."
 )
 
 
@@ -119,12 +128,13 @@ async def verify_test_case_run(
     final_answer: str,
     compact_trajectory: list[dict[str, Any]],
     tools_used: list[str] | None = None,
+    workspace_files: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     if not OPENAI_API_KEY:
         raise RuntimeError("OPENAI_API_KEY is not configured")
 
     target_model = _resolve_openai_model(VERIFIER_MODEL)
-    client = AsyncOpenAI(api_key=OPENAI_API_KEY, timeout=45.0)
+    client = AsyncOpenAI(api_key=OPENAI_API_KEY, timeout=60.0)
     payload = {
         "test_case": {
             "prompt": case_prompt,
@@ -138,6 +148,9 @@ async def verify_test_case_run(
             # The judge MUST cross-check claims in final_answer against this.
             "tools_used": list(tools_used or []),
             "trajectory": compact_trajectory[:200],
+            # Full content of files written by the agent during the run.
+            # This is the primary evidence for grading file-artifact tests.
+            "workspace_files": dict(workspace_files or {}),
         },
     }
     messages = [
@@ -151,7 +164,7 @@ async def verify_test_case_run(
             model=target_model,
             messages=messages,
             temperature=0,
-            max_completion_tokens=900,
+            max_completion_tokens=3000,
             response_format={"type": "json_object"},
         )
     except Exception:
@@ -159,7 +172,7 @@ async def verify_test_case_run(
             model=target_model,
             messages=messages,
             temperature=0,
-            max_completion_tokens=900,
+            max_completion_tokens=3000,
         )
     content = ((resp.choices or [{}])[0].message.content or "").strip()
     parsed = json.loads(content) if content else {}
