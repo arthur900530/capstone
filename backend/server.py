@@ -2225,6 +2225,13 @@ async def chat(req: ChatRequest):
     if skill_ids:
         await _validate_skills_for_runtime(skill_ids)
 
+    # Surface the per-employee model on the SSE ``agent`` event so the chat
+    # header reflects what the runtime will actually call. _resolve_agent
+    # stamped AGENT_MODEL as a default; override here once we know the
+    # employee's setting.
+    if employee_profile and (employee_profile.get("model") or "").strip():
+        agent = {**agent, "model": employee_profile["model"].strip()}
+
     # Remember the session→employee mapping in-process so subsequent turns on
     # the same uvicorn keep resolving the persona even if the frontend drops
     # ``employee_id`` later.
