@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 import yaml
 from config import SKILL_SELECTION_MODEL
 from config import TEST_CASE_DEFAULT_MAX_LATENCY_MS, TEST_CASE_MIN_LATENCY_MS
+from config import AGENT_MODEL
 from test_case_generator import generate_test_cases
 from test_case_runner import run_test_case
 
@@ -455,6 +456,104 @@ def _serialize_test_case_run(row) -> dict:
         "agent_session_id": row.agent_session_id,
         "deterministic_checks": row.deterministic_checks or {},
     }
+
+
+# ── Demo KYC employee (seeded on app startup; see server.py lifespan) ───────
+
+# Fixed UUID so PostgreSQL restarts and idempotent seeding never duplicate rows.
+_DEMO_KYC_EMPLOYEE_ID = uuid.UUID("c0000000-0000-4000-8000-00000000d0d0")
+
+
+def _load_demo_kyc_task() -> str:
+    path = _BACKEND_DIR / "demo" / "kyc_demo_employee_system_prompt.txt"
+    if not path.is_file():
+        logger.warning("Demo KYC task file missing at %s — skipping demo employee seed", path)
+        return ""
+    return path.read_text(encoding="utf-8").strip()
+
+
+async def ensure_demo_kyc_employee_seeded() -> None:
+    """Ensure one bundled KYC demo employee exists (DB or in-memory).
+
+    Demo-specific fields (name, position, description, skills) are hardcoded
+    here. Applicable platform-wide settings — specifically the chat model —
+    are read from config so this employee always matches the configured stack.
+    Idempotent: safe on every uvicorn boot. Uses a stable primary key so
+    ``./start.sh`` with PostgreSQL does not create duplicate employees.
+    """
+    task = _load_demo_kyc_task()
+    if not task:
+        return
+
+    _name = "KYC Onboarding Specialist"
+    _position = "KYC / AML Compliance"
+    _description = (
+        "Pre-seeded KYC/AML onboarding specialist for demos: identity verification, "
+        "AML/sanctions screening, and risk scoring."
+    )
+    _skill_ids = ["understanding-kyc-and-cdd"]
+
+    if _db_available:
+        from db.engine import async_session
+        from db.models import Employee
+
+        async with async_session() as session:
+            existing = await session.get(Employee, _DEMO_KYC_EMPLOYEE_ID)
+            if existing is not None:
+                return
+            session.add(
+                Employee(
+                    id=_DEMO_KYC_EMPLOYEE_ID,
+                    name=_name,
+                    position=_position,
+                    description=_description,
+                    task=task,
+                    plugin_ids=[],
+                    skill_ids=_skill_ids,
+                    model=AGENT_MODEL,
+                    use_reflexion=False,
+                    max_trials=1,
+                    confidence_threshold=0.7,
+                    files=[],
+                )
+            )
+            await session.commit()
+        logger.info(
+            "Seeded demo KYC employee (id=%s, model=%s)",
+            _DEMO_KYC_EMPLOYEE_ID,
+            AGENT_MODEL,
+        )
+        return
+
+    if any(e.get("id") == str(_DEMO_KYC_EMPLOYEE_ID) for e in _memory_store):
+        return
+
+    now = datetime.now(timezone.utc).isoformat()
+    _memory_store.append(
+        {
+            "id": str(_DEMO_KYC_EMPLOYEE_ID),
+            "name": _name,
+            "position": _position,
+            "description": _description,
+            "task": task,
+            "pluginIds": [],
+            "skillIds": _skill_ids,
+            "model": AGENT_MODEL,
+            "useReflexion": False,
+            "maxTrials": 1,
+            "confidenceThreshold": 0.7,
+            "chatSessionIds": [],
+            "files": [],
+            "status": "idle",
+            "lastActiveAt": None,
+            "createdAt": now,
+        }
+    )
+    logger.info(
+        "Seeded demo KYC employee in memory (id=%s, model=%s)",
+        _DEMO_KYC_EMPLOYEE_ID,
+        AGENT_MODEL,
+    )
 
 
 async def _assert_employee_exists(employee_id: str) -> dict:

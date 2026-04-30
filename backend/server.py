@@ -144,6 +144,14 @@ async def lifespan(application):
             set_emp_db(False)
             logger.warning("DB init skipped — falling back to in-memory skills: %s", exc)
 
+    # Demo KYC employee for dashboard (DB or in-memory); does not touch start.sh.
+    try:
+        from routers.employees import ensure_demo_kyc_employee_seeded
+
+        await ensure_demo_kyc_employee_seeded()
+    except Exception as exc:
+        logger.warning("Demo KYC employee seed skipped: %s", exc)
+
     # Warm the shared DockerWorkspace once, before accepting requests.
     if REAL_AGENT_ENABLED:
         host_dir = tempfile.mkdtemp(prefix="shared_ws_")
