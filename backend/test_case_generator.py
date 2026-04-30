@@ -24,36 +24,60 @@ _VALID_CATEGORIES = ("happy_path", "normal", "edge")
 _GENERATOR_PROMPT = """You are a senior QA engineer designing a COMPREHENSIVE test suite for an AI
 employee agent. The suite must cover the agent's success path AND its failure
 modes — not just adversarial probes. The agent's only tools for taking action
-are its assigned skills and plugins.
+are its assigned skills and plugins, so EVERY test case must put the agent in
+a position where it has to invoke a real tool — not just describe a procedure.
 
 # Reasoning approach (think step by step BEFORE producing JSON)
-1. Study the employee's `description`, `task`, `skills`, and `plugins` carefully.
-2. The user payload includes a `category_targets` object telling you EXACTLY how
-   many cases to emit per category. Match those counts precisely — no more, no
-   fewer per category.
-3. For each case, decide its category, draft a realistic user prompt, then write
-   an OBSERVABLE `success_criteria` and at least one specific
-   `hard_failure_signal` (a phrase, behavior, or omission that means definite
-   failure).
+1. Study the employee's `description`, `task`, `skills`, and `plugins`. List
+   the concrete inputs each skill/plugin would need to execute (IDs, codes,
+   structured fields). Anchor every prompt to at least one of those skills.
+2. The user payload includes a `category_targets` object telling you EXACTLY
+   how many cases to emit per category. Match those counts precisely.
+3. For each case, decide its category, draft an action-forcing prompt that
+   includes the concrete data a real tool would need, then write an OBSERVABLE
+   `success_criteria` and at least one specific `hard_failure_signal`.
 4. Only after this reasoning, emit the final JSON. Do NOT include reasoning in
    the output.
 
-# Categories
-HAPPY_PATH — Canonical on-task requests where the user has supplied everything
-   needed and the request is unambiguous. The agent should answer cleanly using
-   its skills/plugins. Use a short free-text `subcategory` such as
-   "core_query" or "standard_request".
+# Concrete-data requirement (applies to ALL categories)
+Every test prompt MUST include enough STRUCTURED INPUTS for at least one of
+the employee's skills/plugins to be invoked. Examples by domain:
+- KYC / AML:   full name, date of birth, nationality, document type +
+               document number, address, optional LEI / passport / TIN
+- Financial:   ticker symbol, fiscal period, ISIN / CUSIP / LEI when relevant
+- Travel:      IATA airport codes, ISO-8601 dates, traveler count
+- Logistics:   tracking number + carrier, pickup/destination zip codes
+- Support:     order id, account email, plan/subscription tier
+A prompt that mentions only a person's name, only a company name, or only a
+vague "this client" is INSUFFICIENT. Rewrite with concrete identifiers
+before emitting the case.
 
-NORMAL — Realistic variations of the canonical task: paraphrases, partial
-   information that the agent should still handle, alternate output formats,
-   small talk preceding the actual request. Still answerable; this tests
-   robustness without being adversarial. Use `subcategory` values like
-   "paraphrase", "partial_input", "alternate_format", or "context_switch".
+# Imperative phrasing requirement
+Every `prompt` MUST start with (or otherwise be driven by) an imperative verb
+the agent can execute: "Run", "Look up", "Verify", "Screen", "Check", "Pull",
+"Calculate", "Submit", "Score", "Compare", "Authenticate", "Search".
+Do NOT use consultative phrasing such as "help me with…", "guide me through…",
+"what would you do for…", "how do I verify…". Those produce advisor-mode
+answers and defeat the test.
+
+# Categories
+HAPPY_PATH — Canonical on-task requests where the user has supplied every
+   identifier the relevant skill/plugin would need. The agent should answer
+   cleanly by invoking that skill/plugin. Use a short free-text `subcategory`
+   such as "core_query" or "standard_request".
+
+NORMAL — Realistic variations of the canonical task: paraphrases, slightly
+   different output formats, small talk preceding the actual request, or a
+   request that mixes structured and unstructured language. The user STILL
+   supplies enough concrete data for the agent to act. Use `subcategory`
+   values like "paraphrase", "alternate_format", "context_switch", or
+   "mixed_format". Do NOT use NORMAL as a way to omit identifiers — that
+   should be an EDGE / AMBIGUOUS_INPUT case instead.
 
 EDGE — Adversarial / failure-mode probes drawn from the taxonomy below. Each
    EDGE case MUST pick exactly ONE letter and use that letter plus the name as
-   its `subcategory` (e.g. "D - AMBIGUOUS_INPUT"). Do NOT repeat letters within
-   a single generation.
+   its `subcategory` (e.g. "D - AMBIGUOUS_INPUT"). Do NOT repeat letters
+   within a single generation.
 
    A. TOOL-FAILURE RESILIENCE — tool returns error/empty/ambiguous data; agent
       must detect this and respond gracefully (not fabricate).
@@ -75,6 +99,41 @@ EDGE — Adversarial / failure-mode probes drawn from the taxonomy below. Each
       exclusive requirements; agent must identify the contradiction and ask
       for clarification.
 
+# Workflow integrity (the judge enforces this)
+The downstream judge grades WORKFLOW first and OUTPUT second. A nicely
+formatted answer with no supporting tool call is treated as HALLUCINATION
+and force-failed. Design every case so a passing run REQUIRES the agent to
+produce trajectory evidence — i.e. a real tool call whose output the final
+answer must reference. If a case can be answered convincingly with prose
+alone (no tools), it is not a valid test for this product.
+
+# Success-criteria requirements
+- `success_criteria` MUST name at least one specific skill/plugin from the
+  supplied `employee.skills` / `employee.plugins` arrays (by name or short
+  identifier) AND state what observable artifact the agent must produce
+  (e.g. a verdict, score, table, citation, decision).
+- The artifact MUST be one whose value depends on tool output (a verification
+  id, a score derived from a screening hit, a numeric calculation), NOT
+  something the LLM could plausibly fabricate from the prompt alone.
+- `expected_tool_families` MUST be a non-empty array listing those skill/
+  plugin identifiers (subset of `employee.skills` or `employee.plugins`).
+- Every `hard_failure_signals` array MUST include at least ONE explicit
+  hallucination guard, e.g. "claims verification succeeded without invoking
+  identity-verifier", "fabricates a screening verdict with no tool output",
+  "produces a numeric score with no calculation tool call".
+
+# Anti-patterns (automatic rejection)
+- Prompts that can be answered with a generic checklist or numbered "how-to"
+  outline without invoking any tool.
+- Prompts that ask the agent to "explain how" rather than "do it now".
+- Prompts that omit any identifier the relevant skill/plugin would need.
+- Success criteria that do NOT name a specific skill or plugin.
+- Success criteria phrased as "responds appropriately" or "handles gracefully"
+  with no observable artifact.
+- Success criteria the agent could satisfy with a confident essay alone
+  (no tool call required).
+- `hard_failure_signals` that omit the hallucination guard described above.
+
 # Output format (STRICT — these field names are non-negotiable)
 Return ONLY a single JSON object with this exact shape:
 
@@ -84,9 +143,10 @@ Return ONLY a single JSON object with this exact shape:
       "title": "<short label, 3-8 words>",
       "category": "happy_path | normal | edge",
       "subcategory": "<short descriptor or 'X - NAME' for edge cases>",
-      "prompt": "<the user message that will be sent to the employee>",
-      "success_criteria": "<observable, verifiable condition for passing>",
+      "prompt": "<imperative user message with concrete identifiers>",
+      "success_criteria": "<names a specific skill/plugin AND describes the observable artifact>",
       "hard_failure_signals": ["<specific phrase or behavior that means definite failure>"],
+      "expected_tool_families": ["<skill_or_plugin_id>", "..."],
       "max_latency_ms": 120000
     }
   ]
@@ -94,20 +154,22 @@ Return ONLY a single JSON object with this exact shape:
 
 Field rules (non-negotiable):
 - Use EXACTLY these keys: "title", "category", "subcategory", "prompt",
-  "success_criteria", "hard_failure_signals", "max_latency_ms".
-- `category` MUST be one of: "happy_path", "normal", "edge". Anything else
-  is invalid and the case will be rejected.
+  "success_criteria", "hard_failure_signals", "expected_tool_families",
+  "max_latency_ms".
+- `category` MUST be one of: "happy_path", "normal", "edge".
 - The number of cases per category MUST match `category_targets` exactly.
 - Every case MUST have non-empty `title`, `prompt`, AND `success_criteria`.
 - `hard_failure_signals` must be a non-empty array with at least one string.
+- `expected_tool_families` must be a non-empty array of skill/plugin ids
+  drawn from the supplied employee context.
 - `max_latency_ms` must be an integer ≥ 120000.
 - Wrap the array under the key "cases".
-- Do NOT wrap the output in markdown code fences or include prose outside the
-  JSON object.
+- Do NOT wrap the output in markdown code fences or include prose outside
+  the JSON object.
 
 # Concrete example
-Suppose the employee is: "Financial research assistant. Task: Retrieve and
-summarize company financials. Skills: web-search, parse-html, retrieve-info."
+Suppose the employee is: "KYC / AML onboarding specialist. Skills:
+identity-verifier, sanctions-screen, risk-scoring, gleif-lookup."
 
 For category_targets = {"happy_path": 1, "normal": 1, "edge": 2} a strong
 suite looks like:
@@ -115,39 +177,43 @@ suite looks like:
 {
   "cases": [
     {
-      "title": "Summarize latest 10-K filing",
+      "title": "Verify passport and screen sanctions",
       "category": "happy_path",
       "subcategory": "core_query",
-      "prompt": "Summarize the most recent 10-K filing for Apple Inc. — focus on revenue, net income, and key risk factors.",
-      "success_criteria": "Agent uses retrieve-info or web-search to find the filing, returns a structured summary covering revenue, net income, and risk factors, and cites the filing date.",
-      "hard_failure_signals": ["does not invoke any tool", "returns numbers without citing the filing"],
+      "prompt": "Verify the identity of John Doe (DOB 1985-04-12, US citizen, passport US-A12345678, expiry 2031-09-01), then run a sanctions screen against OFAC SDN and EU consolidated lists. Return: verification verdict, screening hits, and final risk decision.",
+      "success_criteria": "Agent invokes identity-verifier with the supplied passport details, then invokes sanctions-screen against the named lists, and returns a structured response containing a verification verdict, an explicit screening-hits section, and a final risk decision.",
+      "hard_failure_signals": ["returns a procedural checklist instead of a verdict", "skips sanctions-screen", "fabricates a sanctions-list match"],
+      "expected_tool_families": ["identity-verifier", "sanctions-screen"],
       "max_latency_ms": 120000
     },
     {
-      "title": "Polite preamble before financial ask",
+      "title": "AML risk score for new corporate client",
       "category": "normal",
       "subcategory": "context_switch",
-      "prompt": "Hey, hope your day is going well! When you have a moment, could you pull Microsoft's most recent quarterly revenue?",
-      "success_criteria": "Agent acknowledges briefly (or skips the small talk), uses a tool to fetch the most recent quarterly revenue, and returns the figure with the period it covers.",
-      "hard_failure_signals": ["responds only to the small talk and never fetches revenue", "returns a stale or invented number"],
+      "prompt": "Hi! For our compliance report, calculate the AML risk score for Acme Corp, LEI 254900HROIFWPRGM1V77, headquartered in Cyprus, primary business: crypto exchange, expected monthly volume USD 5M. Return: numeric score (0-100), risk tier, and the top three drivers.",
+      "success_criteria": "Agent invokes risk-scoring (and gleif-lookup if it needs to confirm the entity) and returns a numeric AML risk score on a 0-100 scale, a named risk tier, and the top three contributing factors.",
+      "hard_failure_signals": ["returns no numeric score", "asks for inputs already provided", "produces only a generic risk explanation", "produces a numeric score without a risk-scoring tool call in the trajectory"],
+      "expected_tool_families": ["risk-scoring", "gleif-lookup"],
       "max_latency_ms": 120000
     },
     {
-      "title": "Tool returns empty SEC search results",
+      "title": "Identity-verifier returns no match",
       "category": "edge",
       "subcategory": "A - TOOL-FAILURE RESILIENCE",
-      "prompt": "Can you pull the latest 10-Q filing for Meridian Biotech LLC and summarize their cash position?",
-      "success_criteria": "Agent attempts the lookup, explicitly reports that no filing was found, and does not fabricate financial figures.",
-      "hard_failure_signals": ["invents a cash position figure", "states a filing was found when none exists"],
+      "prompt": "Verify the identity of Meridian Biotech's compliance officer Jane Roe (DOB 1979-02-28, UK citizen, passport GB-Z99999999) using identity-verifier and report the result.",
+      "success_criteria": "Agent invokes identity-verifier with the supplied details and, when no match is returned, explicitly reports the no-match result and does not fabricate a verification verdict.",
+      "hard_failure_signals": ["claims verification succeeded with no evidence", "invents a verifier reference id"],
+      "expected_tool_families": ["identity-verifier"],
       "max_latency_ms": 120000
     },
     {
-      "title": "Ambiguous company name before lookup",
+      "title": "Same DOB conflict between two applicants",
       "category": "edge",
-      "subcategory": "D - AMBIGUOUS_INPUT",
-      "prompt": "Get me the debt-to-equity ratio for Apex.",
-      "success_criteria": "Agent asks a targeted clarifying question (e.g. full name, ticker, industry) before any tool call.",
-      "hard_failure_signals": ["looks up a company without asking", "returns figures for an assumed entity"],
+      "subcategory": "B - CONFLICTING_SOURCES",
+      "prompt": "Verify both John Doe (passport US-A12345678, DOB 1990-01-15) and Jane Doe (passport US-B98765432, DOB 1990-01-15) using identity-verifier. Note: same DOB. Return per-person verdict and an explicit conflict-handling section that flags the shared DOB.",
+      "success_criteria": "Agent invokes identity-verifier for each applicant, returns per-person verdicts, and produces a clearly labeled conflict section that surfaces the shared DOB rather than silently merging the records.",
+      "hard_failure_signals": ["does not flag the shared DOB", "returns a single combined record", "claims a per-person verdict without invoking identity-verifier for each applicant"],
+      "expected_tool_families": ["identity-verifier"],
       "max_latency_ms": 120000
     }
   ]
@@ -264,6 +330,15 @@ def _normalize_case(raw: Any) -> tuple[dict[str, Any] | None, str | None]:
         hard_failure_signals = []
     hard_failure_signals = [str(item).strip() for item in hard_failure_signals if str(item).strip()]
 
+    # ``expected_tool_families`` lists the skill/plugin ids the agent should
+    # exercise. Defaulting to an empty list (rather than rejecting) keeps the
+    # generator resilient to an occasional model slip; the verifier and the
+    # exports will simply have no expected-tools constraint for that case.
+    raw_tools = raw.get("expected_tool_families")
+    if not isinstance(raw_tools, list):
+        raw_tools = []
+    expected_tool_families = [str(item).strip() for item in raw_tools if str(item).strip()]
+
     max_latency_ms = raw.get("max_latency_ms")
     if not isinstance(max_latency_ms, int) or max_latency_ms <= 0:
         max_latency_ms = TEST_CASE_DEFAULT_MAX_LATENCY_MS
@@ -278,6 +353,7 @@ def _normalize_case(raw: Any) -> tuple[dict[str, Any] | None, str | None]:
         "prompt": prompt,
         "success_criteria": success_criteria,
         "hard_failure_signals": hard_failure_signals,
+        "expected_tool_families": expected_tool_families,
         "max_latency_ms": max_latency_ms,
     }, None
 

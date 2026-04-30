@@ -294,17 +294,27 @@ async def run_test_case(
         }
 
     try:
+        # Pass the observed tool trace + the test's declared expected tool
+        # families to the judge so it can grade WORKFLOW integrity, not just
+        # output shape. Without these, a confident-looking final answer that
+        # was produced WITHOUT calling any tool would be graded "pass" because
+        # the judge has no signal that the workflow actually happened.
         judged = await verify_test_case_run(
             case_prompt=case_prompt,
             success_criteria=success_criteria,
             hard_failure_signals=hard_failure_signals,
             final_answer=final_answer,
             compact_trajectory=compact_trajectory,
+            expected_tool_families=list(expected_tool_families or []),
+            tools_used=sorted(used_tools),
         )
         # region agent log
         _dbg("llm_judge result", {
             "verdict": judged["verdict"],
             "confidence": judged["confidence"],
+            "process_score": judged.get("process_score"),
+            "output_score": judged.get("output_score"),
+            "hallucination_detected": judged.get("hallucination_detected"),
             "rationale": judged["rationale"][:200],
             "evidence_quote": judged["evidence_quote"][:120],
             "success_criteria": success_criteria[:150],
@@ -322,7 +332,21 @@ async def run_test_case(
             "rationale": f"Verifier failed: {_verifier_exc}",
             "evidence_quote": "",
             "confidence": 0.0,
+            "process_score": None,
+            "output_score": None,
+            "hallucination_detected": None,
         }
+
+    # Merge judge process/output telemetry into run_telemetry so it shows up
+    # in JSON exports and on the governance dashboard alongside tool-call
+    # metrics. We keep these inside run_telemetry (a JSONB column) instead of
+    # adding new top-level columns — additive and backwards-compatible with
+    # any rows written before this change.
+    run_telemetry["process_score"] = judged.get("process_score")
+    run_telemetry["output_score"] = judged.get("output_score")
+    run_telemetry["hallucination_detected"] = judged.get("hallucination_detected")
+    run_telemetry["expected_tool_families"] = list(expected_tool_families or [])
+
     return {
         "started_at": started_at,
         "finished_at": finished_at,
