@@ -331,13 +331,21 @@ def build_workspace(mount_host_dir: str | None = None) -> DockerWorkspace:
         abs_mount = str(Path(mount_host_dir).resolve())
         # Pre-create the dirs the container writes to. Open the perms so the
         # container's non-root user can write in WSL2/Docker-Desktop setups
-        # where the bind-mount maps to the host UID (defaulting to 0o755) and
-        # the in-container UID doesn't match. /tmp is already user-private so
-        # 0o777 here doesn't widen any real attack surface.
+        # where a fresh dir maps to host UID 0o755 and the in-container UID
+        # doesn't match.
+        #
+        # On reboots, the persistent host_dir contains dirs the container's
+        # openhands user (UID 10001) chowned in a previous run, so our host
+        # UID can't chmod them. That's fine — they were left permissive by
+        # the in-container chmod (see ``runtime()`` below), so we swallow
+        # PermissionError and proceed.
         for sub in ("", "conversations", "bash_events"):
             p = Path(abs_mount, sub) if sub else Path(abs_mount)
             p.mkdir(parents=True, exist_ok=True)
-            os.chmod(p, 0o777)
+            try:
+                os.chmod(p, 0o777)
+            except PermissionError:
+                pass
         volumes = [f"{abs_mount}:/workspace:rw"]
     else:
         volumes = []
