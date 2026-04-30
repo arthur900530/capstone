@@ -8,15 +8,15 @@
       "node_type": "workflow_step",
       "title": "Company Website Research",
       "description": "",
-      "start_time": 5.602,
-      "end_time": 25.266,
+      "start_time": 5.9,
+      "end_time": 25.0,
       "children": [
         {
           "node_type": "workflow_step",
-          "title": "Gathering Information",
-          "description": "Review the company's official website to understand its business overview, products/services, leadership team, strategic priorities, geographic footprint, and regulatory disclosures.",
-          "start_time": 7.114,
-          "end_time": 25.266,
+          "title": "Gather Information",
+          "description": "Review the company's official website to understand its business overview, products/services, leadership team, strategic priorities, geographic footprint, and regulatory disclosures. This helps establish a basic understanding of the client.",
+          "start_time": 7.1,
+          "end_time": 25.0,
           "children": []
         }
       ]
@@ -25,15 +25,15 @@
       "node_type": "workflow_step",
       "title": "GLEIF / LEI Lookup",
       "description": "",
-      "start_time": 25.753,
-      "end_time": 45.698,
+      "start_time": 26.0,
+      "end_time": 45.9,
       "children": [
         {
           "node_type": "workflow_step",
-          "title": "Retrieve Company Information using GLEIF database",
-          "description": "Pull the company's Legal Entity Identifier (LEI), registered address, entity status, and analyze the ownership/organizational hierarchy, including both direct and ultimate parent relationships.",
-          "start_time": 28.799,
-          "end_time": 45.698,
+          "title": "Retrieve Company Information",
+          "description": "Pull the company's Legal Entity Identifier (LEI), registered address, entity status, and analyze the ownership/organizational hierarchy, including both direct and ultimate parent relationships, to understand the company's structure.",
+          "start_time": 28.7,
+          "end_time": 45.9,
           "children": []
         }
       ]
@@ -42,15 +42,15 @@
       "node_type": "workflow_step",
       "title": "Adverse Media / News Screening",
       "description": "",
-      "start_time": 46.619,
-      "end_time": 111.956,
+      "start_time": 46.9,
+      "end_time": 111.4,
       "children": [
         {
           "node_type": "workflow_step",
           "title": "Surface Negative Information",
           "description": "Conduct adverse media screening by searching sources like Google News and public court/regulatory filings to identify any negative news, sanctions, regulatory actions, or legal proceedings involving the company.",
-          "start_time": 49.125,
-          "end_time": 111.956,
+          "start_time": 49.1,
+          "end_time": 60.8,
           "children": []
         }
       ]

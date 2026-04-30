@@ -136,7 +136,7 @@ async def align_trajectory_to_workflow(
         resp = await client.chat.completions.create(
             model=target_model,
             messages=messages,
-            temperature=0,
+            temperature=1.0,
             max_completion_tokens=2000,
             response_format={"type": "json_object"},
         )
@@ -145,7 +145,7 @@ async def align_trajectory_to_workflow(
         resp = await client.chat.completions.create(
             model=target_model,
             messages=messages,
-            temperature=0,
+            temperature=1.0,
             max_completion_tokens=2000,
         )
 
