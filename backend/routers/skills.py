@@ -7,6 +7,7 @@ When DB is unavailable, falls back to the in-memory _SKILLS dict from server.py.
 from __future__ import annotations
 
 import asyncio
+import mimetypes
 import os
 import shutil
 import tempfile
@@ -14,7 +15,11 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, UploadFile, File
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
+
+from skills_ingestor.sessions import get_default_store
+from workflow import load_workflow
 
 router = APIRouter(prefix="/api/skills", tags=["skills"])
 
@@ -246,17 +251,30 @@ async def get_skill_file_content(skill_id: str, filename: str):
 
 @router.post("/train")
 async def train_skills(files: list[UploadFile] = File(...)):
-    """Accept media uploads, run MMSkillTrainer, return newly created skills."""
+    """Accept media uploads, run MMSkillTrainer, return newly created skills.
+
+    The response also carries:
+
+    - ``session_id`` and a ``files`` list of session-scoped video URLs so the
+      frontend can play the source media next to the extracted workflow.
+      The session directory is kept around for a short TTL (see
+      :mod:`skills_ingestor.sessions`) and can be cleaned up explicitly via
+      ``DELETE /api/skills/train/sessions/{session_id}``.
+    - ``workflows`` keyed by skill slug — the structured workflow trees that
+      MMSkillTrainer recorded via the ``record_workflow`` tool.
+    """
     if not files:
         raise HTTPException(status_code=400, detail="No files provided")
 
     from skills_ingestor.mm_train import MMSkillTrainer
 
     tmp_dir = tempfile.mkdtemp(prefix="mm_train_")
+    saved_paths: list[str] = []
+    saved_basenames: list[str] = []
+    train_failed = False
     try:
-        saved_paths: list[str] = []
         for upload in files:
-            safe_name = os.path.basename(upload.filename)
+            safe_name = os.path.basename(upload.filename or "")
             if not safe_name:
                 continue
             dest = os.path.join(tmp_dir, safe_name)
@@ -267,6 +285,7 @@ async def train_skills(files: list[UploadFile] = File(...)):
                 content = await upload.read()
                 f.write(content)
             saved_paths.append(dest)
+            saved_basenames.append(safe_name)
 
         if _db_available:
             from services import skill_service
@@ -275,7 +294,7 @@ async def train_skills(files: list[UploadFile] = File(...)):
                 existing_ids = {s["id"] for s in existing}
 
             trainer = MMSkillTrainer()
-            await asyncio.to_thread(trainer.train, saved_paths)
+            train_result = await asyncio.to_thread(trainer.train, saved_paths)
 
             from db.seed import seed_from_filesystem
             await seed_from_filesystem()
@@ -286,14 +305,14 @@ async def train_skills(files: list[UploadFile] = File(...)):
 
             async with _get_session_factory()() as session:
                 all_skills = await skill_service.list_skills(session)
-                return [s for s in all_skills if s["id"] not in existing_ids]
+                new_skills = [s for s in all_skills if s["id"] not in existing_ids]
         else:
             # In-memory fallback
             skills, _ = _get_in_memory_stores()
             existing_ids = set(skills.keys())
 
             trainer = MMSkillTrainer()
-            await asyncio.to_thread(trainer.train, saved_paths)
+            train_result = await asyncio.to_thread(trainer.train, saved_paths)
 
             import server
             refreshed = server._load_skills_from_disk()
@@ -304,9 +323,113 @@ async def train_skills(files: list[UploadFile] = File(...)):
                     new_skills.append(skill)
                 else:
                     skills[sid] = skill
-            return new_skills
 
+        session = get_default_store().register(tmp_dir, saved_basenames)
+        file_descriptors = [
+            {
+                "name": name,
+                "url": f"/api/skills/train/sessions/{session.session_id}/files/{name}",
+            }
+            for name in saved_basenames
+        ]
+        return {
+            "skills": new_skills,
+            "session_id": session.session_id,
+            "files": file_descriptors,
+            "workflows": train_result.get("workflows", {}),
+        }
+
+    except HTTPException:
+        train_failed = True
+        raise
     except Exception as e:
+        train_failed = True
         raise HTTPException(status_code=500, detail=str(e))
     finally:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
+        # Only purge the temp dir if we never handed it off to the session
+        # store (i.e. on early errors before session.register completed).
+        if train_failed:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@router.get("/train/sessions/{session_id}/files/{filename}")
+async def get_train_session_file(session_id: str, filename: str):
+    """Stream a file from a post-train session directory."""
+    session = get_default_store().get(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Train session not found or expired")
+
+    try:
+        path = session.file_path(filename)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="File not found in session")
+
+    media_type, _ = mimetypes.guess_type(str(path))
+    return FileResponse(path, media_type=media_type or "application/octet-stream", filename=filename)
+
+
+@router.delete("/train/sessions/{session_id}")
+async def delete_train_session(session_id: str):
+    """Tear down a post-train session early (frees disk before TTL)."""
+    removed = get_default_store().discard(session_id)
+    if not removed:
+        raise HTTPException(status_code=404, detail="Train session not found")
+    return {"ok": True}
+
+
+@router.get("/{skill_id}/workflow")
+async def get_skill_workflow(skill_id: str):
+    """Return the persisted ``workflow.json`` for a skill.
+
+    Workflows live next to ``SKILL.md`` under
+    ``backend/skills/<slug>/workflow.json``. The frontend identifies
+    skills by their DB UUID in DB mode and by an in-memory id that
+    matches the slug otherwise — resolve both shapes to the slug before
+    reading from disk.
+    """
+    if not skill_id:
+        raise HTTPException(status_code=400, detail="skill_id is required")
+
+    slug = await _resolve_skill_slug(skill_id)
+    if slug is None:
+        raise HTTPException(status_code=404, detail="Skill not found")
+
+    workflow = await asyncio.to_thread(load_workflow, slug)
+    if workflow is None:
+        raise HTTPException(status_code=404, detail="Workflow not found for skill")
+    return workflow.to_dict()
+
+
+async def _resolve_skill_slug(skill_id: str) -> str | None:
+    """Resolve a frontend-supplied skill identifier to an on-disk slug.
+
+    In DB mode ``skill_id`` is a UUID, so look up ``Skill.slug``. In the
+    in-memory fallback, ``_SKILLS`` is keyed by the slug already, but
+    legacy callers may pass an arbitrary id that happens to match a
+    directory under ``backend/skills/``.
+    """
+    if _db_available:
+        try:
+            skill_uuid = uuid.UUID(skill_id)
+        except (ValueError, TypeError):
+            # Not a UUID — fall through to the in-memory / slug-style
+            # lookup so legacy ids like ``user_foo_abcdef`` keep working.
+            skill_uuid = None
+        if skill_uuid is not None:
+            from db.models import Skill
+            from sqlalchemy import select
+
+            async with _get_session_factory()() as session:
+                row = (
+                    await session.execute(select(Skill).where(Skill.id == skill_uuid))
+                ).scalar_one_or_none()
+                if row is not None:
+                    return row.slug
+
+    skills, _ = _get_in_memory_stores()
+    if skill_id in skills:
+        # The in-memory id IS the directory slug for skills written by
+        # ``_load_skills_from_disk``; for user-created skills it's a
+        # ``user_<slug>_<hex>`` id that won't have a directory.
+        return skill_id
+    return None

@@ -126,6 +126,36 @@ export async function rateTaskRun(employeeId, sessionId, taskIndex, rating) {
   return res.json();
 }
 
+export async function alignTaskTrajectoryWithWorkflow(
+  employeeId,
+  sessionId,
+  taskIndex,
+  skillId,
+  { force = false } = {},
+) {
+  const params = new URLSearchParams({ skill_id: skillId });
+  if (force) params.set("force", "true");
+  const res = await fetch(
+    `${API_BASE}/employees/${employeeId}/task_runs/${encodeURIComponent(sessionId)}/${encodeURIComponent(taskIndex)}/trajectory/workflow_align?${params.toString()}`,
+    { method: "POST" },
+  );
+  if (res.status === 410) {
+    const body = await res.json();
+    return body?.detail || body;
+  }
+  if (!res.ok) {
+    let detail = `${res.status}`;
+    try {
+      const body = await res.json();
+      detail = body?.detail || detail;
+    } catch {
+      // keep default
+    }
+    throw new Error(`Failed to align trajectory with workflow: ${detail}`);
+  }
+  return res.json();
+}
+
 export async function annotateTaskTrajectory(employeeId, sessionId, taskIndex, { force = false } = {}) {
   const query = force ? "?force=true" : "";
   const res = await fetch(
@@ -254,7 +284,42 @@ export async function trainSkillsFromMedia(files) {
     const text = await res.text();
     throw new Error(`Training failed: ${text}`);
   }
+  // Backend returns { skills, session_id, files, workflows }. Pass the
+  // whole envelope through; legacy callers can pluck `skills`.
   return res.json();
+}
+
+export async function fetchSkillWorkflow(skillId) {
+  const res = await fetch(
+    `${API_BASE}/skills/${encodeURIComponent(skillId)}/workflow`,
+  );
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`Failed to load workflow: ${res.status}`);
+  return res.json();
+}
+
+export async function endTrainSession(sessionId) {
+  if (!sessionId) return null;
+  const res = await fetch(
+    `${API_BASE}/skills/train/sessions/${encodeURIComponent(sessionId)}`,
+    { method: "DELETE" },
+  );
+  if (res.status === 404) return null;
+  if (!res.ok) {
+    let detail = `${res.status}`;
+    try {
+      const body = await res.json();
+      detail = body?.detail || detail;
+    } catch {
+      // keep default
+    }
+    throw new Error(`Failed to end train session: ${detail}`);
+  }
+  return res.json();
+}
+
+export function trainSessionFileUrl(sessionId, filename) {
+  return `${API_BASE}/skills/train/sessions/${encodeURIComponent(sessionId)}/files/${encodeURIComponent(filename)}`;
 }
 
 export async function uploadFiles(sessionId, files) {

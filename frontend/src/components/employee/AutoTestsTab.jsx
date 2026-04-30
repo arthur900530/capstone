@@ -2,6 +2,7 @@ import { FlaskConical, Loader2, ShieldCheck } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import {
   deleteTestCase,
+  fetchSkills,
   generateTestCases,
   listTestCaseRuns,
   listTestCases,
@@ -33,6 +34,11 @@ export default function AutoTestsTab({ employee }) {
   const [count, setCount] = useState(5);
   const [cases, setCases] = useState([]);
   const [runsByCase, setRunsByCase] = useState({});
+  // Skills installed on this employee, in the same shape /api/skills
+  // returns. Used to populate the skill picker on the test-case edit form
+  // so an author can target one skill's expected workflow for the LLM
+  // judge.
+  const [employeeSkills, setEmployeeSkills] = useState([]);
   const [loading, setLoading] = useState(true);
   const [generating, setGenerating] = useState(false);
   const [runningAll, setRunningAll] = useState(false);
@@ -82,6 +88,33 @@ export default function AutoTestsTab({ employee }) {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [employee.id]);
+
+  // Resolve the employee's installed skills once on mount (and when the
+  // employee changes). The picker dropdown only shows skills assigned to
+  // this employee — that's a tighter scope than the global catalog and
+  // matches what the test-case workflow lookup expects on the backend.
+  useEffect(() => {
+    let cancelled = false;
+    const ids = employee?.skillIds || [];
+    if (ids.length === 0) {
+      setEmployeeSkills([]);
+      return undefined;
+    }
+    fetchSkills()
+      .then((all) => {
+        if (cancelled) return;
+        const idSet = new Set(ids);
+        setEmployeeSkills(
+          (all || []).filter((s) => idSet.has(s.id) || idSet.has(s.slug)),
+        );
+      })
+      .catch(() => {
+        if (!cancelled) setEmployeeSkills([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [employee?.id, employee?.skillIds]);
 
   const draftCount = useMemo(
     () => cases.filter((item) => item.status === "draft").length,
@@ -271,6 +304,7 @@ export default function AutoTestsTab({ employee }) {
                 testCase={testCase}
                 latestRun={(runsByCase[testCase.id] || [])[0]}
                 runLoading={runningCaseId === testCase.id}
+                availableSkills={employeeSkills}
                 onRun={handleRunCase}
                 onDelete={async (caseId) => {
                   await deleteTestCase(employee.id, caseId);
@@ -303,6 +337,12 @@ export default function AutoTestsTab({ employee }) {
           employeeId={employee.id}
           caseId={trajectoryCaseId}
           runId={trajectoryRunId}
+          run={
+            (runsByCase[trajectoryCaseId] || []).find(
+              (r) => r.id === trajectoryRunId,
+            ) || null
+          }
+          testCase={cases.find((c) => c.id === trajectoryCaseId) || null}
           onClose={() => {
             setTrajectoryRunId(null);
             setTrajectoryCaseId(null);

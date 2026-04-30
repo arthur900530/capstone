@@ -3,6 +3,7 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  GitCompareArrows,
   Loader2,
   Sparkles,
   Target,
@@ -10,6 +11,12 @@ import {
   ListChecks,
 } from "lucide-react";
 import { backfillRecentAnnotations } from "../../services/api";
+import {
+  alignmentForPath,
+  formatRate,
+  leafPaths,
+  subtreeCompletion,
+} from "../workflow/workflowScore";
 
 const BUCKET_STYLES = {
   all: {
@@ -160,11 +167,16 @@ function aggregatedGoalScore(goal) {
    sub-goals at 0.25, leaf steps at 0.125, and so on — matching the
    "overall success rate = 0.5·L1_avg + 0.25·L2_avg + …" spec.
 
-   Prefers the backend-computed ``task_score`` (shared with the employee
-   aggregate KPI) so the headline %, tooltip and aggregate tile can't
-   drift out of sync; falls back to the in-page recomputation when the
-   field is absent (older payloads). */
+   Prefers the backend-computed ``effective_task_score`` so workflow
+   alignment (when the user has compared this run against a skill
+   workflow in the trajectory drawer's Workflow tab) drives the
+   headline %, tooltip and aggregate tile. Falls back to ``task_score``
+   (the LLM-goal weighted score) and finally to the in-page recomputation
+   for older payloads. */
 function aggregatedTaskScore(run) {
+  if (run && typeof run.effective_task_score === "number") {
+    return run.effective_task_score;
+  }
   if (run && typeof run.task_score === "number") return run.task_score;
   const goals = run?.top_level_goals || [];
   if (goals.length === 0) return null;
@@ -175,6 +187,14 @@ function aggregatedTaskScore(run) {
   const offset = _seedAncestors(levels, goals[0]?.ancestor_statuses);
   for (const g of goals) _collectLevels(g, levels, offset);
   return _scoreFromLevels(levels);
+}
+
+function workflowBest(run) {
+  return run?.workflow_summary?.best || null;
+}
+
+function isWorkflowAligned(run) {
+  return Boolean(run?.workflow_summary?.aligned);
 }
 
 function scoreBucket(score) {
@@ -243,6 +263,133 @@ function BarTooltip({ goal }) {
       {goal.status_reason ? (
         <p className="border-t border-border/40 pt-1 text-[10px] italic leading-snug text-text-muted">
           {goal.status_reason}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+// Workflow-aware bar that replaces ``GoalBar`` for aligned runs.
+//
+// One segment per TOP-LEVEL workflow step. Width is proportional to the
+// number of leaf steps under that subtree so a complex top-level step
+// doesn't visually weigh the same as a single-leaf one. Color is the
+// score bucket of ``subtreeCompletion(rate)``: a step where every leaf
+// satisfied is green, a half-failed step is amber, all-missed is red.
+//
+// Tooltip surfaces the step title + ``passed/total · rate%`` so the
+// underlying alignment numbers are still discoverable on hover.
+function WorkflowBar({ workflow, alignment }) {
+  const [hoveredIdx, setHoveredIdx] = useState(null);
+
+  const segments = useMemo(() => {
+    const roots = workflow?.root_steps || [];
+    return roots.map((step, i) => {
+      const path = [i];
+      const completion = subtreeCompletion(step, path, alignment);
+      const leaves = leafPaths([step]);
+      // Equal-fallback width keeps a step with zero leaves (degenerate
+      // workflow) visible rather than collapsing the segment to 0.
+      const units = Math.max(1, leaves.length || 1);
+      const bucket =
+        completion.total === 0 ? "empty" : scoreBucket(completion.rate);
+      return { step, path, completion, units, bucket };
+    });
+  }, [workflow, alignment]);
+
+  if (!segments.length) {
+    return <div className="h-3 w-full rounded bg-zinc-700/40" />;
+  }
+
+  const totalUnits = segments.reduce((s, seg) => s + seg.units, 0);
+
+  const laidOut = segments.reduce(
+    (acc, seg, i) => {
+      const widthPct = (seg.units / totalUnits) * 100;
+      const leftPct = acc.total;
+      acc.items.push({ ...seg, i, widthPct, leftPct });
+      acc.total += widthPct;
+      return acc;
+    },
+    { items: [], total: 0 },
+  ).items;
+
+  const hovered = hoveredIdx != null ? laidOut[hoveredIdx] : null;
+
+  return (
+    <div className="relative" onMouseLeave={() => setHoveredIdx(null)}>
+      <div className="flex h-3 w-full overflow-hidden rounded border border-border/40">
+        {laidOut.map((seg) => {
+          const style = BUCKET_STYLES[seg.bucket] || BUCKET_STYLES.unknown;
+          const isHovered = hoveredIdx === seg.i;
+          const dim = hoveredIdx != null && !isHovered;
+          return (
+            <div
+              key={seg.path.join(".")}
+              role="button"
+              tabIndex={0}
+              aria-label={`${seg.step?.title || "Step"}, ${seg.completion.passed}/${seg.completion.total} satisfied`}
+              onMouseEnter={() => setHoveredIdx(seg.i)}
+              onFocus={() => setHoveredIdx(seg.i)}
+              onBlur={() => setHoveredIdx((prev) => (prev === seg.i ? null : prev))}
+              className={`h-full cursor-pointer transition-[filter,opacity] duration-150 ${style.bar} ${
+                seg.i > 0 ? "border-l border-[#2a2c31]" : ""
+              } ${isHovered ? "brightness-125" : dim ? "opacity-60" : ""}`}
+              style={{ width: `${seg.widthPct}%` }}
+            />
+          );
+        })}
+      </div>
+      {hovered ? (
+        <div
+          className="pointer-events-none absolute bottom-full z-20 mb-2 -translate-x-1/2 rounded-md border border-border/70 bg-[#1a1c1f] px-2.5 py-1.5 shadow-[0_6px_24px_rgba(0,0,0,0.45)]"
+          style={{ left: `${hovered.leftPct + hovered.widthPct / 2}%` }}
+        >
+          <WorkflowBarTooltip segment={hovered} alignment={alignment} />
+          <span
+            className="absolute left-1/2 top-full -translate-x-1/2 border-x-4 border-t-4 border-x-transparent border-t-[#1a1c1f]"
+            aria-hidden
+          />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function WorkflowBarTooltip({ segment, alignment }) {
+  const style = BUCKET_STYLES[segment.bucket] || BUCKET_STYLES.unknown;
+  const ratePct = formatRate(segment.completion.rate);
+  const isLeafSegment =
+    !Array.isArray(segment.step?.children) || segment.step.children.length === 0;
+  const leafEntry = isLeafSegment
+    ? alignmentForPath(alignment, segment.path)
+    : null;
+  const evidence = leafEntry?.evidence;
+  return (
+    <div className="pointer-events-none w-56 space-y-1.5">
+      <div className="flex items-start gap-1.5">
+        <span className={`mt-0.5 h-2 w-2 shrink-0 rounded-sm ${style.swatch}`} />
+        <span className="text-[12px] font-medium leading-snug text-text-primary">
+          {segment.step?.title || "Step"}
+        </span>
+      </div>
+      <div className="flex items-center justify-between gap-2 text-[11px]">
+        <span className="text-text-muted">
+          {segment.completion.passed}/{segment.completion.total}
+          {isLeafSegment ? " (leaf step)" : " leaf steps"}
+        </span>
+        <span className={`font-semibold tabular-nums ${style.text}`}>
+          {ratePct}
+        </span>
+      </div>
+      <div className="flex items-center justify-between gap-2">
+        <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${style.badge}`}>
+          {style.label}
+        </span>
+      </div>
+      {evidence ? (
+        <p className="border-t border-border/40 pt-1 text-[10px] italic leading-snug text-text-muted">
+          {evidence}
         </p>
       ) : null}
     </div>
@@ -432,10 +579,9 @@ function TaskRow({ index, run, expanded, onToggle, onOpenTrajectory }) {
   const goals = run.top_level_goals || [];
   const leaf = run.leaf_summary || { total: 0, achieved: 0, rate: 0 };
   // The headline % is the depth-weighted aggregated score so the number
-  // and the bar color always tell the same story. A 100%-leaf trace with
-  // an LLM "failure" at the top will correctly read ~33% in red instead
-  // of 100% in red. Raw leaf rate is still available in the tooltip and
-  // the expanded breakdown.
+  // and the bar color always tell the same story — and now prefers the
+  // workflow-alignment rate when the user has compared this run against
+  // a skill workflow in the trajectory drawer's Workflow tab.
   const score = aggregatedTaskScore(run);
   const bucket = taskBucket(run);
   const hasSignal = score != null || (leaf.total || 0) > 0;
@@ -444,6 +590,12 @@ function TaskRow({ index, run, expanded, onToggle, onOpenTrajectory }) {
   const pctColor = hasSignal
     ? BUCKET_STYLES[bucket]?.text || "text-text-primary"
     : "text-text-muted";
+
+  const aligned = isWorkflowAligned(run);
+  const wfBest = workflowBest(run);
+  const wfPct = wfBest ? Math.round((wfBest.rate || 0) * 100) : null;
+  const wfAccent =
+    wfBest != null ? BUCKET_STYLES[scoreBucket(wfBest.rate)] : null;
 
   const title =
     run.prompt_preview?.trim() ||
@@ -475,6 +627,17 @@ function TaskRow({ index, run, expanded, onToggle, onOpenTrajectory }) {
         >
           {title}
         </button>
+        {aligned && wfBest ? (
+          <span
+            className={`inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium ${
+              wfAccent?.badge || "bg-surface text-text-muted"
+            }`}
+            title={`Workflow alignment vs. ${wfBest.skill_slug || wfBest.skill_id}: ${wfBest.passed}/${wfBest.total} steps`}
+          >
+            <GitCompareArrows size={10} />
+            workflow {wfPct}%
+          </span>
+        ) : null}
         <span
           className={`shrink-0 text-[13px] font-semibold tabular-nums ${pctColor}`}
         >
@@ -483,7 +646,18 @@ function TaskRow({ index, run, expanded, onToggle, onOpenTrajectory }) {
       </div>
 
       <div className="mt-2 pl-10">
-        <GoalBar goals={goals} />
+        {aligned && wfBest?.workflow ? (
+          // For workflow-aligned runs the bar reflects the chosen
+          // skill's workflow steps and the LLM's per-leaf alignment so
+          // the visual matches the score the user just saw in the
+          // drawer's Workflow tab.
+          <WorkflowBar
+            workflow={wfBest.workflow}
+            alignment={wfBest.workflow_alignment}
+          />
+        ) : (
+          <GoalBar goals={goals} />
+        )}
         {!hasSignal && !run.annotated ? (
           <p className="mt-1 text-[11px] italic text-text-muted">
             Not yet annotated — run the LLM to score this task.
@@ -673,6 +847,7 @@ function TrendHoverCard({ point, chartWidth, padL, padR }) {
   const title =
     point.task.prompt_preview?.trim() || "(empty prompt)";
   const bucketStyle = BUCKET_STYLES[point.bucket] || BUCKET_STYLES.unknown;
+  const aligned = isWorkflowAligned(point.task);
   return (
     <div
       className="pointer-events-none absolute top-2 z-20 -translate-x-1/2 rounded-md border border-border/70 bg-[#1a1c1f] px-2.5 py-1.5 text-[11px] shadow-[0_6px_24px_rgba(0,0,0,0.45)]"
@@ -695,9 +870,13 @@ function TrendHoverCard({ point, chartWidth, padL, padR }) {
         </span>
         <span
           className="text-[10px] uppercase tracking-wider text-text-muted"
-          title="Depth-weighted score: 0.5·top + 0.25·L2 + 0.125·L3 + …"
+          title={
+            aligned
+              ? "Workflow alignment rate: passed leaf steps / total leaf steps"
+              : "Depth-weighted score: 0.5·top + 0.25·L2 + 0.125·L3 + …"
+          }
         >
-          weighted
+          {aligned ? "workflow" : "weighted"}
         </span>
       </div>
       {point.task.leaf_summary?.total ? (
@@ -803,14 +982,27 @@ export default function TaskPerformanceSection({
 
   // The headline KPI uses the depth-weighted aggregated mean (0.5·L1_avg
   // + 0.25·L2_avg + …) so it honours the spec. ``avg_task_score`` is
-  // provided by the backend; falling back to ``avg_leaf_rate`` keeps old
-  // payloads from rendering "—" during a deploy window.
+  // provided by the backend and now prefers workflow-alignment rate for
+  // any run the user has compared against a skill workflow, with
+  // ``avg_task_score_goal_only`` and ``avg_leaf_rate`` kept around for
+  // diagnostics / parity checks.
   const weightedRate =
     typeof aggregate?.avg_task_score === "number"
       ? aggregate.avg_task_score
       : aggregate?.avg_leaf_rate;
   const leafPct = Math.round((weightedRate || 0) * 100);
   const leafAccent = accentForRate(weightedRate);
+  const tasksWorkflowAligned = aggregate?.tasks_workflow_aligned ?? 0;
+  const goalOnlyRate = aggregate?.avg_task_score_goal_only ?? null;
+  const workflowRate = aggregate?.avg_workflow_rate ?? null;
+  const workflowSteps = {
+    total: aggregate?.total_workflow_steps ?? 0,
+    passed: aggregate?.total_workflow_steps_passed ?? 0,
+  };
+  const workflowMicroPct =
+    workflowSteps.total > 0
+      ? Math.round((workflowSteps.passed / workflowSteps.total) * 100)
+      : 0;
 
   const leafTotals = useMemo(
     () => ({
@@ -858,14 +1050,55 @@ export default function TaskPerformanceSection({
   return (
     <div className="space-y-4">
       {/* Goal-oriented KPI tiles */}
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+      <div
+        className={`grid grid-cols-1 gap-3 ${
+          tasksWorkflowAligned > 0 ? "sm:grid-cols-4" : "sm:grid-cols-3"
+        }`}
+      >
         <Kpi
           icon={TrendingUp}
           label="Avg success rate"
           value={annotatedTasks > 0 ? `${leafPct}%` : "—"}
-          sub="depth-weighted mean (0.5·L1 + 0.25·L2 + …)"
+          sub={
+            tasksWorkflowAligned > 0
+              ? `workflow alignment for ${tasksWorkflowAligned} task${
+                  tasksWorkflowAligned !== 1 ? "s" : ""
+                }${
+                  typeof goalOnlyRate === "number"
+                    ? ` · LLM-goal only ${Math.round(goalOnlyRate * 100)}%`
+                    : ""
+                }`
+              : "depth-weighted mean (0.5·L1 + 0.25·L2 + …)"
+          }
           accent={annotatedTasks > 0 ? leafAccent : undefined}
         />
+        {tasksWorkflowAligned > 0 ? (
+          <Kpi
+            icon={GitCompareArrows}
+            label="Workflow alignment"
+            value={
+              workflowSteps.total > 0 ? (
+                <>
+                  <span>{workflowSteps.passed}</span>
+                  <span className="text-lg font-normal text-text-muted">
+                    {" / "}
+                    {workflowSteps.total}
+                  </span>
+                </>
+              ) : (
+                "—"
+              )
+            }
+            sub={
+              workflowSteps.total > 0
+                ? `${workflowMicroPct}% of leaf steps · avg ${Math.round(
+                    (workflowRate || 0) * 100,
+                  )}% per task`
+                : "no leaf-step signal yet"
+            }
+            accent={accentForRate(workflowRate)}
+          />
+        ) : null}
         <Kpi
           icon={Target}
           label="Tasks achieved"

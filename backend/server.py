@@ -35,8 +35,6 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
-from skills_ingestor.mm_train import MMSkillTrainer
-
 import metrics
 
 dotenv.load_dotenv()
@@ -2588,41 +2586,10 @@ async def get_skill_file_content(skill_id: str, filename: str):
     raise HTTPException(status_code=404, detail="File not found")
 
 
-@app.post("/api/skills/train")
-async def train_skills(files: list[UploadFile] = File(...)):
-    """Accept media uploads, run MMSkillTrainer, return newly created skills."""
-    if not files:
-        raise HTTPException(status_code=400, detail="No files provided")
-
-    tmp_dir = tempfile.mkdtemp(prefix="mm_train_")
-    try:
-        saved_paths: list[str] = []
-        for upload in files:
-            dest = os.path.join(tmp_dir, upload.filename)
-            with open(dest, "wb") as f:
-                content = await upload.read()
-                f.write(content)
-            saved_paths.append(dest)
-
-        existing_ids = set(_SKILLS.keys())
-
-        trainer = MMSkillTrainer()
-        await asyncio.to_thread(trainer.train, saved_paths)
-
-        refreshed = _load_skills_from_disk()
-        new_skills = []
-        for sid, skill in refreshed.items():
-            if sid not in existing_ids:
-                _SKILLS[sid] = skill
-                new_skills.append(skill)
-            else:
-                _SKILLS[sid] = skill
-
-        return new_skills
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
+# Note: the canonical POST /api/skills/train handler now lives in
+# routers/skills.py (returns the session_id + workflows payload). The
+# legacy in-memory copy that used to live here was removed when the
+# workflow ingestor was added; do not re-add it.
 
 
 _SKILLSBENCH_ROOT = Path(__file__).resolve().parent / "skillsbench"
