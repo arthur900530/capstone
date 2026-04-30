@@ -106,6 +106,23 @@ cleanup() {
   for pid in "${PIDS[@]}"; do
     kill "$pid" 2>/dev/null && wait "$pid" 2>/dev/null || true
   done
+
+  # Stop any openhands agent-server containers we spawned (the server
+  # lifespan normally tears them down, but a hard kill or crash can leave
+  # them holding on to ports 8010-8012, blocking the next start). Match by
+  # container name prefix since openhands generates a uuid suffix.
+  if command -v docker >/dev/null 2>&1; then
+    leftover=$(docker ps -q --filter "name=^agent-server-" 2>/dev/null)
+    if [ -n "$leftover" ]; then
+      info "Stopping leftover agent-server containers..."
+      docker stop $leftover >/dev/null 2>&1 || true
+    fi
+  fi
+
+  # Clean up the bind-mount tempdirs created by tempfile.mkdtemp in the
+  # backend's lifespan. These accumulate one per server boot otherwise.
+  rm -rf /tmp/shared_ws_* 2>/dev/null || true
+
   step "All services stopped."
   echo ""
   exit 0
