@@ -413,13 +413,9 @@ async def run_test_case(
     finished_at = _now()
     duration_ms = int((finished_at - started_at).total_seconds() * 1000)
 
-    # When the agent's workflow is file-centric (file_editor + finish), the
-    # runtime sometimes returns an empty string even though the agent did call
-    # the `finish` tool with a closing message. The finish event's content IS
-    # captured in compact_trajectory (marked with is_finish=True by
-    # _compact_action_event in agent_event_utils). Recover it here so the
-    # deterministic non-empty-output check reflects what the agent actually
-    # communicated, not just the raw return value of _agent_runtime().
+    # Recover final_answer from the finish event when the runtime returns
+    # an empty string (file-centric workflows where the agent writes to
+    # disk and calls finish without producing conversational text).
     if not (final_answer or "").strip():
         for event in compact_trajectory:
             if event.get("is_finish") and event.get("content", "").strip():
@@ -430,6 +426,10 @@ async def run_test_case(
     latency_within_budget = duration_ms <= latency_cap_ms
     deterministic_checks = {
         "finished_cleanly": finished_cleanly,
+        # Kept for display/telemetry only — no longer gates the judge call.
+        # File-centric agents (file_editor + finish) legitimately return an
+        # empty conversational answer; the judge has workspace_files as
+        # ground-truth evidence and can grade correctly regardless.
         "non_empty_output": non_empty_output,
         "latency_within_budget": latency_within_budget,
         "used_tools": sorted(used_tools),
@@ -455,24 +455,6 @@ async def run_test_case(
     # is large and already available via the export payload.
     run_telemetry["workspace_files_written"] = sorted(workspace_files.keys())
 
-    if not non_empty_output:
-        return {
-            "started_at": started_at,
-            "finished_at": finished_at,
-            "duration_ms": duration_ms,
-            "verdict": "fail",
-            "verdict_source": "deterministic",
-            "judge_rationale": None,
-            "judge_evidence_quote": None,
-            "judge_confidence": None,
-            "raw_output": final_answer or None,
-            "failure_reason": "empty final output",
-            "agent_session_id": session_id,
-            "deterministic_checks": deterministic_checks,
-            "run_telemetry": run_telemetry,
-            "events": list(compact_trajectory),
-            "transcript": serialize_trajectory(raw_events),
-        }
     if not latency_within_budget:
         return {
             "started_at": started_at,

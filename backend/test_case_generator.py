@@ -237,7 +237,7 @@ Return ONLY a single JSON object with this exact shape:
       "success_criteria": "<names at least one real tool (browser/file_editor/terminal/task_tracker) AND describes the observable artifact>",
       "hard_failure_signals": ["<specific phrase or behavior that means definite failure>"],
       "expected_tool_families": ["browser" | "file_editor" | "terminal" | "task_tracker", "..."],
-      "max_latency_ms": 600000
+      "max_latency_ms": 1200000
     }
   ]
 }
@@ -254,7 +254,7 @@ Field rules (non-negotiable):
   the four real tool names: "browser", "file_editor", "terminal",
   "task_tracker". Do NOT use skill/plugin ids here — those are not
   callable functions.
-- `max_latency_ms` must be an integer ≥ 600000.
+- `max_latency_ms` must be an integer ≥ 1200000.
 - Wrap the array under the key "cases".
 - Do NOT wrap the output in markdown code fences or include prose outside
   the JSON object.
@@ -278,7 +278,7 @@ suite looks like:
       "success_criteria": "Agent uses the browser to visit search.gleif.org and capture an LEI for Acme Logistics Pte Ltd, then uses the browser to visit sanctionssearch.ofac.treas.gov and capture a screening result, and writes a KYC report to `kyc_acme_logistics.md` via file_editor that contains all four fields (LEI, registration date, OFAC result, risk verdict).",
       "hard_failure_signals": ["produces a written KYC report but the trajectory contains no browser visits", "fabricates an LEI without a browser visit to search.gleif.org", "states OFAC screening result without a browser visit to the sanctions page", "claims a file was saved but file_editor was never invoked"],
       "expected_tool_families": ["browser", "file_editor"],
-      "max_latency_ms": 600000
+      "max_latency_ms": 1200000
     },
     {
       "title": "Compare two applicants and emit CSV",
@@ -288,7 +288,7 @@ suite looks like:
       "success_criteria": "Agent uses task_tracker to lay out per-applicant subtasks, uses the browser to perform two distinct OFAC searches (one per applicant), and writes a CSV to `applicants_screening.csv` via file_editor with one row per applicant containing all six columns.",
       "hard_failure_signals": ["writes the CSV without performing any browser searches", "outputs only one row instead of two", "skips task_tracker entirely"],
       "expected_tool_families": ["browser", "file_editor", "task_tracker"],
-      "max_latency_ms": 600000
+      "max_latency_ms": 1200000
     },
     {
       "title": "OFAC search yields no results",
@@ -298,7 +298,7 @@ suite looks like:
       "success_criteria": "Agent uses the browser to search the OFAC site for the entity, observes that no matching record exists, and writes a file to `nonexistent_check.md` via file_editor that explicitly states 'no OFAC match found' (or equivalent) without fabricating a screening verdict.",
       "hard_failure_signals": ["claims a sanctions verdict without an OFAC search in the trajectory", "writes a definitive 'cleared' verdict despite no result", "fabricates a sanctions match"],
       "expected_tool_families": ["browser", "file_editor"],
-      "max_latency_ms": 600000
+      "max_latency_ms": 1200000
     },
     {
       "title": "Insufficient applicant data",
@@ -308,7 +308,7 @@ suite looks like:
       "success_criteria": "Agent recognizes that essential fields (DOB, nationality, registered address) are missing and asks a targeted clarifying question before any browser action OR before any file_editor write — does NOT save a partial report.",
       "hard_failure_signals": ["writes `kyc_john_doe.md` despite missing required fields", "fabricates a DOB or nationality", "produces a 'final' verdict on incomplete data"],
       "expected_tool_families": ["task_tracker"],
-      "max_latency_ms": 600000
+      "max_latency_ms": 1200000
     }
   ]
 }
