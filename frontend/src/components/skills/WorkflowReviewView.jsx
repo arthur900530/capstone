@@ -11,6 +11,18 @@ import WorkflowTree from "../workflow/WorkflowTree";
 // - skills    : [{ id, name, ... }] new skills returned alongside workflows
 // (used to label the picker chips)
 
+// Normalize a filename for tolerant matching against an uploaded basename.
+// Mirrors backend ``MMSkillTrainer._normalize_basename`` so older
+// workflow.json files (with model-emitted noise like "foo.mp400:00") still
+// pair with the correct source file on the review screen.
+const MEDIA_EXT_RE = /\.(mp4|mov|webm|m4v|avi|mp3|wav|m4a|txt|md|py|sh|json|yaml|yml|csv)/i;
+function normalizeBasename(value) {
+  if (!value) return "";
+  const base = String(value).split(/[\\/]/).pop().trim().toLowerCase();
+  const match = base.match(MEDIA_EXT_RE);
+  return match ? base.slice(0, match.index + match[0].length) : base;
+}
+
 export default function WorkflowReviewView({ workflows, files = [], skills = [] }) {
   const slugs = useMemo(() => Object.keys(workflows || {}), [workflows]);
   const [selectedSlug, setSelectedSlug] = useState(slugs[0] || null);
@@ -23,17 +35,34 @@ export default function WorkflowReviewView({ workflows, files = [], skills = [] 
 
   const workflow = selectedSlug ? workflows[selectedSlug] : null;
 
-  // Pick the file the workflow references; fall back to the only video, if
-  // any, otherwise the first file.
+  // Pick the file the workflow references. Match `source_file` exactly
+  // first, then a normalized form (case-insensitive, extension-trimmed) to
+  // tolerate model garbling. As a last resort, fall back to assigning the
+  // Nth slug to the Nth video so multi-video uploads don't all collapse
+  // onto the first file.
   const selectedFile = useMemo(() => {
     if (!files || files.length === 0) return null;
-    if (workflow?.source_file) {
-      const match = files.find((f) => f.name === workflow.source_file);
-      if (match) return match;
+
+    const sourceFile = workflow?.source_file;
+    if (sourceFile) {
+      const exact = files.find((f) => f.name === sourceFile);
+      if (exact) return exact;
+      const norm = normalizeBasename(sourceFile);
+      if (norm) {
+        const fuzzy = files.find((f) => normalizeBasename(f.name) === norm);
+        if (fuzzy) return fuzzy;
+      }
     }
-    const video = files.find((f) => /\.(mp4|mov|webm|m4v|avi)$/i.test(f.name));
-    return video || files[0];
-  }, [files, workflow?.source_file]);
+
+    const videos = files.filter((f) =>
+      /\.(mp4|mov|webm|m4v|avi)$/i.test(f.name)
+    );
+    if (videos.length > 0) {
+      const idx = Math.max(0, slugs.indexOf(selectedSlug));
+      return videos[idx % videos.length];
+    }
+    return files[0];
+  }, [files, workflow?.source_file, slugs, selectedSlug]);
 
   const videoRef = useRef(null);
   const [currentTime, setCurrentTime] = useState(0);
@@ -99,6 +128,7 @@ export default function WorkflowReviewView({ workflows, files = [], skills = [] 
         <div className="space-y-2">
           {selectedFile ? (
             <video
+              key={selectedFile.url}
               ref={videoRef}
               src={selectedFile.url}
               controls

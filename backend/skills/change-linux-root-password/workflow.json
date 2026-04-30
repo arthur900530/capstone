@@ -1,0 +1,114 @@
+{
+  "skill_name": "change-linux-root-password",
+  "title": "Change Linux Root Password",
+  "summary": "This workflow provides two methods to change the root password in Linux: one for when the current password is known, and another for resetting it when the current password is unknown via the Grub menu.",
+  "source_file": "Change-the-Root-Password-in-Linux_e38d3efe6c.txt",
+  "root_steps": [
+    {
+      "node_type": "workflow_step",
+      "title": "Method 1: Change password when current password is known",
+      "description": "",
+      "start_time": null,
+      "end_time": null,
+      "children": [
+        {
+          "node_type": "workflow_step",
+          "title": "Open a terminal window",
+          "description": "Press Ctrl+Alt+T to open a new terminal window or proceed if already at a command prompt.",
+          "start_time": null,
+          "end_time": null,
+          "children": []
+        },
+        {
+          "node_type": "workflow_step",
+          "title": "Become root user",
+          "description": "Type \"su\" and press Enter, then enter the current root password.",
+          "start_time": null,
+          "end_time": null,
+          "children": []
+        },
+        {
+          "node_type": "workflow_step",
+          "title": "Initiate password change",
+          "description": "Type \"passwd\" and press Enter.",
+          "start_time": null,
+          "end_time": null,
+          "children": []
+        },
+        {
+          "node_type": "workflow_step",
+          "title": "Type and confirm new password",
+          "description": "Enter the new password twice.",
+          "start_time": null,
+          "end_time": null,
+          "children": []
+        },
+        {
+          "node_type": "workflow_step",
+          "title": "Exit root account and restart",
+          "description": "Type \"exit\" and press Enter, then restart the computer.",
+          "start_time": null,
+          "end_time": null,
+          "children": []
+        }
+      ]
+    },
+    {
+      "node_type": "workflow_step",
+      "title": "Method 2: Reset password via Grub menu when current password is unknown",
+      "description": "",
+      "start_time": null,
+      "end_time": null,
+      "children": [
+        {
+          "node_type": "workflow_step",
+          "title": "Restart and access Grub menu",
+          "description": "Restart the computer and press \"E\" at the Grub menu.",
+          "start_time": null,
+          "end_time": null,
+          "children": []
+        },
+        {
+          "node_type": "workflow_step",
+          "title": "Modify Grub entry for single-user mode",
+          "description": "Scroll to the line starting with \"linux /boot\", move cursor after \"ro\", and type \"init=/bin/bash\".",
+          "start_time": null,
+          "end_time": null,
+          "children": []
+        },
+        {
+          "node_type": "workflow_step",
+          "title": "Boot to single-user mode",
+          "description": "Press Ctrl+X to boot into a root-level command prompt.",
+          "start_time": null,
+          "end_time": null,
+          "children": []
+        },
+        {
+          "node_type": "workflow_step",
+          "title": "Mount file system as read-write",
+          "description": "Type \"mount \u2013o remount,rw /\" and press Enter.",
+          "start_time": null,
+          "end_time": null,
+          "children": []
+        },
+        {
+          "node_type": "workflow_step",
+          "title": "Set new root password",
+          "description": "Type \"passwd\" and press Enter, then enter the new password twice.",
+          "start_time": null,
+          "end_time": null,
+          "children": []
+        },
+        {
+          "node_type": "workflow_step",
+          "title": "Reboot the system",
+          "description": "Type \"reboot \u2013f\" and press Enter.",
+          "start_time": null,
+          "end_time": null,
+          "children": []
+        }
+      ]
+    }
+  ]
+}
