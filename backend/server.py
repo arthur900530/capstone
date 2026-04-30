@@ -381,13 +381,14 @@ _DEFAULT_CHAT_AGENT = "agent-conversational"
 
 
 def _resolve_agent(model: str | None, is_task: bool = True) -> dict:
-    """Pick the best matching agent profile and stamp it with the REAL model
-    that the runtime will actually call.
+    """Pick an agent profile to stamp on SSE ``agent`` events.
 
-    The `_AGENTS` registry carries historical/display model strings, but the
-    reflexion runtime always uses ``config.AGENT_MODEL``. To keep the UI
-    honest we clone the selected profile and overwrite its ``model`` field
-    with ``AGENT_MODEL`` before returning.
+    The ``_AGENTS`` registry is display metadata — the reflexion runtime
+    decides the real model from ``employee_profile.model`` (per-employee
+    override) falling back to ``config.AGENT_MODEL``. We still overwrite
+    the profile's ``model`` field with ``AGENT_MODEL`` here so the chat
+    header reflects the global default until/unless the runtime swaps in
+    a different per-employee model.
     """
     if model:
         for agent in _AGENTS.values():
@@ -1751,6 +1752,7 @@ async def _stream_real_task(
                 workspace=_SHARED_WS["workspace"],
                 session_id=session_id,
                 employee_profile=employee_profile,
+                model_override=(employee_profile or {}).get("model"),
             )
             if final_answer and not answer_emitted["value"]:
                 answer_emitted["value"] = True
@@ -2062,6 +2064,9 @@ async def _fetch_employee_profile_by_id(employee_id: str) -> dict | None:
                     "position": getattr(row, "position", "") or "",
                     "task": row.task or "",
                     "skill_ids": row.skill_ids or [],
+                    # Per-employee LLM. The runtime falls back to
+                    # config.AGENT_MODEL when this is empty.
+                    "model": (row.model or "").strip() or None,
                     # Metadata-only project-file manifest. The agent sees this
                     # in its system prompt via _format_employee_persona and
                     # can read each file's bytes from /workspace/project_files
@@ -2088,6 +2093,7 @@ async def _fetch_employee_profile_by_id(employee_id: str) -> dict | None:
             "position": emp.get("position") or "",
             "task": emp.get("task") or "",
             "skill_ids": emp.get("skillIds") or [],
+            "model": (emp.get("model") or "").strip() or None,
             "project_files": _sanitise_project_file_manifest(emp.get("files")),
         }
     except Exception:
