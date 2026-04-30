@@ -98,15 +98,24 @@ def extract_text(obj: Any) -> str:
 
 
 def parse_tool_args(tc: Any) -> tuple[str, dict]:
-    """Extract ``(args_string, args_dict)`` from a MessageToolCall.
+    """Extract ``(args_string, args_dict)`` from a tool-call object.
 
-    MessageToolCall uses OpenAI's format: ``tc.function.name`` and
-    ``tc.function.arguments`` where ``arguments`` is a JSON-encoded string.
+    OpenHands' ``MessageToolCall`` (``openhands.sdk.llm.message``) is flat:
+    ``tc.name`` and ``tc.arguments`` (the latter is a JSON-encoded string).
+    The OpenAI Chat Completions API uses a nested shape — ``tc.function.name``
+    and ``tc.function.arguments`` — and ``MessageToolCall.to_chat_dict()``
+    serialises *to* that nested shape, which is what made the older flat
+    code path silently regress to empty args. Try the flat form first and
+    fall back to the nested form so both representations work.
+
     A malformed/empty args payload yields ``("", {})`` rather than raising —
     this helper sits in the agent's hot loop and must never throw.
     """
-    fn = getattr(tc, "function", None)
-    args_str = (getattr(fn, "arguments", None) or "") if fn else ""
+    args_str = getattr(tc, "arguments", None)
+    if args_str is None:
+        fn = getattr(tc, "function", None)
+        args_str = getattr(fn, "arguments", None) if fn is not None else None
+    args_str = args_str or ""
     try:
         args_dict = json.loads(args_str) if args_str else {}
     except (json.JSONDecodeError, TypeError):

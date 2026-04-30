@@ -21,6 +21,7 @@ The public entry points are:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 from typing import Any
@@ -78,6 +79,129 @@ def _clip(text: str, limit: int = _MAX_SUBGOAL_CHARS) -> str:
     return text[:limit].rstrip() + "…"
 
 
+# Keys to surface first when building a tool-call summary. Order matters:
+# the most diagnostic key for each tool family (URL for browse, command for
+# bash, query for search) leads so the LLM can disambiguate calls of the
+# same tool that target different workflow steps.
+_PRIMARY_ARG_KEYS: tuple[str, ...] = (
+    "command",                       # bash / terminal
+    "query", "search_query", "q",    # web-search variants
+    "url",                           # browser navigate / fetch
+    "action",                        # browser_tool_set sub-action ("navigate", "click", …)
+    "path",                          # file ops
+    "code",                          # python / jupyter
+    "prompt",                        # delegate / sub-agent
+    "task",                          # task_tracker
+    "selector",                      # css / xpath
+    "index",                         # element index
+    "text",                          # type / message
+    "message",                       # finish-style
+    "file_text",                     # create
+    "new_str",                       # str_replace
+    "old_str",                       # str_replace
+    "insert_line",                   # insert mode
+)
+
+# Keys we deliberately drop from arg summaries — too long, binary, or
+# pure scaffolding that adds noise without disambiguation value.
+_NOISY_ARG_KEYS: frozenset[str] = frozenset(
+    {"thoughts", "reasoning", "image_data", "screenshot", "encoded_image"}
+)
+
+_PRIMARY_KEY_BUDGET = 3
+_TOTAL_KEY_BUDGET = 4
+
+
+def _short_arg_value(value: Any, cap: int = 100) -> str:
+    """Render a single arg value as a one-liner with sensible truncation."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        text = value
+    else:
+        try:
+            text = json.dumps(value, ensure_ascii=False)
+        except (TypeError, ValueError):
+            text = str(value)
+    text = text.replace("\n", " ").strip()
+    if len(text) > cap:
+        text = text[: cap - 1].rstrip() + "…"
+    return text
+
+
+def _looks_boilerplate(detail: str, tool: str) -> bool:
+    """``True`` when the persisted ``detail`` is the placeholder ``Calling X``."""
+    return detail.lower() == f"calling {tool.lower()}"
+
+
+def _summarize_tool_args(
+    *,
+    tool: str,
+    args: dict[str, Any] | None,
+    fallback_detail: str | None,
+    fallback_action: str | None = None,
+) -> str:
+    """Build a compact ``key=value; key=value`` summary of a tool call.
+
+    The annotator and workflow-alignment judge both rely on this string to
+    tell apart calls that share the same tool name but advance very
+    different workflow steps (e.g. browse-to-GLEIF vs. browse-to-Google
+    News). High-signal keys (URL, command, query, action) are surfaced
+    first so the most diagnostic info always lands inside the truncation
+    budget. Fallbacks: persisted ``detail`` string → raw ``node.action``
+    string with the ``"<tool>: "`` prefix stripped (the latter matters for
+    pre-2026-04-23 sessions that were persisted before ``args`` was
+    written into ``raw_events``).
+    """
+    detail = (fallback_detail or "").strip()
+    action_str = (fallback_action or "").strip()
+    # Strip the "<tool>: " prefix that ``trajectory.build_nodes_from_events``
+    # bakes into ``ActionNode.action`` so the fallback isn't just the tool
+    # name twice.
+    prefix = f"{tool}: "
+    if action_str.startswith(prefix):
+        action_str = action_str[len(prefix):]
+    detail_useful = bool(detail) and not _looks_boilerplate(detail, tool)
+    action_useful = bool(action_str) and not _looks_boilerplate(action_str, tool)
+
+    if isinstance(args, dict) and args:
+        parts: list[str] = []
+        seen: set[str] = set()
+
+        for key in _PRIMARY_ARG_KEYS:
+            if len(parts) >= _PRIMARY_KEY_BUDGET:
+                break
+            if key not in args:
+                continue
+            value = args[key]
+            if value in (None, "", [], {}):
+                continue
+            parts.append(f"{key}={_short_arg_value(value)}")
+            seen.add(key)
+
+        for key, value in args.items():
+            if len(parts) >= _TOTAL_KEY_BUDGET:
+                break
+            if key in seen or key in _NOISY_ARG_KEYS:
+                continue
+            if value in (None, "", [], {}):
+                continue
+            parts.append(f"{key}={_short_arg_value(value, cap=60)}")
+
+        summary = "; ".join(parts)
+        if summary:
+            return summary
+
+    # No usable args dict — fall back to the freest text we have so old
+    # sessions (or events written by a code path that didn't persist args)
+    # still expose something other than the bare tool name.
+    if detail_useful:
+        return detail
+    if action_useful:
+        return action_str
+    return ""
+
+
 def _action_subgoal(node: ActionNode) -> str:
     """One-line description of an ActionNode for the goal prompt."""
     extra = node.state.extra or {}
@@ -85,12 +209,30 @@ def _action_subgoal(node: ActionNode) -> str:
 
     if event_type == "tool_call":
         tool = extra.get("tool") or "tool"
-        detail = extra.get("detail") or node.action
-        return f"Call `{tool}` — {_clip(str(detail), 200)}"
+        summary = _summarize_tool_args(
+            tool=tool,
+            args=extra.get("args"),
+            fallback_detail=extra.get("detail"),
+            fallback_action=node.action,
+        )
+        line = f"Call `{tool}` — {summary}" if summary else f"Call `{tool}`"
+        return _clip(line, 320)
 
     if event_type == "file_edit":
         command = extra.get("command") or "edit"
         path = extra.get("path") or "(unknown path)"
+        # Surface a short preview of the changed content so the judge can
+        # tell apart different edits to the same path (e.g. successive
+        # str_replace passes on a report draft).
+        preview_value = (
+            extra.get("new_str")
+            or extra.get("file_text")
+            or extra.get("old_str")
+            or ""
+        )
+        preview = _short_arg_value(preview_value, cap=160) if preview_value else ""
+        if preview:
+            return _clip(f"{command} `{path}` — {preview}", 320)
         return f"{command} `{path}`"
 
     if event_type == "reflection":

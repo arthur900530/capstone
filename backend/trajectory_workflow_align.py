@@ -38,13 +38,20 @@ _PROMPT = (
     "- workflow: a tree of expected steps. Each step has a title, an optional "
     "description, and optional nested 'children'. A LEAF step is one with "
     "no children.\n"
-    "- actions: an ordered numbered list of actions the agent took.\n\n"
+    "- actions: an ordered numbered list of actions the agent took. Each "
+    "line looks like `[<idx>] Call \\`<tool>\\` — <key>=<value>; …` (or "
+    "similar for file edits, reflections, errors, etc.). Treat the "
+    "`<key>=<value>` fragments as ground truth — they are the actual tool "
+    "arguments (URL, command, query, path, search text) the agent used.\n\n"
     "Tasks:\n"
     "1. For EACH action, decide which single workflow step it most closely "
     "advances. workflow_step_path is the index path into workflow.root_steps "
     "and then .children recursively (e.g. [0] = first root step, [1, 0] = "
-    "first child of the second root step). Use [] (empty path) when the "
-    "action is unrelated, off-task, or pure overhead.\n"
+    "first child of the second root step). Use [] (empty path) ONLY when "
+    "the action is genuinely off-task or pure overhead (task tracker bookkeeping, "
+    "MEMORY.md upkeep, internal reflections); DO NOT use [] just because "
+    "the action's contribution is small — research/browsing/data extraction "
+    "actions belong to the matching workflow leaf even when individual.\n"
     "2. For EVERY LEAF step in the workflow, decide whether the action set "
     "taken together SATISFIES that step. Adherence is BINARY (true/false), "
     "no partial credit.\n\n"
@@ -64,6 +71,11 @@ _PROMPT = (
     "- action_index is the zero-based index in the actions list and must be "
     "present for every action.\n"
     "- 'rationale' and 'evidence' fragments must be ≤ 200 chars.\n"
+    "- When the action line carries a concrete fragment (URL, command, search "
+    "query, file path, typed text), QUOTE that fragment verbatim in the "
+    "rationale instead of paraphrasing — e.g. `navigates to gleif.org/lei-lookup` "
+    "rather than `browser navigation likely starts LEI lookup`. This makes "
+    "the assignments auditable.\n"
     "- Do not include any aggregate score; the consumer derives it from the "
     "step list."
 )
@@ -127,6 +139,17 @@ async def align_trajectory_to_workflow(
         "workflow": workflow,
         "actions": actions_block,
     }
+    # Surface the actions we're feeding the judge so we can debug
+    # "everything is unassigned" cases without re-deriving the trajectory:
+    # if these lines look like ``Call `browser_navigate` — Calling
+    # browser_navigate`` then args isn't being captured upstream; if they
+    # look like ``Call `browser_navigate` — url=https://…`` then the judge
+    # has the info and any genuine [] really is the model's choice.
+    logger.info(
+        "Workflow alignment input: %d actions, sample=%s",
+        len(action_descriptions),
+        action_descriptions[:5],
+    )
     messages = [
         {"role": "system", "content": _PROMPT},
         {"role": "user", "content": json.dumps(payload, ensure_ascii=True)},
@@ -137,7 +160,7 @@ async def align_trajectory_to_workflow(
             model=target_model,
             messages=messages,
             temperature=1.0,
-            max_completion_tokens=2000,
+            max_completion_tokens=32768,
             response_format={"type": "json_object"},
         )
     except Exception:
@@ -146,10 +169,11 @@ async def align_trajectory_to_workflow(
             model=target_model,
             messages=messages,
             temperature=1.0,
-            max_completion_tokens=2000,
+            max_completion_tokens=32768,
         )
 
     content = ((resp.choices or [{}])[0].message.content or "").strip()
+    logging.info(f"Workflow alignment LLM returned: {content}")
     try:
         parsed = json.loads(content) if content else {}
     except json.JSONDecodeError:
