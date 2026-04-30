@@ -36,7 +36,6 @@ export default function TestCaseRunDetail({ run, onClose, onOpenTrajectory }) {
             <p className="text-xs uppercase tracking-wide text-text-muted">Deterministic checks</p>
             <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
               <span>Finished cleanly: {String(Boolean(checks.finished_cleanly))}</span>
-              <span>Non-empty output: {String(Boolean(checks.non_empty_output))}</span>
               <span>Latency budget: {String(Boolean(checks.latency_within_budget))}</span>
               {checks.used_tools?.length > 0 && (
                 <span className="col-span-2 text-text-muted">

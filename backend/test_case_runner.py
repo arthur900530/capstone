@@ -252,9 +252,8 @@ async def run_test_case(
             "agent_session_id": session_id,
             "deterministic_checks": {
                 "finished_cleanly": False,
-                "non_empty_output": False,
                 "latency_within_budget": False,
-                "expected_tool_families": False,
+                "used_tools": [],
             },
             "run_telemetry": run_telemetry,
             "events": list(compact_trajectory),
@@ -288,9 +287,8 @@ async def run_test_case(
             "agent_session_id": session_id,
             "deterministic_checks": {
                 "finished_cleanly": False,
-                "non_empty_output": False,
                 "latency_within_budget": False,
-                "expected_tool_families": False,
+                "used_tools": [],
             },
             "run_telemetry": run_telemetry,
             "events": [],
@@ -381,9 +379,8 @@ async def run_test_case(
             "agent_session_id": session_id,
             "deterministic_checks": {
                 "finished_cleanly": False,
-                "non_empty_output": False,
                 "latency_within_budget": False,
-                "expected_tool_families": False,
+                "used_tools": [],
             },
             "run_telemetry": run_telemetry,
             "events": list(compact_trajectory),
@@ -410,9 +407,8 @@ async def run_test_case(
             "agent_session_id": session_id,
             "deterministic_checks": {
                 "finished_cleanly": False,
-                "non_empty_output": False,
                 "latency_within_budget": False,
-                "expected_tool_families": False,
+                "used_tools": [],
             },
             "run_telemetry": run_telemetry,
             "events": list(compact_trajectory),
@@ -422,24 +418,9 @@ async def run_test_case(
     finished_at = _now()
     duration_ms = int((finished_at - started_at).total_seconds() * 1000)
 
-    # Recover final_answer from the finish event when the runtime returns
-    # an empty string (file-centric workflows where the agent writes to
-    # disk and calls finish without producing conversational text).
-    if not (final_answer or "").strip():
-        for event in compact_trajectory:
-            if event.get("is_finish") and event.get("content", "").strip():
-                final_answer = event["content"].strip()
-                break
-
-    non_empty_output = bool((final_answer or "").strip())
     latency_within_budget = duration_ms <= latency_cap_ms
     deterministic_checks = {
         "finished_cleanly": finished_cleanly,
-        # Kept for display/telemetry only — no longer gates the judge call.
-        # File-centric agents (file_editor + finish) legitimately return an
-        # empty conversational answer; the judge has workspace_files as
-        # ground-truth evidence and can grade correctly regardless.
-        "non_empty_output": non_empty_output,
         "latency_within_budget": latency_within_budget,
         "used_tools": sorted(used_tools),
     }
@@ -447,7 +428,6 @@ async def run_test_case(
     # region agent log
     _dbg("deterministic checks complete", {
         "used_tools": sorted(used_tools),
-        "non_empty_output": non_empty_output,
         "latency_within_budget": latency_within_budget,
         "duration_ms": duration_ms,
     }, "H-E,H-F,H-G")
