@@ -121,6 +121,45 @@ def build_task_run_from_buffer(
     }
 
 
+def summarize_compact_events(events: list[dict]) -> dict:
+    """Derive counting fields from a ``test_case_runner.compact_trajectory``.
+
+    Autotest runs land in ``task_runs`` so the report card can render them
+    next to chat turns. The compact-event format is different from the
+    SSE-shaped events ``build_task_run_from_buffer`` consumes (keys
+    ``event_type``/``tool_name``/``args`` instead of
+    ``type``/``tool``/``args``), so this helper walks the compact list and
+    produces the same four metric fields chat turns expose.
+
+    The compact event shape is the one ``agent_event_utils.compact_event``
+    emits: ``ActionEvent`` rows with a ``tool_name`` are tool calls (with
+    ``is_finish: True`` flagging the agent's terminal answer, which we do
+    *not* count as a tool invocation). ``MessageEvent``/``ObservationEvent``
+    rows don't contribute to the tool histogram. Reflexion isn't surfaced
+    explicitly in the compact stream, so ``n_reflections`` is conservative
+    (zero for a single-trial autotest run).
+    """
+    tool_calls: list[dict] = []
+    for ev in events or []:
+        if ev.get("event_type") != "ActionEvent":
+            continue
+        if ev.get("is_finish"):
+            continue
+        if ev.get("tool_name"):
+            tool_calls.append(ev)
+
+    tool_histogram = dict(
+        Counter((ev.get("tool_name") or "unknown") for ev in tool_calls)
+    )
+
+    return {
+        "n_tool_calls": len(tool_calls),
+        "n_trials": 1,
+        "n_reflections": 0,
+        "tool_histogram": tool_histogram,
+    }
+
+
 def task_runs_from_chat(chat: dict) -> list[dict]:
     """Reconstruct task-run records from an in-memory chat transcript.
 
@@ -450,9 +489,14 @@ def aggregate_task_runs(runs: Iterable[dict]) -> dict:
     # User-submitted 1–5 ratings. Un-rated runs are excluded from the mean so
     # a backlog of unrated turns doesn't drag the average down — the report
     # card renders ``rated_tasks`` alongside the avg as the honest denominator.
+    # Autotest rows can never be rated by a user (no chat surface) so we
+    # also exclude them from the denominator; otherwise an autotest-heavy
+    # employee would show "0/N rated" forever and the rating block would
+    # render misleading "no ratings" copy.
+    chat_runs = [r for r in runs if r.get("source", "chat") != "autotest"]
     user_ratings = [
         int(r["user_rating"])
-        for r in runs
+        for r in chat_runs
         if r.get("user_rating") is not None
     ]
     rating_distribution: dict[int, int] = {k: 0 for k in range(1, 6)}
@@ -523,13 +567,18 @@ def aggregate_task_runs(runs: Iterable[dict]) -> dict:
             round(sum(user_ratings) / len(user_ratings), 2)
             if user_ratings else 0.0,
         "rated_tasks": len(user_ratings),
-        "unrated_tasks": n - len(user_ratings),
+        # ``unrated_tasks`` is the count of *chat* turns without a rating;
+        # autotests are excluded from the denominator (above) so the UI
+        # surfaces them as "rate-able" only when they correspond to real
+        # chat turns.
+        "unrated_tasks": len(chat_runs) - len(user_ratings),
         "rating_distribution": rating_distribution,
     }
 
 
 def serialize_task_run(row) -> dict:
     """Convert a ``TaskRun`` ORM row to a plain JSON-ready dict."""
+    test_case_run_id = getattr(row, "test_case_run_id", None)
     run = {
         "session_id": row.session_id,
         "task_index": row.task_index,
@@ -549,6 +598,10 @@ def serialize_task_run(row) -> dict:
             if getattr(row, "user_rating_at", None)
             else None
         ),
+        # Discriminates chat turns from autotest mirror rows so the UI can
+        # render an AUTOTEST chip without a separate fetch.
+        "source": getattr(row, "source", "chat") or "chat",
+        "test_case_run_id": str(test_case_run_id) if test_case_run_id else None,
     }
     _attach_goal_fields(run)
     return run

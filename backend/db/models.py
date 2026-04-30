@@ -388,6 +388,22 @@ class TaskRun(Base):
     user_rating_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # Discriminator distinguishing real chat turns from synthetic autotest
+    # runs that we mirror into ``task_runs`` so the report card can render
+    # them with the same KPIs / trajectory drawer plumbing. Defaults to
+    # "chat" so existing rows backfill cleanly.
+    source: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="chat", server_default="chat"
+    )
+    # When ``source = 'autotest'``, points at the originating ``test_case_runs``
+    # row so the drawer can lazily surface the LLM-judge verdict/rationale.
+    # Nullable for chat turns and for legacy autotest runs that pre-date
+    # this back-reference.
+    test_case_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("test_case_runs.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow
     )

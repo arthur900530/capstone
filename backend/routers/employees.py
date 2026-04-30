@@ -54,8 +54,10 @@ def _safe_file_name(name: str) -> str:
 from metrics import (
     aggregate_task_runs,
     serialize_task_run,
+    summarize_compact_events,
     task_runs_from_chat,
 )
+from agent_event_utils import compact_events_to_replay_events
 from trajectory import build_nodes_from_events, flatten_action_nodes, segment_nodes, to_dict
 from trajectory_llm import annotate_tree, apply_annotations, _action_subgoal
 from trajectory_workflow_align import align_trajectory_to_workflow
@@ -863,6 +865,136 @@ async def delete_employee_test_case(employee_id: str, case_id: str):
     return {"ok": True}
 
 
+async def _persist_autotest_task_run(
+    *,
+    employee_id: str,
+    case_payload: dict[str, Any],
+    run_result: dict[str, Any],
+    test_case_run_id: uuid.UUID,
+    expected_workflow: dict | None,
+) -> None:
+    """Mirror an autotest run into ``task_runs`` so the report card surfaces it.
+
+    Writes a single row keyed by the autotest's synthetic
+    ``session_id = "autotest-{uuid}"`` and ``task_index = 0`` (each autotest
+    gets its own session so the existing ``(session_id, task_index)`` unique
+    constraint never collides with chat turns or sibling autotests).
+
+    Pre-seeds ``trajectory_annotations.workflow_aligns`` from the verifier's
+    workflow alignment when a target skill is set, so the trajectory drawer's
+    Workflow tab opens already populated for that skill.
+
+    Best-effort: failures are logged and swallowed so a metrics hiccup never
+    blocks the actual test-case run from returning.
+    """
+    try:
+        from db.engine import async_session
+        from db.models import TaskRun
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+        try:
+            emp_uuid = uuid.UUID(employee_id)
+        except (ValueError, TypeError):
+            logger.info(
+                "[autotest] persist skipped — bad employee_id=%r", employee_id
+            )
+            return
+
+        events = run_result.get("events") or []
+        replay_events = compact_events_to_replay_events(events)
+        counts = summarize_compact_events(events)
+
+        prompt_text = (
+            (case_payload.get("title") or case_payload.get("prompt") or "").strip()
+            or "(autotest)"
+        )
+        prompt_preview = prompt_text[:200]
+
+        annotations = _build_autotest_annotations(
+            case_payload=case_payload,
+            run_result=run_result,
+            expected_workflow=expected_workflow,
+        )
+
+        async with async_session() as session:
+            stmt = (
+                pg_insert(TaskRun.__table__)
+                .values(
+                    employee_id=emp_uuid,
+                    session_id=run_result["agent_session_id"],
+                    task_index=0,
+                    prompt_preview=prompt_preview,
+                    started_at=run_result["started_at"],
+                    ended_at=run_result["finished_at"],
+                    duration_ms=int(run_result.get("duration_ms") or 0),
+                    n_tool_calls=counts["n_tool_calls"],
+                    n_trials=counts["n_trials"],
+                    n_reflections=counts["n_reflections"],
+                    tool_histogram=counts["tool_histogram"],
+                    raw_events=replay_events,
+                    trajectory_annotations=annotations,
+                    source="autotest",
+                    test_case_run_id=test_case_run_id,
+                )
+                .on_conflict_do_nothing(
+                    index_elements=["session_id", "task_index"]
+                )
+            )
+            result = await session.execute(stmt)
+            await session.commit()
+            logger.info(
+                "[autotest] mirrored to task_runs session=%s rows=%s "
+                "n_tool_calls=%s",
+                run_result.get("agent_session_id"),
+                result.rowcount,
+                counts["n_tool_calls"],
+            )
+    except Exception:
+        logger.exception(
+            "[autotest] failed to mirror test_case_run=%s into task_runs",
+            test_case_run_id,
+        )
+
+
+def _build_autotest_annotations(
+    *,
+    case_payload: dict[str, Any],
+    run_result: dict[str, Any],
+    expected_workflow: dict | None,
+) -> dict:
+    """Assemble the ``trajectory_annotations`` blob for a mirrored autotest.
+
+    Pre-populates ``workflow_aligns[<skill_id>]`` in the same shape
+    ``_hydrate_workflow_aligns`` reads on the GET path so the trajectory
+    drawer's Workflow tab can render the LLM verifier's per-step verdicts
+    without forcing the user to re-pick the skill and re-pay an Align call.
+
+    Returns ``{}`` when there's nothing to seed (no target skill, or no
+    alignment result from the verifier).
+    """
+    workflow_alignment = run_result.get("workflow_alignment")
+    skill_id = case_payload.get("skill_id")
+    if not workflow_alignment or not skill_id or not expected_workflow:
+        return {}
+
+    completion = run_result.get("workflow_completion")
+    if not isinstance(completion, dict) or int(completion.get("total") or 0) <= 0:
+        completion = compute_workflow_completion(
+            expected_workflow, workflow_alignment
+        )
+
+    return {
+        "workflow_aligns": {
+            str(skill_id): {
+                "skill_slug": case_payload.get("skill_slug"),
+                "action_assignments": [],
+                "workflow_alignment": workflow_alignment,
+                "workflow_completion": completion,
+            }
+        }
+    }
+
+
 async def _run_single_test_case(employee_id: str, case_payload: dict[str, Any]) -> dict:
     employee = await _assert_employee_exists(employee_id)
 
@@ -1019,7 +1151,19 @@ async def _run_single_test_case(employee_id: str, case_payload: dict[str, Any]) 
             )
             _test_case_run_events[run_dict["id"]] = captured_events
             _test_case_run_transcripts[run_dict["id"]] = captured_transcript
-            return run_dict
+
+        # Mirror the run into ``task_runs`` so the report card surfaces
+        # this autotest alongside chat turns. Outside the test_case_runs
+        # session block so a metrics-side hiccup can't roll back the
+        # primary insert; the helper swallows its own errors.
+        await _persist_autotest_task_run(
+            employee_id=employee_id,
+            case_payload=case_payload,
+            run_result=run_result,
+            test_case_run_id=uuid.UUID(run_dict["id"]),
+            expected_workflow=expected_workflow_dict,
+        )
+        return run_dict
 
     run_entry = {
         "id": str(uuid.uuid4()),
@@ -1167,6 +1311,88 @@ async def list_employee_test_case_runs(employee_id: str, case_id: str):
     rows = _test_case_run_memory_store.get(case_id, [])
     sorted_rows = sorted(rows, key=lambda row: row.get("started_at") or "", reverse=True)
     return {"employee_id": employee_id, "case_id": case_id, "runs": sorted_rows}
+
+
+@router.get("/{employee_id}/test_case_runs/{run_id}/verdict")
+async def get_employee_test_case_run_verdict(employee_id: str, run_id: str):
+    """Slim accessor for a single test-case run's verdict + judge fields.
+
+    Used by the trajectory drawer to render an AUTOTEST verdict pill +
+    rationale in the header for ``task_runs`` rows that were mirrored
+    from autotests (``source = 'autotest'``). The drawer already has
+    ``test_case_run_id`` from the metrics payload, but it doesn't know
+    the originating ``case_id`` — keying this endpoint solely on
+    ``test_case_run_id`` keeps the call site one fetch.
+
+    Returns 404 when the row doesn't exist or doesn't belong to the
+    requested employee. The DB-less mode falls back to the in-memory
+    test-case run store so dev environments without Postgres still
+    surface the verdict for the latest run.
+    """
+    await _assert_employee_exists(employee_id)
+
+    if _db_available:
+        from db.engine import async_session
+        from db.models import TestCase, TestCaseRun
+        from sqlalchemy import select
+
+        try:
+            run_uuid = uuid.UUID(run_id)
+        except (ValueError, TypeError):
+            raise HTTPException(404, "Test case run not found")
+
+        async with async_session() as session:
+            row = (
+                await session.execute(
+                    select(TestCaseRun).where(TestCaseRun.id == run_uuid)
+                )
+            ).scalar_one_or_none()
+            if row is None:
+                raise HTTPException(404, "Test case run not found")
+
+            case_row = (
+                await session.execute(
+                    select(TestCase).where(
+                        TestCase.id == row.test_case_id,
+                        TestCase.employee_id == _parse_uuid(employee_id),
+                    )
+                )
+            ).scalar_one_or_none()
+            if case_row is None:
+                # Run exists but doesn't belong to this employee — treat
+                # as not-found rather than leaking cross-employee data.
+                raise HTTPException(404, "Test case run not found")
+
+        return {
+            "id": str(row.id),
+            "test_case_id": str(row.test_case_id),
+            "case_title": getattr(case_row, "title", None) or "",
+            "verdict": row.verdict,
+            "verdict_source": row.verdict_source,
+            "judge_rationale": row.judge_rationale,
+            "judge_evidence_quote": row.judge_evidence_quote,
+            "judge_confidence": row.judge_confidence,
+            "failure_reason": row.failure_reason,
+            "deterministic_checks": row.deterministic_checks or {},
+        }
+
+    # In-memory fallback: scan the test_case run store for a matching id.
+    for case_id, runs in _test_case_run_memory_store.items():
+        for entry in runs:
+            if entry.get("id") == run_id:
+                return {
+                    "id": run_id,
+                    "test_case_id": case_id,
+                    "case_title": "",
+                    "verdict": entry.get("verdict"),
+                    "verdict_source": entry.get("verdict_source"),
+                    "judge_rationale": entry.get("judge_rationale"),
+                    "judge_evidence_quote": entry.get("judge_evidence_quote"),
+                    "judge_confidence": entry.get("judge_confidence"),
+                    "failure_reason": entry.get("failure_reason"),
+                    "deterministic_checks": entry.get("deterministic_checks") or {},
+                }
+    raise HTTPException(404, "Test case run not found")
 
 
 @router.get("/{employee_id}/test_cases/{case_id}/runs/{run_id}/events")

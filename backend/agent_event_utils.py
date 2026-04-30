@@ -303,6 +303,90 @@ def _short_arg(value: Any, cap: int = 120) -> str:
 
 
 # ---------------------------------------------------------------------------
+# compact_events_to_replay_events — adapter for autotest persistence
+# ---------------------------------------------------------------------------
+# The autotest runner captures events in the *compact* format
+# (``compact_event`` above) but the trajectory drawer + metrics counters
+# both consume the SSE-shaped event dicts that ``server.py`` writes for
+# chat turns (keys ``type``/``tool``/``detail``/``args``/``text``).
+#
+# This adapter bridges the two so an autotest run can be mirrored into
+# ``task_runs.raw_events`` (see ``routers/employees._persist_autotest_task_run``)
+# and replayed by ``trajectory.build_nodes_from_events`` without requiring
+# a parallel rendering pipeline.
+# ---------------------------------------------------------------------------
+
+
+def compact_events_to_replay_events(events: list[dict] | None) -> list[dict]:
+    """Translate compact_event() dicts into the SSE-shaped events the
+    trajectory tree builder + metrics aggregations expect.
+
+    Mapping (compact ``event_type`` -> SSE ``type``):
+      - ``ActionEvent`` with ``is_finish``        -> ``answer``
+      - ``ActionEvent`` with ``tool_name``        -> ``tool_call``
+      - ``ActionEvent`` (reasoning only)          -> ``reasoning``
+      - ``ObservationEvent``                      -> ``tool_result``
+      - ``MessageEvent``                          -> ``answer``
+      - ``AgentErrorEvent`` / ``ConversationErrorEvent`` -> ``error``
+
+    Tool-call rows get a monotonically increasing ``turn`` so the drawer
+    can label them, mirroring ``server._map_event_to_sse``. Timestamps
+    flow through unchanged from the compact event's ``ts`` field (added
+    by ``test_case_runner._callback``).
+    """
+    out: list[dict] = []
+    turn = 0
+    for ev in events or []:
+        et = ev.get("event_type")
+        ts = ev.get("ts")
+
+        if et == "ActionEvent":
+            if ev.get("is_finish"):
+                text = ev.get("content") or ""
+                out.append({"type": "answer", "text": text, "timestamp": ts})
+                continue
+            tool = ev.get("tool_name")
+            if tool:
+                turn += 1
+                out.append(
+                    {
+                        "type": "tool_call",
+                        "tool": str(tool),
+                        "detail": ev.get("content") or f"Calling {tool}",
+                        "args": ev.get("args") or {},
+                        "turn": turn,
+                        "timestamp": ts,
+                    }
+                )
+                continue
+            text = ev.get("content") or ""
+            if text:
+                out.append({"type": "reasoning", "text": text, "timestamp": ts})
+            continue
+
+        if et == "ObservationEvent":
+            text = ev.get("content") or ""
+            row = {"type": "tool_result", "text": text, "timestamp": ts}
+            if ev.get("tool_name"):
+                row["tool"] = str(ev.get("tool_name"))
+            out.append(row)
+            continue
+
+        if et == "MessageEvent":
+            text = ev.get("content") or ""
+            if text:
+                out.append({"type": "answer", "text": text, "timestamp": ts})
+            continue
+
+        if et in ("AgentErrorEvent", "ConversationErrorEvent"):
+            text = ev.get("content") or ""
+            out.append({"type": "error", "message": text, "timestamp": ts})
+            continue
+
+    return out
+
+
+# ---------------------------------------------------------------------------
 # serialize_trajectory — human-readable transcript from raw SDK events
 # ---------------------------------------------------------------------------
 # Previously lived in reflexion_agent/agent.py as ``_serialize_trajectory``.

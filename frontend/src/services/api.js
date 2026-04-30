@@ -638,6 +638,17 @@ export async function fetchTestCaseRunEvents(employeeId, caseId, runId) {
   return res.json();
 }
 
+// Slim accessor for the verdict + judge fields of a single test-case run.
+// Used by the trajectory drawer to render an AUTOTEST verdict pill and
+// rationale in the header for task_runs rows mirrored from autotests.
+export async function fetchTestCaseRunVerdict(employeeId, runId) {
+  const res = await fetch(
+    `${API_BASE}/employees/${encodeURIComponent(employeeId)}/test_case_runs/${encodeURIComponent(runId)}/verdict`,
+  );
+  if (!res.ok) throw new Error(await _extractDetail(res, "Failed to load run verdict"));
+  return res.json();
+}
+
 // ---------------------------------------------------------------------------
 // Workspace browsing
 // ---------------------------------------------------------------------------
