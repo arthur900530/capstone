@@ -500,7 +500,7 @@ async def ensure_demo_kyc_employee_seeded() -> None:
         "Pre-seeded KYC/AML onboarding specialist for demos: identity verification, "
         "AML/sanctions screening, and risk scoring."
     )
-    _skill_ids = ["understanding-kyc-and-cdd"]
+    _skill_ids = ["understanding-kyc-and-cdd", "kyc-report-generation"]
 
     if _db_available:
         from db.engine import async_session
