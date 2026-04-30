@@ -120,6 +120,73 @@ _SHARED_WS: dict[str, Any] = {
 }
 
 
+def _agent_state_dir() -> str:
+    return os.path.expanduser(
+        os.getenv("AGENT_WORKSPACE_DIR", "~/.bny_agent_workspace")
+    )
+
+
+def _agent_state_path() -> str:
+    return os.path.join(_agent_state_dir(), "agent_state.json")
+
+
+def _load_persisted_state() -> None:
+    """Restore _chats, _SESSION_EMPLOYEE_IDS, and Slack-side state from disk
+    if a snapshot exists. Silently no-ops on first boot or read failure."""
+    path = _agent_state_path()
+    if not os.path.isfile(path):
+        return
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        _chats.update(data.get("chats", {}))
+        _SESSION_EMPLOYEE_IDS.update(data.get("session_employees", {}))
+        try:
+            from slack_bot import restore_state as _slack_restore
+            _slack_restore(
+                thread_sessions=data.get("thread_sessions"),
+                dm_last_employee=data.get("dm_last_employee"),
+            )
+        except Exception:
+            logger.exception("Failed to restore Slack state from snapshot")
+        logger.info(
+            "Restored %d chats, %d session→employee links from %s",
+            len(_chats), len(_SESSION_EMPLOYEE_IDS), path,
+        )
+    except Exception:
+        logger.exception("Failed to load persisted state from %s", path)
+
+
+def _save_persisted_state() -> None:
+    """Snapshot _chats, _SESSION_EMPLOYEE_IDS, and Slack state to disk.
+
+    Atomic write via temp-file + os.replace so a crash mid-save can't leave
+    a corrupt JSON file.
+    """
+    path = _agent_state_path()
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        slack_state: dict = {}
+        try:
+            from slack_bot import get_state as _slack_state
+            slack_state = _slack_state()
+        except Exception:
+            logger.exception("Failed to read Slack state for snapshot")
+        payload = {
+            "chats": _chats,
+            "session_employees": _SESSION_EMPLOYEE_IDS,
+            "thread_sessions": slack_state.get("thread_sessions", {}),
+            "dm_last_employee": slack_state.get("dm_last_employee", {}),
+        }
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(payload, f)
+        os.replace(tmp, path)
+        logger.info("Persisted %d chats to %s", len(_chats), path)
+    except Exception:
+        logger.exception("Failed to save persisted state to %s", path)
+
+
 @asynccontextmanager
 async def lifespan(application):
     """Start DB engine, seed skills, and warm the shared DockerWorkspace."""
@@ -191,6 +258,11 @@ async def lifespan(application):
             _SHARED_WS["host_dir"] = None
             _SHARED_WS["lock"] = None
 
+    # Restore _chats / session→employee map / Slack thread state from the
+    # last shutdown's snapshot, before the Slack bot starts and before the
+    # frontend can fetch /api/chats. First boot finds no file and no-ops.
+    _load_persisted_state()
+
     # Spin up the Slack bot once the rest of the app is ready. Returns None
     # (and logs a one-line "disabled" notice) when SLACK_BOT_TOKEN /
     # SLACK_APP_TOKEN are not set, so dev environments are unaffected.
@@ -198,6 +270,12 @@ async def lifespan(application):
     slack_task = await _start_slack()
 
     yield
+
+    # Snapshot the in-memory chat history + session/Slack maps before we
+    # tear anything down. Done eagerly here so even if the workspace
+    # teardown hangs and gets force-killed, the state file is already on
+    # disk and ready to be read on the next boot.
+    _save_persisted_state()
 
     if slack_task is not None:
         slack_task.cancel()

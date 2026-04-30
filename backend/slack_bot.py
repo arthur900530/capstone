@@ -45,8 +45,9 @@ _THREAD_LOCKS: dict[str, asyncio.Lock] = {}
 # messages without an explicit name route to the same employee — so the DM
 # feels like talking to one digital colleague. Channels intentionally don't
 # get this fallback because multiple employees coexist there and routing has
-# to be unambiguous.
-_DM_LAST_EMPLOYEE: dict[str, dict] = {}  # dm channel id -> employee row
+# to be unambiguous. Stored as employee_id strings so the map is
+# JSON-serializable for cross-restart persistence.
+_DM_LAST_EMPLOYEE: dict[str, str] = {}  # dm channel id -> employee_id
 
 # Cache the bot's own Slack user id so we can strip <@U…> prefixes without
 # hitting auth.test on every event.
@@ -132,16 +133,28 @@ def _normalize_name(name: str) -> str:
     return swapped.lower()
 
 
-async def _find_employee_by_name(name: str) -> Optional[dict]:
-    """Look up an Employee row by name, case-insensitive and tolerant of
-    ``_``/``-`` in place of spaces (see ``_normalize_name``)."""
+async def _list_employees() -> list[dict]:
     async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.get(f"{_BACKEND_BASE}/api/employees")
         resp.raise_for_status()
-        rows = resp.json()
+        return resp.json()
+
+
+async def _find_employee_by_name(name: str) -> Optional[dict]:
+    """Look up an Employee row by name, case-insensitive and tolerant of
+    ``_``/``-`` in place of spaces (see ``_normalize_name``)."""
     target = _normalize_name(name)
-    for row in rows:
+    for row in await _list_employees():
         if _normalize_name(row.get("name") or "") == target:
+            return row
+    return None
+
+
+async def _find_employee_by_id(employee_id: str) -> Optional[dict]:
+    """Look up an Employee row by id (used to rehydrate sticky DM employees
+    stored across restarts)."""
+    for row in await _list_employees():
+        if row.get("id") == employee_id:
             return row
     return None
 
@@ -281,10 +294,15 @@ async def _handle_event(event: dict, client, is_dm: bool = False) -> None:
     # doesn't resolve to a known one. The full user text becomes the task,
     # so "what about Q3?" routes to whoever the user was just talking to.
     if is_dm and employee is None:
-        sticky = _DM_LAST_EMPLOYEE.get(channel)
-        if sticky:
-            employee = sticky
-            task = cleaned.strip() or task
+        sticky_id = _DM_LAST_EMPLOYEE.get(channel)
+        if sticky_id:
+            employee = await _find_employee_by_id(sticky_id)
+            if employee is not None:
+                task = cleaned.strip() or task
+            else:
+                # Employee was deleted between restarts; drop the stale
+                # sticky and fall through to the help message.
+                _DM_LAST_EMPLOYEE.pop(channel, None)
 
     # Look up the employee before judging "no task" — that way a single-word
     # greeting like "@bot hello" lands in the friendly "I don't know hello"
@@ -314,7 +332,7 @@ async def _handle_event(event: dict, client, is_dm: bool = False) -> None:
     # defaults to them. Set this before the no-task branch — typing just a
     # name to switch focus is a valid intent worth remembering.
     if is_dm:
-        _DM_LAST_EMPLOYEE[channel] = employee
+        _DM_LAST_EMPLOYEE[channel] = employee["id"]
     if not task:
         await client.chat_postMessage(
             channel=channel,
@@ -418,6 +436,31 @@ def _register_handlers(app: AsyncApp) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 # Public entry point used by server.py's lifespan
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+def get_state() -> dict:
+    """Return the bot's in-memory state for cross-restart persistence.
+
+    Locks and the cached bot_user_id are deliberately excluded — they're
+    process-local and re-derivable on next boot.
+    """
+    return {
+        "thread_sessions": dict(_THREAD_SESSIONS),
+        "dm_last_employee": dict(_DM_LAST_EMPLOYEE),
+    }
+
+
+def restore_state(thread_sessions: Optional[dict] = None,
+                  dm_last_employee: Optional[dict] = None) -> None:
+    """Re-populate the bot's in-memory state from persisted snapshots."""
+    if thread_sessions:
+        _THREAD_SESSIONS.update(thread_sessions)
+    if dm_last_employee:
+        # Skip any leftover dict-shaped values from older snapshots — those
+        # used to store full employee rows; the current schema is id strings.
+        _DM_LAST_EMPLOYEE.update(
+            {k: v for k, v in dm_last_employee.items() if isinstance(v, str)}
+        )
 
 
 async def start_in_background() -> Optional[asyncio.Task]:
