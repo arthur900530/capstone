@@ -84,6 +84,15 @@ async def run_test_case(
     used_tools: set[str] = set()
     final_answer = ""
     deterministic_checks: dict[str, Any] = {}
+    # Telemetry accumulated throughout the run. Populated incrementally so
+    # partial data is available even when the run is cut short by a timeout
+    # or error. Stored as a JSONB column on TestCaseRun and included in every
+    # JSON export so downstream consumers have a complete cost + behaviour
+    # snapshot without re-running the agent.
+    run_telemetry: dict[str, Any] = {
+        "tool_call_count": 0,
+        "tools_used": [],
+    }
 
     if _agent_runtime is None:
         finished_at = _now()
@@ -105,6 +114,7 @@ async def run_test_case(
                 "latency_within_budget": False,
                 "expected_tool_families": False,
             },
+            "run_telemetry": run_telemetry,
             "events": list(compact_trajectory),
             "transcript": serialize_trajectory(raw_events),
         }
@@ -127,6 +137,7 @@ async def run_test_case(
         tool_name = _extract_tool_name(event)
         if tool_name:
             used_tools.add(tool_name)
+            run_telemetry["tool_call_count"] = run_telemetry.get("tool_call_count", 0) + 1
 
     def _invoke_agent() -> str:
         # region agent log
@@ -172,6 +183,7 @@ async def run_test_case(
         # endregion
         finished_at = _now()
         duration_ms = int((finished_at - started_at).total_seconds() * 1000)
+        run_telemetry["tools_used"] = sorted(used_tools)
         return {
             "started_at": started_at,
             "finished_at": finished_at,
@@ -190,6 +202,7 @@ async def run_test_case(
                 "latency_within_budget": False,
                 "expected_tool_families": False,
             },
+            "run_telemetry": run_telemetry,
             "events": list(compact_trajectory),
             "transcript": serialize_trajectory(raw_events),
         }
@@ -199,6 +212,7 @@ async def run_test_case(
         # region agent log
         _dbg("outer except caught", {"exc_type": type(exc).__name__, "exc_msg": str(exc)[:300], "duration_ms": duration_ms}, "H-A,H-C,H-D")
         # endregion
+        run_telemetry["tools_used"] = sorted(used_tools)
         return {
             "started_at": started_at,
             "finished_at": finished_at,
@@ -217,6 +231,7 @@ async def run_test_case(
                 "latency_within_budget": False,
                 "expected_tool_families": False,
             },
+            "run_telemetry": run_telemetry,
             "events": list(compact_trajectory),
             "transcript": serialize_trajectory(raw_events),
         }
@@ -231,6 +246,7 @@ async def run_test_case(
         "latency_within_budget": latency_within_budget,
         "used_tools": sorted(used_tools),
     }
+    run_telemetry["tools_used"] = sorted(used_tools)
     # region agent log
     _dbg("deterministic checks complete", {
         "used_tools": sorted(used_tools),
@@ -254,6 +270,7 @@ async def run_test_case(
             "failure_reason": "empty final output",
             "agent_session_id": session_id,
             "deterministic_checks": deterministic_checks,
+            "run_telemetry": run_telemetry,
             "events": list(compact_trajectory),
             "transcript": serialize_trajectory(raw_events),
         }
@@ -271,6 +288,7 @@ async def run_test_case(
             "failure_reason": "latency budget exceeded",
             "agent_session_id": session_id,
             "deterministic_checks": deterministic_checks,
+            "run_telemetry": run_telemetry,
             "events": list(compact_trajectory),
             "transcript": serialize_trajectory(raw_events),
         }
@@ -318,6 +336,7 @@ async def run_test_case(
         "failure_reason": None if judged["verdict"] == "pass" else "judge_failed_criteria",
         "agent_session_id": session_id,
         "deterministic_checks": deterministic_checks,
+        "run_telemetry": run_telemetry,
         "events": list(compact_trajectory),
         "transcript": serialize_trajectory(raw_events),
     }

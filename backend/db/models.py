@@ -421,6 +421,12 @@ class TestCase(Base):
     max_latency_ms: Mapped[int] = mapped_column(Integer, nullable=False, default=20000)
     generated_by_model: Mapped[str] = mapped_column(String(120), nullable=False, default="")
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="draft")
+    # Comprehensive-suite tagging. ``category`` is one of
+    # {"happy_path", "normal", "edge"} and drives the badge in the UI plus the
+    # mix in JSON exports. Old rows backfill as ``edge`` for behavioural
+    # parity with the original adversarial-only generator.
+    category: Mapped[str] = mapped_column(String(20), nullable=False, default="edge")
+    subcategory: Mapped[str | None] = mapped_column(String(80), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow
     )
@@ -461,5 +467,9 @@ class TestCaseRun(Base):
     failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     agent_session_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
     deterministic_checks: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # Telemetry captured during each run: tool call count, tools used, and
+    # verifier token consumption. Nullable so old rows without telemetry keep
+    # working; new runs always populate this from test_case_runner.py.
+    run_telemetry: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     test_case: Mapped[TestCase] = relationship(back_populates="runs")

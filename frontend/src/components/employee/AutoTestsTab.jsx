@@ -1,7 +1,9 @@
-import { FlaskConical, Loader2, ShieldCheck } from "lucide-react";
+import { Download, FlaskConical, Loader2, ShieldCheck } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import {
   deleteTestCase,
+  exportTestCase,
+  exportTestSuite,
   generateTestCases,
   listTestCaseRuns,
   listTestCases,
@@ -11,6 +13,43 @@ import {
 import TestCaseCard from "./TestCaseCard";
 import TestCaseRunDetail from "./TestCaseRunDetail";
 import TestCaseRunEventsDrawer from "./TestCaseRunEventsDrawer";
+
+// Browser-side helper: turn a JSON object into a downloaded file. The Blob
+// route is the only cross-browser option that does NOT round-trip through
+// `data:` URLs (which break for payloads larger than a few hundred KB).
+function downloadJson(filename, payload) {
+  const json = JSON.stringify(payload, null, 2);
+  const blob = new Blob([json], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+}
+
+// Sanitise free-form text for use in a filename so the download works
+// across operating systems. Filesystems disagree on which characters are
+// legal — this whitelist (alphanumeric, dash, underscore) is universally safe.
+function slugifyForFilename(value, fallback = "untitled") {
+  const slug = (value || "")
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 60);
+  return slug || fallback;
+}
+
+function todayStamp() {
+  const d = new Date();
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${yyyy}${mm}${dd}`;
+}
 
 // Pretty-print a millisecond duration as "Xm Ys" (or "Ys" under a minute).
 // Used by the Run-all progress panel for elapsed + ETA.
@@ -47,6 +86,7 @@ export default function AutoTestsTab({ employee }) {
   // Live progress for the "Run all draft tests" batch. Null when idle.
   // Shape: { total, completed, currentTitle, startedAt (Date.now), durations: ms[] }
   const [runAllProgress, setRunAllProgress] = useState(null);
+  const [exportingSuite, setExportingSuite] = useState(false);
   // Tick state — its only job is to force a re-render every second so the
   // elapsed-time label in the progress panel updates between case completions.
   const [, setNowTick] = useState(0);
@@ -114,6 +154,31 @@ export default function AutoTestsTab({ employee }) {
     }
   };
 
+  const handleExportSuite = async () => {
+    setExportingSuite(true);
+    setError(null);
+    try {
+      const data = await exportTestSuite(employee.id);
+      const slug = slugifyForFilename(employee.name, "employee");
+      downloadJson(`auto-tests_${slug}_${todayStamp()}.json`, data);
+    } catch (err) {
+      setError(err.message || "Failed to export test suite");
+    } finally {
+      setExportingSuite(false);
+    }
+  };
+
+  const handleExportCase = async (caseId, caseTitle) => {
+    setError(null);
+    try {
+      const data = await exportTestCase(employee.id, caseId);
+      const slug = slugifyForFilename(caseTitle, "test-case");
+      downloadJson(`auto-test_${slug}.json`, data);
+    } catch (err) {
+      setError(err.message || "Failed to export test case");
+    }
+  };
+
   const handleRunAll = async () => {
     // Snapshot the draft cases up-front so newly-created drafts mid-run
     // don't sneak into this batch.
@@ -174,13 +239,15 @@ export default function AutoTestsTab({ employee }) {
         <div className="flex flex-wrap items-end justify-between gap-3 rounded-xl border border-border/40 bg-surface p-4">
           <div>
             <p className="text-sm font-semibold text-text-primary">Auto Tests</p>
-            <p className="text-xs text-text-muted">Generate and run edge-case tests for this employee.</p>
+            <p className="text-xs text-text-muted">
+              Generate a comprehensive suite of happy-path, normal, and edge-case tests for this employee.
+            </p>
           </div>
           <div className="flex items-center gap-2">
             <input
               type="number"
               min={1}
-              max={20}
+              max={50}
               value={count}
               onChange={(e) => setCount(Number(e.target.value) || 1)}
               className="w-20 rounded-lg border border-border/50 bg-workspace px-2 py-1.5 text-sm"
@@ -206,6 +273,20 @@ export default function AutoTestsTab({ employee }) {
                 <span className="inline-flex items-center gap-2">
                   {runningAll ? <Loader2 size={14} className="animate-spin" /> : null}
                   Run all draft tests
+                </span>
+              </button>
+            ) : null}
+            {cases.length > 0 ? (
+              <button
+                type="button"
+                className="rounded-lg border border-border/60 px-4 py-2.5 text-sm"
+                onClick={handleExportSuite}
+                disabled={exportingSuite || runningAll || runningCaseId !== null}
+                title="Download all cases and runs as JSON"
+              >
+                <span className="inline-flex items-center gap-2">
+                  {exportingSuite ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
+                  Export suite
                 </span>
               </button>
             ) : null}
@@ -253,14 +334,14 @@ export default function AutoTestsTab({ employee }) {
         {cases.length === 0 ? (
           <div className="flex min-h-[320px] flex-col items-center justify-center rounded-xl border border-border/40 bg-surface text-center">
             <FlaskConical size={36} className="mb-3 text-text-muted" />
-            <p className="text-base font-medium text-text-primary">Generate edge-case tests for this employee</p>
+            <p className="text-base font-medium text-text-primary">Generate a comprehensive test suite for this employee</p>
             <button
               type="button"
               className="mt-4 rounded-lg bg-accent-teal px-6 py-2.5 text-sm font-medium text-workspace"
               onClick={handleGenerate}
               disabled={generating}
             >
-              {generating ? "Generating..." : "Generate edge-case tests"}
+              {generating ? "Generating..." : "Generate test suite"}
             </button>
           </div>
         ) : (
@@ -281,6 +362,7 @@ export default function AutoTestsTab({ employee }) {
                   await load();
                 }}
                 onOpenRun={(run) => setActiveRun(run)}
+                onExport={handleExportCase}
               />
             ))}
           </div>

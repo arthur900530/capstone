@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronRight, Loader2, Play, Trash2 } from "lucide-react";
+import { ChevronDown, ChevronRight, Download, Loader2, Play, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
 
 function VerdictPill({ run }) {
@@ -9,6 +9,34 @@ function VerdictPill({ run }) {
   return <span className="rounded-full bg-surface px-2 py-0.5 text-xs text-text-muted">unrun</span>;
 }
 
+// Visual hint for the test mix at a glance. Colors mirror the verdict
+// palette where it makes sense (green = good behaviour, blue = neutral,
+// amber = adversarial probe) so the badges read intuitively next to
+// VerdictPill.
+const CATEGORY_STYLES = {
+  happy_path: {
+    label: "happy path",
+    className: "bg-emerald-500/15 text-emerald-400",
+  },
+  normal: {
+    label: "normal",
+    className: "bg-sky-500/15 text-sky-400",
+  },
+  edge: {
+    label: "edge",
+    className: "bg-amber-500/15 text-amber-400",
+  },
+};
+
+function CategoryBadge({ category }) {
+  const style = CATEGORY_STYLES[category] || CATEGORY_STYLES.edge;
+  return (
+    <span className={`rounded-full px-2 py-0.5 text-[10px] uppercase tracking-wide ${style.className}`}>
+      {style.label}
+    </span>
+  );
+}
+
 export default function TestCaseCard({
   testCase,
   latestRun,
@@ -17,9 +45,11 @@ export default function TestCaseCard({
   onDelete,
   onUpdate,
   onOpenRun,
+  onExport,
 }) {
   const [expanded, setExpanded] = useState(false);
   const [editing, setEditing] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [draft, setDraft] = useState({
     title: testCase.title,
     prompt: testCase.prompt,
@@ -36,7 +66,13 @@ export default function TestCaseCard({
         onClick={() => setExpanded((v) => !v)}
       >
         <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-medium text-text-primary">{testCase.title}</p>
+          <div className="flex items-center gap-2">
+            <CategoryBadge category={testCase.category} />
+            <p className="truncate text-sm font-medium text-text-primary">{testCase.title}</p>
+          </div>
+          {testCase.subcategory ? (
+            <p className="mt-1 text-[10px] uppercase tracking-wide text-text-muted">{testCase.subcategory}</p>
+          ) : null}
           <p className="mt-1 text-xs text-text-muted">{snippet}{testCase.prompt?.length > 120 ? "..." : ""}</p>
         </div>
         <div className="flex items-center gap-2">
@@ -111,6 +147,25 @@ export default function TestCaseCard({
                 {latestRun ? (
                   <button type="button" className="rounded-lg border border-border/60 px-3 py-1.5 text-xs" onClick={() => onOpenRun(latestRun)}>
                     View run details
+                  </button>
+                ) : null}
+                {onExport ? (
+                  <button
+                    type="button"
+                    className="inline-flex items-center gap-1 rounded-lg border border-border/60 px-3 py-1.5 text-xs"
+                    onClick={async () => {
+                      setExporting(true);
+                      try {
+                        await onExport(testCase.id, testCase.title);
+                      } finally {
+                        setExporting(false);
+                      }
+                    }}
+                    disabled={exporting}
+                    title="Download this case and its run history as JSON"
+                  >
+                    {exporting ? <Loader2 size={12} className="animate-spin" /> : <Download size={12} />}
+                    Export
                   </button>
                 ) : null}
               </div>

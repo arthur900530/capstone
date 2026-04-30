@@ -573,6 +573,28 @@ export async function fetchTestCaseRunEvents(employeeId, caseId, runId) {
   return res.json();
 }
 
+// Fetch the JSON export for a single test case (case + run history).
+// The backend includes the in-memory event stream only when
+// `includeEvents` is true; default off to keep payloads small.
+export async function exportTestCase(employeeId, caseId, { includeEvents = false } = {}) {
+  const query = includeEvents ? "?include_events=true" : "";
+  const res = await fetch(
+    `${API_BASE}/employees/${encodeURIComponent(employeeId)}/test_cases/${encodeURIComponent(caseId)}/export${query}`,
+  );
+  if (!res.ok) throw new Error(await _extractDetail(res, "Failed to export test case"));
+  return res.json();
+}
+
+// Fetch the JSON export for the entire test suite of an employee.
+export async function exportTestSuite(employeeId, { includeEvents = false } = {}) {
+  const query = includeEvents ? "?include_events=true" : "";
+  const res = await fetch(
+    `${API_BASE}/employees/${encodeURIComponent(employeeId)}/test_cases/export${query}`,
+  );
+  if (!res.ok) throw new Error(await _extractDetail(res, "Failed to export test suite"));
+  return res.json();
+}
+
 // ---------------------------------------------------------------------------
 // Workspace browsing
 // ---------------------------------------------------------------------------

@@ -420,9 +420,14 @@ class TestCaseUpdate(BaseModel):
     expected_tool_families: list[str] | None = None
     max_latency_ms: int | None = Field(default=None, gt=0)
     status: str | None = None
+    category: str | None = None
+    subcategory: str | None = None
 
 
 def _serialize_test_case(row) -> dict:
+    # Tolerate both ORM rows (new rows have ``category``) and old in-memory
+    # rows that predate the column. Falling back to "edge" mirrors the
+    # alembic backfill default so the UI never has to special-case missing.
     return {
         "id": str(row.id),
         "employee_id": str(row.employee_id),
@@ -434,6 +439,8 @@ def _serialize_test_case(row) -> dict:
         "max_latency_ms": row.max_latency_ms,
         "generated_by_model": row.generated_by_model or "",
         "status": row.status,
+        "category": getattr(row, "category", None) or "edge",
+        "subcategory": getattr(row, "subcategory", None),
         "created_at": row.created_at.isoformat() if row.created_at else None,
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
     }
@@ -455,6 +462,8 @@ def _serialize_test_case_run(row) -> dict:
         "failure_reason": row.failure_reason,
         "agent_session_id": row.agent_session_id,
         "deterministic_checks": row.deterministic_checks or {},
+        # Telemetry captured at run time. Null for runs predating this field.
+        "run_telemetry": getattr(row, "run_telemetry", None),
     }
 
 
@@ -793,6 +802,8 @@ async def generate_employee_test_cases(employee_id: str, count: int = 5):
                     max_latency_ms=item["max_latency_ms"],
                     generated_by_model=generated_model,
                     status="draft",
+                    category=item.get("category") or "edge",
+                    subcategory=item.get("subcategory"),
                 )
                 session.add(row)
                 await session.flush()
@@ -816,6 +827,8 @@ async def generate_employee_test_cases(employee_id: str, count: int = 5):
             "max_latency_ms": item["max_latency_ms"],
             "generated_by_model": generated_model,
             "status": "draft",
+            "category": item.get("category") or "edge",
+            "subcategory": item.get("subcategory"),
             "created_at": now_iso,
             "updated_at": now_iso,
         }
@@ -1042,6 +1055,7 @@ async def _run_single_test_case(employee_id: str, case_payload: dict[str, Any]) 
                 failure_reason=run_result["failure_reason"],
                 agent_session_id=run_result["agent_session_id"],
                 deterministic_checks=run_result["deterministic_checks"],
+                run_telemetry=run_result.get("run_telemetry"),
             )
             session.add(row)
             await session.commit()
@@ -1066,6 +1080,7 @@ async def _run_single_test_case(employee_id: str, case_payload: dict[str, Any]) 
         "failure_reason": run_result["failure_reason"],
         "agent_session_id": run_result["agent_session_id"],
         "deterministic_checks": run_result["deterministic_checks"],
+        "run_telemetry": run_result.get("run_telemetry"),
     }
     _test_case_run_memory_store.setdefault(case_payload["id"], []).append(run_entry)
     _test_case_run_events[run_entry["id"]] = captured_events
@@ -1210,6 +1225,169 @@ async def get_employee_test_case_run_events(
         "events": events,
         "transcript": transcript,
         "count": len(events),
+    }
+
+
+# ── Test Case Export ─────────────────────────────────────────────────────────
+
+# Schema version is bumped only when the export shape changes in a way that
+# breaks downstream parsers. Adding optional keys is non-breaking; renaming
+# or removing keys is. Treat this like an API contract.
+_EXPORT_SCHEMA_VERSION = "1"
+
+
+def _export_employee_block(employee: dict) -> dict:
+    """Compact, export-friendly view of the parent employee.
+
+    Mirrors the field names used in the rest of the public API so a downstream
+    consumer can match exports against employee records without alias maps.
+    """
+    return {
+        "id": employee.get("id"),
+        "name": employee.get("name"),
+        "position": employee.get("position"),
+        "description": employee.get("description"),
+        "task": employee.get("task"),
+        "agent_model": employee.get("model"),
+    }
+
+
+async def _list_runs_for_case(employee_id: str, case_id: str) -> list[dict]:
+    """Return all serialized runs for ``case_id``, newest first.
+
+    Single source of truth used by both export endpoints so DB and in-memory
+    paths stay aligned.
+    """
+    if _db_available:
+        from db.engine import async_session
+        from db.models import TestCaseRun
+        from sqlalchemy import select
+
+        async with async_session() as session:
+            rows = (
+                await session.execute(
+                    select(TestCaseRun)
+                    .where(TestCaseRun.test_case_id == _parse_case_uuid(case_id))
+                    .order_by(TestCaseRun.started_at.desc())
+                )
+            ).scalars().all()
+        return [_serialize_test_case_run(r) for r in rows]
+
+    rows = _test_case_run_memory_store.get(case_id, [])
+    return sorted(rows, key=lambda row: row.get("started_at") or "", reverse=True)
+
+
+def _attach_events(run: dict) -> dict:
+    """Augment a serialized run with its in-memory event stream + transcript.
+
+    Mirrors the ``available: false`` semantics of the events endpoint so a
+    consumer can tell ``"server restarted, events gone"`` apart from
+    ``"the run had no events"``.
+    """
+    run_id = run.get("id")
+    events = _test_case_run_events.get(run_id) if run_id else None
+    transcript = _test_case_run_transcripts.get(run_id, "") if run_id else ""
+    augmented = dict(run)
+    augmented["events_available"] = events is not None
+    augmented["events"] = events or []
+    augmented["transcript"] = transcript
+    return augmented
+
+
+@router.get("/{employee_id}/test_cases/{case_id}/export")
+async def export_employee_test_case(
+    employee_id: str, case_id: str, include_events: bool = False
+):
+    """Export one test case plus its full run history as JSON.
+
+    The ``include_events`` flag opts the (memory-only) agent event stream
+    and transcript into the payload — useful for offline analysis but adds
+    noticeable size, so it defaults off.
+    """
+    employee = await _assert_employee_exists(employee_id)
+
+    if _db_available:
+        from db.engine import async_session
+        from db.models import TestCase
+        from sqlalchemy import select
+
+        async with async_session() as session:
+            row = (
+                await session.execute(
+                    select(TestCase).where(
+                        TestCase.id == _parse_case_uuid(case_id),
+                        TestCase.employee_id == _parse_uuid(employee_id),
+                    )
+                )
+            ).scalar_one_or_none()
+            if row is None:
+                raise HTTPException(404, "Test case not found")
+            case_payload = _serialize_test_case(row)
+    else:
+        case_payload = next(
+            (item for item in _test_case_memory_store.get(employee_id, []) if item.get("id") == case_id),
+            None,
+        )
+        if case_payload is None:
+            raise HTTPException(404, "Test case not found")
+
+    runs = await _list_runs_for_case(employee_id, case_id)
+    if include_events:
+        runs = [_attach_events(r) for r in runs]
+
+    case_payload = {**case_payload, "runs": runs}
+    return {
+        "schema_version": _EXPORT_SCHEMA_VERSION,
+        "exported_at": datetime.now(timezone.utc).isoformat(),
+        "employee": _export_employee_block(employee),
+        "totals": {"cases": 1, "runs": len(runs)},
+        "cases": [case_payload],
+    }
+
+
+@router.get("/{employee_id}/test_cases/export")
+async def export_employee_test_suite(
+    employee_id: str, include_events: bool = False
+):
+    """Export every test case for this employee plus its run history."""
+    employee = await _assert_employee_exists(employee_id)
+
+    if _db_available:
+        from db.engine import async_session
+        from db.models import TestCase
+        from sqlalchemy import select
+
+        async with async_session() as session:
+            rows = (
+                await session.execute(
+                    select(TestCase)
+                    .where(TestCase.employee_id == _parse_uuid(employee_id))
+                    .order_by(TestCase.created_at.desc())
+                )
+            ).scalars().all()
+        cases = [_serialize_test_case(r) for r in rows]
+    else:
+        cases = sorted(
+            _test_case_memory_store.get(employee_id, []),
+            key=lambda row: row.get("created_at") or "",
+            reverse=True,
+        )
+
+    total_runs = 0
+    enriched_cases: list[dict] = []
+    for case in cases:
+        runs = await _list_runs_for_case(employee_id, case["id"])
+        if include_events:
+            runs = [_attach_events(r) for r in runs]
+        total_runs += len(runs)
+        enriched_cases.append({**case, "runs": runs})
+
+    return {
+        "schema_version": _EXPORT_SCHEMA_VERSION,
+        "exported_at": datetime.now(timezone.utc).isoformat(),
+        "employee": _export_employee_block(employee),
+        "totals": {"cases": len(enriched_cases), "runs": total_runs},
+        "cases": enriched_cases,
     }
 
 
