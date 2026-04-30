@@ -162,22 +162,30 @@ def _detect_platform():
 
 
 def _find_port(start: int = 8010, end: int = 9010) -> int:
-    """Find a host port we can actually bind on 127.0.0.1.
+    """Find a host port whose 0.0.0.0 bind succeeds for ``port``, ``port+1``,
+    and ``port+2``.
 
-    We test by binding (with SO_REUSEADDR off) rather than ``connect_ex``:
-    ``connect_ex`` only detects "someone is listening", but Docker needs the
-    port to be free to bind — which also excludes ports held by zombie
-    containers, ports reserved by the OS, and ports bound on different
-    interfaces. Matching DockerWorkspace's own check avoids races where we
-    pick a port it then rejects.
+    OpenHands' ``BrowserDockerWorkspace`` exposes three host ports per
+    container (agent-server, VSCode, noVNC) starting at the chosen ``host_port``
+    and checks each with ``socket.bind(("0.0.0.0", p))``. Binding to
+    ``127.0.0.1`` here would silently miss ports that Docker Desktop has
+    reserved on 0.0.0.0 (a real failure mode in WSL2 setups where a prior
+    container leaks port forwards), so we'd return a port openhands then
+    rejects. Match its check exactly to avoid that race.
     """
-    for port in range(start, end):
+    def _bindable(p: int) -> bool:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.bind(("127.0.0.1", port))
-                return port
+            sock.bind(("0.0.0.0", p))
+            return True
         except OSError:
-            continue
+            return False
+        finally:
+            sock.close()
+
+    for port in range(start, end):
+        if all(_bindable(p) for p in (port, port + 1, port + 2)):
+            return port
     raise RuntimeError(f"No free port available in range [{start}, {end})")
 
 
