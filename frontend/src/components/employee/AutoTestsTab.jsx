@@ -30,8 +30,11 @@ function estimateRemaining(progress) {
   return avg * (progress.total - progress.completed);
 }
 
+// Fixed batch size for the "Generate" action. Replaced the user-facing
+// number input — generation count is no longer configurable from the UI.
+const GENERATE_COUNT = 5;
+
 export default function AutoTestsTab({ employee }) {
-  const [count, setCount] = useState(5);
   const [cases, setCases] = useState([]);
   const [runsByCase, setRunsByCase] = useState({});
   // Skills installed on this employee, in the same shape /api/skills
@@ -125,7 +128,7 @@ export default function AutoTestsTab({ employee }) {
     setGenerating(true);
     setError(null);
     try {
-      await generateTestCases(employee.id, count);
+      await generateTestCases(employee.id, GENERATE_COUNT);
       await load();
     } catch (err) {
       setError(err.message || "Failed to generate test cases");
@@ -210,14 +213,6 @@ export default function AutoTestsTab({ employee }) {
             <p className="text-xs text-text-muted">Generate and run edge-case tests for this employee.</p>
           </div>
           <div className="flex items-center gap-2">
-            <input
-              type="number"
-              min={1}
-              max={20}
-              value={count}
-              onChange={(e) => setCount(Number(e.target.value) || 1)}
-              className="w-20 rounded-lg border border-border/50 bg-workspace px-2 py-1.5 text-sm"
-            />
             <button
               type="button"
               className="rounded-lg bg-accent-teal px-6 py-2.5 text-sm font-medium text-workspace"
