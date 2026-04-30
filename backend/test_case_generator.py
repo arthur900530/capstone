@@ -295,7 +295,7 @@ async def generate_test_cases(
 
     client = AsyncOpenAI(api_key=OPENAI_API_KEY, timeout=45.0)
     target_model = _resolve_openai_model(VERIFIER_MODEL)
-    requested_count = max(1, min(int(count), 50))
+    requested_count = max(1, min(int(count), 100))
     category_targets = _distribute_categories(requested_count)
     # Scale the token budget with the number of cases requested. Each case in
     # the comprehensive format (category, subcategory, prompt, criteria,

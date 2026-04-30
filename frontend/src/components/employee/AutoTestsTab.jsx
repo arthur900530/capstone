@@ -247,7 +247,7 @@ export default function AutoTestsTab({ employee }) {
             <input
               type="number"
               min={1}
-              max={50}
+              max={100}
               value={count}
               onChange={(e) => setCount(Number(e.target.value) || 1)}
               className="w-20 rounded-lg border border-border/50 bg-workspace px-2 py-1.5 text-sm"
