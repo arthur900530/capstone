@@ -162,22 +162,30 @@ def _detect_platform():
 
 
 def _find_port(start: int = 8010, end: int = 9010) -> int:
-    """Find a host port we can actually bind on 127.0.0.1.
+    """Find a host port whose 0.0.0.0 bind succeeds for ``port``, ``port+1``,
+    and ``port+2``.
 
-    We test by binding (with SO_REUSEADDR off) rather than ``connect_ex``:
-    ``connect_ex`` only detects "someone is listening", but Docker needs the
-    port to be free to bind — which also excludes ports held by zombie
-    containers, ports reserved by the OS, and ports bound on different
-    interfaces. Matching DockerWorkspace's own check avoids races where we
-    pick a port it then rejects.
+    OpenHands' ``BrowserDockerWorkspace`` exposes three host ports per
+    container (agent-server, VSCode, noVNC) starting at the chosen ``host_port``
+    and checks each with ``socket.bind(("0.0.0.0", p))``. Binding to
+    ``127.0.0.1`` here would silently miss ports that Docker Desktop has
+    reserved on 0.0.0.0 (a real failure mode in WSL2 setups where a prior
+    container leaks port forwards), so we'd return a port openhands then
+    rejects. Match its check exactly to avoid that race.
     """
-    for port in range(start, end):
+    def _bindable(p: int) -> bool:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.bind(("127.0.0.1", port))
-                return port
+            sock.bind(("0.0.0.0", p))
+            return True
         except OSError:
-            continue
+            return False
+        finally:
+            sock.close()
+
+    for port in range(start, end):
+        if all(_bindable(p) for p in (port, port + 1, port + 2)):
+            return port
     raise RuntimeError(f"No free port available in range [{start}, {end})")
 
 
@@ -326,15 +334,34 @@ def build_workspace(mount_host_dir: str | None = None) -> DockerWorkspace:
     """
     if mount_host_dir:
         abs_mount = str(Path(mount_host_dir).resolve())
-        Path(abs_mount, "conversations").mkdir(parents=True, exist_ok=True)
-        Path(abs_mount, "bash_events").mkdir(parents=True, exist_ok=True)
+        # Pre-create the dirs the container writes to. Open the perms so the
+        # container's non-root user can write in WSL2/Docker-Desktop setups
+        # where a fresh dir maps to host UID 0o755 and the in-container UID
+        # doesn't match.
+        #
+        # On reboots, the persistent host_dir contains dirs the container's
+        # openhands user (UID 10001) chowned in a previous run, so our host
+        # UID can't chmod them. That's fine — they were left permissive by
+        # the in-container chmod (see ``runtime()`` below), so we swallow
+        # PermissionError and proceed.
+        for sub in ("", "conversations", "bash_events"):
+            p = Path(abs_mount, sub) if sub else Path(abs_mount)
+            p.mkdir(parents=True, exist_ok=True)
+            try:
+                os.chmod(p, 0o777)
+            except PermissionError:
+                pass
         volumes = [f"{abs_mount}:/workspace:rw"]
     else:
         volumes = []
     os.environ.setdefault("OH_CONVERSATIONS_PATH", "/workspace/conversations")
     os.environ.setdefault("OH_BASH_EVENTS_DIR", "/workspace/bash_events")
     return BrowserDockerWorkspace(
-        server_image="ghcr.io/openhands/agent-server:latest-python",
+        # Pin to the version that matches our installed openhands-sdk. The
+        # ``latest-python`` floating tag has drifted past what the SDK's
+        # health-check polling expects, causing __enter__ to time out and
+        # SIGTERM the container ~21s after a clean start.
+        server_image="ghcr.io/openhands/agent-server:1.16.1-python",
         host_port=_find_port(),
         platform=_detect_platform(),
         volumes=volumes,
@@ -566,7 +593,15 @@ def runtime(
         Path(repo_dir, "workspace", "conversations").mkdir(parents=True, exist_ok=True)
     if workspace is not None and hasattr(workspace, "execute_command"):
         try:
-            workspace.execute_command("mkdir -p /workspace/conversations /workspace/bash_events")
+            # Run inside the container so the openhands user (UID 10001)
+            # can write into the bind-mounted host dir even when the host's
+            # WSL2 perms expose it as 0o755 owned by UID 1000. ``sudo`` is
+            # available because openhands is in the sudo group; chmod
+            # without sudo would fail because the dirs are host-owned.
+            workspace.execute_command(
+                "sudo mkdir -p /workspace/conversations /workspace/bash_events && "
+                "sudo chmod 0777 /workspace /workspace/conversations /workspace/bash_events"
+            )
         except Exception:
             logger.debug("Failed to pre-create OpenHands server directories", exc_info=True)
 

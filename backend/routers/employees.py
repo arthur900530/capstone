@@ -21,6 +21,7 @@ import yaml
 import config
 from test_case_generator import generate_test_cases
 from test_case_runner import run_test_case
+from workflow import compute_workflow_completion, load_workflow
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +59,7 @@ def _safe_file_name(name: str) -> str:
 from metrics import (
     aggregate_task_runs,
     serialize_task_run,
+    summarize_compact_events,
     task_runs_from_chat,
 )
 from services.governance_package_service import (
@@ -65,8 +67,10 @@ from services.governance_package_service import (
     normalize_governance_package,
     render_governance_html,
 )
+from agent_event_utils import compact_events_to_replay_events
 from trajectory import build_nodes_from_events, flatten_action_nodes, segment_nodes, to_dict
-from trajectory_llm import annotate_tree, apply_annotations
+from trajectory_llm import annotate_tree, apply_annotations, _action_subgoal
+from trajectory_workflow_align import align_trajectory_to_workflow
 
 router = APIRouter(prefix="/api/employees", tags=["employees"])
 
@@ -457,12 +461,21 @@ class TestCaseUpdate(BaseModel):
     expected_tool_families: list[str] | None = None
     max_latency_ms: int | None = Field(default=None, gt=0)
     status: str | None = None
+    # Optional. When set, the LLM-as-judge prompt for this test case
+    # includes the skill's expected workflow so the verdict scores
+    # per-step adherence. Pass an empty string to clear the link.
+    skill_id: str | None = None
 
 
 def _serialize_test_case(row) -> dict:
+    skill_id_value = getattr(row, "skill_id", None)
+    skill_obj = getattr(row, "skill", None)
     return {
         "id": str(row.id),
         "employee_id": str(row.employee_id),
+        "skill_id": str(skill_id_value) if skill_id_value else None,
+        "skill_slug": getattr(skill_obj, "slug", None) if skill_obj else None,
+        "skill_name": getattr(skill_obj, "display_name", None) if skill_obj else None,
         "title": row.title,
         "prompt": row.prompt,
         "success_criteria": row.success_criteria,
@@ -476,7 +489,13 @@ def _serialize_test_case(row) -> dict:
     }
 
 
-def _serialize_test_case_run(row) -> dict:
+def _serialize_test_case_run(row, *, expected_workflow: dict | None = None) -> dict:
+    workflow_alignment = getattr(row, "workflow_alignment", None)
+    workflow_completion = (
+        compute_workflow_completion(expected_workflow, workflow_alignment)
+        if expected_workflow and workflow_alignment
+        else None
+    )
     return {
         "id": str(row.id),
         "test_case_id": str(row.test_case_id),
@@ -492,6 +511,8 @@ def _serialize_test_case_run(row) -> dict:
         "failure_reason": row.failure_reason,
         "agent_session_id": row.agent_session_id,
         "deterministic_checks": row.deterministic_checks or {},
+        "workflow_alignment": workflow_alignment,
+        "workflow_completion": workflow_completion,
     }
 
 
@@ -800,11 +821,23 @@ async def list_employee_test_cases(employee_id: str):
 @router.patch("/{employee_id}/test_cases/{case_id}")
 async def update_employee_test_case(employee_id: str, case_id: str, body: TestCaseUpdate):
     await _assert_employee_exists(employee_id)
-    updates = body.model_dump(exclude_none=True)
+    # Don't drop ``skill_id`` when explicitly cleared (empty string ``""``
+    # means "unlink the skill"); only drop it when the caller omitted it.
+    updates = body.model_dump(exclude_unset=True)
+
+    raw_skill_id = updates.pop("skill_id", None) if "skill_id" in updates else "__unset__"
+
     if _db_available:
         from db.engine import async_session
-        from db.models import TestCase
+        from db.models import Skill, TestCase
         from sqlalchemy import select
+
+        resolved_skill_uuid: uuid.UUID | None = None
+        if raw_skill_id != "__unset__" and raw_skill_id:
+            try:
+                resolved_skill_uuid = uuid.UUID(str(raw_skill_id))
+            except (ValueError, TypeError):
+                raise HTTPException(400, "skill_id is not a valid UUID")
 
         async with async_session() as session:
             row = (
@@ -817,6 +850,18 @@ async def update_employee_test_case(employee_id: str, case_id: str, body: TestCa
             ).scalar_one_or_none()
             if row is None:
                 raise HTTPException(404, "Test case not found")
+            if raw_skill_id != "__unset__":
+                if resolved_skill_uuid is not None:
+                    skill_row = (
+                        await session.execute(
+                            select(Skill).where(Skill.id == resolved_skill_uuid)
+                        )
+                    ).scalar_one_or_none()
+                    if skill_row is None:
+                        raise HTTPException(404, "Linked skill not found")
+                    row.skill_id = resolved_skill_uuid
+                else:
+                    row.skill_id = None
             for key, value in updates.items():
                 setattr(row, key, value)
             await session.commit()
@@ -827,6 +872,11 @@ async def update_employee_test_case(employee_id: str, case_id: str, body: TestCa
     row = next((item for item in cases if item.get("id") == case_id), None)
     if row is None:
         raise HTTPException(404, "Test case not found")
+    if raw_skill_id != "__unset__":
+        # In-memory mode keeps the bare id; we don't resolve a slug here
+        # because the in-memory path does not exercise the LLM judge with
+        # a workflow today (no DB-backed Skill table to query).
+        row["skill_id"] = str(raw_skill_id) if raw_skill_id else None
     row.update(updates)
     row["updated_at"] = datetime.now(timezone.utc).isoformat()
     return row
@@ -861,6 +911,136 @@ async def delete_employee_test_case(employee_id: str, case_id: str):
     return {"ok": True}
 
 
+async def _persist_autotest_task_run(
+    *,
+    employee_id: str,
+    case_payload: dict[str, Any],
+    run_result: dict[str, Any],
+    test_case_run_id: uuid.UUID,
+    expected_workflow: dict | None,
+) -> None:
+    """Mirror an autotest run into ``task_runs`` so the report card surfaces it.
+
+    Writes a single row keyed by the autotest's synthetic
+    ``session_id = "autotest-{uuid}"`` and ``task_index = 0`` (each autotest
+    gets its own session so the existing ``(session_id, task_index)`` unique
+    constraint never collides with chat turns or sibling autotests).
+
+    Pre-seeds ``trajectory_annotations.workflow_aligns`` from the verifier's
+    workflow alignment when a target skill is set, so the trajectory drawer's
+    Workflow tab opens already populated for that skill.
+
+    Best-effort: failures are logged and swallowed so a metrics hiccup never
+    blocks the actual test-case run from returning.
+    """
+    try:
+        from db.engine import async_session
+        from db.models import TaskRun
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+        try:
+            emp_uuid = uuid.UUID(employee_id)
+        except (ValueError, TypeError):
+            logger.info(
+                "[autotest] persist skipped — bad employee_id=%r", employee_id
+            )
+            return
+
+        events = run_result.get("events") or []
+        replay_events = compact_events_to_replay_events(events)
+        counts = summarize_compact_events(events)
+
+        prompt_text = (
+            (case_payload.get("title") or case_payload.get("prompt") or "").strip()
+            or "(autotest)"
+        )
+        prompt_preview = prompt_text[:200]
+
+        annotations = _build_autotest_annotations(
+            case_payload=case_payload,
+            run_result=run_result,
+            expected_workflow=expected_workflow,
+        )
+
+        async with async_session() as session:
+            stmt = (
+                pg_insert(TaskRun.__table__)
+                .values(
+                    employee_id=emp_uuid,
+                    session_id=run_result["agent_session_id"],
+                    task_index=0,
+                    prompt_preview=prompt_preview,
+                    started_at=run_result["started_at"],
+                    ended_at=run_result["finished_at"],
+                    duration_ms=int(run_result.get("duration_ms") or 0),
+                    n_tool_calls=counts["n_tool_calls"],
+                    n_trials=counts["n_trials"],
+                    n_reflections=counts["n_reflections"],
+                    tool_histogram=counts["tool_histogram"],
+                    raw_events=replay_events,
+                    trajectory_annotations=annotations,
+                    source="autotest",
+                    test_case_run_id=test_case_run_id,
+                )
+                .on_conflict_do_nothing(
+                    index_elements=["session_id", "task_index"]
+                )
+            )
+            result = await session.execute(stmt)
+            await session.commit()
+            logger.info(
+                "[autotest] mirrored to task_runs session=%s rows=%s "
+                "n_tool_calls=%s",
+                run_result.get("agent_session_id"),
+                result.rowcount,
+                counts["n_tool_calls"],
+            )
+    except Exception:
+        logger.exception(
+            "[autotest] failed to mirror test_case_run=%s into task_runs",
+            test_case_run_id,
+        )
+
+
+def _build_autotest_annotations(
+    *,
+    case_payload: dict[str, Any],
+    run_result: dict[str, Any],
+    expected_workflow: dict | None,
+) -> dict:
+    """Assemble the ``trajectory_annotations`` blob for a mirrored autotest.
+
+    Pre-populates ``workflow_aligns[<skill_id>]`` in the same shape
+    ``_hydrate_workflow_aligns`` reads on the GET path so the trajectory
+    drawer's Workflow tab can render the LLM verifier's per-step verdicts
+    without forcing the user to re-pick the skill and re-pay an Align call.
+
+    Returns ``{}`` when there's nothing to seed (no target skill, or no
+    alignment result from the verifier).
+    """
+    workflow_alignment = run_result.get("workflow_alignment")
+    skill_id = case_payload.get("skill_id")
+    if not workflow_alignment or not skill_id or not expected_workflow:
+        return {}
+
+    completion = run_result.get("workflow_completion")
+    if not isinstance(completion, dict) or int(completion.get("total") or 0) <= 0:
+        completion = compute_workflow_completion(
+            expected_workflow, workflow_alignment
+        )
+
+    return {
+        "workflow_aligns": {
+            str(skill_id): {
+                "skill_slug": case_payload.get("skill_slug"),
+                "action_assignments": [],
+                "workflow_alignment": workflow_alignment,
+                "workflow_completion": completion,
+            }
+        }
+    }
+
+
 async def _run_single_test_case(employee_id: str, case_payload: dict[str, Any]) -> dict:
     employee = await _assert_employee_exists(employee_id)
 
@@ -883,6 +1063,23 @@ async def _run_single_test_case(employee_id: str, case_payload: dict[str, Any]) 
 
     skill_ids: list[str] = employee.get("skillIds") or []
     test_session_id = f"autotest-{uuid.uuid4().hex[:12]}"
+
+    # When the test case targets a specific skill, load that skill's
+    # workflow.json so the LLM-as-judge can score per-step adherence.
+    # The test case row stores ``skill_id`` (UUID); ``skill_slug`` is the
+    # resolved on-disk slug used to find ``backend/skills/<slug>/``.
+    expected_workflow_dict: dict | None = None
+    target_slug = case_payload.get("skill_slug")
+    if target_slug:
+        try:
+            wf = await asyncio.to_thread(load_workflow, target_slug)
+            if wf is not None:
+                expected_workflow_dict = wf.to_dict()
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "Failed to load workflow for skill slug=%s; running without it",
+                target_slug,
+            )
 
     # Build a temp workspace directory containing the employee's skill packages.
     # This runs outside the lock (pure disk I/O, no Docker interaction).
@@ -948,6 +1145,7 @@ async def _run_single_test_case(employee_id: str, case_payload: dict[str, Any]) 
             # Lock is managed by _run_single_test_case; pass None to avoid
             # run_test_case trying to acquire it a second time.
             workspace_lock=None,
+            expected_workflow=expected_workflow_dict,
         )
 
     try:
@@ -989,14 +1187,29 @@ async def _run_single_test_case(employee_id: str, case_payload: dict[str, Any]) 
                 failure_reason=run_result["failure_reason"],
                 agent_session_id=run_result["agent_session_id"],
                 deterministic_checks=run_result["deterministic_checks"],
+                workflow_alignment=run_result.get("workflow_alignment"),
             )
             session.add(row)
             await session.commit()
             await session.refresh(row)
-            run_dict = _serialize_test_case_run(row)
+            run_dict = _serialize_test_case_run(
+                row, expected_workflow=expected_workflow_dict
+            )
             _test_case_run_events[run_dict["id"]] = captured_events
             _test_case_run_transcripts[run_dict["id"]] = captured_transcript
-            return run_dict
+
+        # Mirror the run into ``task_runs`` so the report card surfaces
+        # this autotest alongside chat turns. Outside the test_case_runs
+        # session block so a metrics-side hiccup can't roll back the
+        # primary insert; the helper swallows its own errors.
+        await _persist_autotest_task_run(
+            employee_id=employee_id,
+            case_payload=case_payload,
+            run_result=run_result,
+            test_case_run_id=uuid.UUID(run_dict["id"]),
+            expected_workflow=expected_workflow_dict,
+        )
+        return run_dict
 
     run_entry = {
         "id": str(uuid.uuid4()),
@@ -1013,6 +1226,8 @@ async def _run_single_test_case(employee_id: str, case_payload: dict[str, Any]) 
         "failure_reason": run_result["failure_reason"],
         "agent_session_id": run_result["agent_session_id"],
         "deterministic_checks": run_result["deterministic_checks"],
+        "workflow_alignment": run_result.get("workflow_alignment"),
+        "workflow_completion": run_result.get("workflow_completion"),
     }
     _test_case_run_memory_store.setdefault(case_payload["id"], []).append(run_entry)
     _test_case_run_events[run_entry["id"]] = captured_events
@@ -1097,15 +1312,15 @@ async def list_employee_test_case_runs(employee_id: str, case_id: str):
         from sqlalchemy import select
 
         async with async_session() as session:
-            case_exists = (
+            case_row = (
                 await session.execute(
-                    select(TestCase.id).where(
+                    select(TestCase).where(
                         TestCase.id == _parse_case_uuid(case_id),
                         TestCase.employee_id == _parse_uuid(employee_id),
                     )
                 )
             ).scalar_one_or_none()
-            if case_exists is None:
+            if case_row is None:
                 raise HTTPException(404, "Test case not found")
 
             rows = (
@@ -1115,11 +1330,115 @@ async def list_employee_test_case_runs(employee_id: str, case_id: str):
                     .order_by(TestCaseRun.started_at.desc())
                 )
             ).scalars().all()
-        return {"employee_id": employee_id, "case_id": case_id, "runs": [_serialize_test_case_run(r) for r in rows]}
+
+            target_slug = (
+                case_row.skill.slug if getattr(case_row, "skill", None) else None
+            )
+        expected_workflow_dict: dict | None = None
+        if target_slug:
+            try:
+                wf = await asyncio.to_thread(load_workflow, target_slug)
+                if wf is not None:
+                    expected_workflow_dict = wf.to_dict()
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "Failed to load workflow for skill slug=%s during run listing",
+                    target_slug,
+                )
+        return {
+            "employee_id": employee_id,
+            "case_id": case_id,
+            "runs": [
+                _serialize_test_case_run(r, expected_workflow=expected_workflow_dict)
+                for r in rows
+            ],
+        }
 
     rows = _test_case_run_memory_store.get(case_id, [])
     sorted_rows = sorted(rows, key=lambda row: row.get("started_at") or "", reverse=True)
     return {"employee_id": employee_id, "case_id": case_id, "runs": sorted_rows}
+
+
+@router.get("/{employee_id}/test_case_runs/{run_id}/verdict")
+async def get_employee_test_case_run_verdict(employee_id: str, run_id: str):
+    """Slim accessor for a single test-case run's verdict + judge fields.
+
+    Used by the trajectory drawer to render an AUTOTEST verdict pill +
+    rationale in the header for ``task_runs`` rows that were mirrored
+    from autotests (``source = 'autotest'``). The drawer already has
+    ``test_case_run_id`` from the metrics payload, but it doesn't know
+    the originating ``case_id`` — keying this endpoint solely on
+    ``test_case_run_id`` keeps the call site one fetch.
+
+    Returns 404 when the row doesn't exist or doesn't belong to the
+    requested employee. The DB-less mode falls back to the in-memory
+    test-case run store so dev environments without Postgres still
+    surface the verdict for the latest run.
+    """
+    await _assert_employee_exists(employee_id)
+
+    if _db_available:
+        from db.engine import async_session
+        from db.models import TestCase, TestCaseRun
+        from sqlalchemy import select
+
+        try:
+            run_uuid = uuid.UUID(run_id)
+        except (ValueError, TypeError):
+            raise HTTPException(404, "Test case run not found")
+
+        async with async_session() as session:
+            row = (
+                await session.execute(
+                    select(TestCaseRun).where(TestCaseRun.id == run_uuid)
+                )
+            ).scalar_one_or_none()
+            if row is None:
+                raise HTTPException(404, "Test case run not found")
+
+            case_row = (
+                await session.execute(
+                    select(TestCase).where(
+                        TestCase.id == row.test_case_id,
+                        TestCase.employee_id == _parse_uuid(employee_id),
+                    )
+                )
+            ).scalar_one_or_none()
+            if case_row is None:
+                # Run exists but doesn't belong to this employee — treat
+                # as not-found rather than leaking cross-employee data.
+                raise HTTPException(404, "Test case run not found")
+
+        return {
+            "id": str(row.id),
+            "test_case_id": str(row.test_case_id),
+            "case_title": getattr(case_row, "title", None) or "",
+            "verdict": row.verdict,
+            "verdict_source": row.verdict_source,
+            "judge_rationale": row.judge_rationale,
+            "judge_evidence_quote": row.judge_evidence_quote,
+            "judge_confidence": row.judge_confidence,
+            "failure_reason": row.failure_reason,
+            "deterministic_checks": row.deterministic_checks or {},
+        }
+
+    # In-memory fallback: scan the test_case run store for a matching id.
+    for case_id, runs in _test_case_run_memory_store.items():
+        for entry in runs:
+            if entry.get("id") == run_id:
+                return {
+                    "id": run_id,
+                    "test_case_id": case_id,
+                    "case_title": "",
+                    "verdict": entry.get("verdict"),
+                    "verdict_source": entry.get("verdict_source"),
+                    "judge_rationale": entry.get("judge_rationale"),
+                    "judge_evidence_quote": entry.get("judge_evidence_quote"),
+                    "judge_confidence": entry.get("judge_confidence"),
+                    "failure_reason": entry.get("failure_reason"),
+                    "deterministic_checks": entry.get("deterministic_checks") or {},
+                }
+    raise HTTPException(404, "Test case run not found")
 
 
 @router.get("/{employee_id}/test_cases/{case_id}/runs/{run_id}/events")
@@ -1339,6 +1658,107 @@ async def employee_governance_html(
     return HTMLResponse(render_governance_html(package))
 
 
+async def _slug_for_skill_id(skill_id: str) -> str | None:
+    """Resolve a skill identifier (UUID or slug) to a directory slug.
+
+    Used when hydrating cached alignments whose ``skill_slug`` field
+    pre-dates persistence enrichment — we look the row up by UUID and
+    fall through to treating the input as a slug when DB mode is off
+    or the UUID parse fails.
+    """
+    if not skill_id:
+        return None
+    try:
+        skill_uuid = uuid.UUID(skill_id)
+    except (ValueError, TypeError):
+        return skill_id  # Already a slug; pass through.
+
+    if not _db_available:
+        return skill_id
+
+    from db.engine import async_session
+    from db.models import Skill
+    from sqlalchemy import select
+
+    async with async_session() as session:
+        row = (
+            await session.execute(select(Skill).where(Skill.id == skill_uuid))
+        ).scalar_one_or_none()
+    return row.slug if row is not None else None
+
+
+async def _hydrate_workflow_aligns(annotations: dict | None) -> list[dict]:
+    """Reconstruct cached workflow alignments into a render-ready list.
+
+    The persistence cache lives at
+    ``trajectory_annotations.workflow_aligns[<skill_id>] = {action_assignments,
+    workflow_alignment, workflow_completion, skill_slug}`` — it deliberately
+    omits the workflow tree itself so we don't snapshot a copy that drifts
+    when the user retrains the skill. On read we lazily rehydrate each
+    entry by loading the on-disk ``workflow.json`` for the cached slug
+    (resolving the slug from the skill_id key when the cache row pre-dates
+    slug persistence), de-duping disk I/O when multiple alignments share
+    the same slug, recomputing the per-leaf completion when it's missing
+    or stale, and silently dropping entries whose workflow file no longer
+    exists.
+    """
+    from workflow import compute_workflow_completion
+
+    aligns_cache = (annotations or {}).get("workflow_aligns") or {}
+    if not isinstance(aligns_cache, dict) or not aligns_cache:
+        return []
+
+    workflow_by_slug: dict[str, dict | None] = {}
+
+    async def _load_slug(slug: str) -> dict | None:
+        if slug in workflow_by_slug:
+            return workflow_by_slug[slug]
+        wf = await asyncio.to_thread(load_workflow, slug)
+        workflow_by_slug[slug] = wf.to_dict() if wf is not None else None
+        return workflow_by_slug[slug]
+
+    out: list[dict] = []
+    for skill_id, entry in aligns_cache.items():
+        if not isinstance(entry, dict):
+            continue
+        slug = entry.get("skill_slug") or await _slug_for_skill_id(str(skill_id))
+        if not slug:
+            continue
+        workflow_dict = await _load_slug(slug)
+        if not workflow_dict:
+            continue
+
+        completion = entry.get("workflow_completion")
+        if (
+            not isinstance(completion, dict)
+            or int(completion.get("total") or 0) <= 0
+        ):
+            # Recompute on the fly when the cache pre-dates the
+            # completion enrichment so legacy alignments still surface
+            # the right per-step rate in the drawer.
+            completion = compute_workflow_completion(
+                workflow_dict, entry.get("workflow_alignment")
+            )
+
+        out.append(
+            {
+                "skill_id": str(skill_id),
+                "skill_slug": slug,
+                "workflow": workflow_dict,
+                "action_assignments": entry.get("action_assignments") or [],
+                "workflow_alignment": entry.get("workflow_alignment"),
+                "workflow_completion": completion,
+            }
+        )
+
+    # Best (highest completion rate) first so the drawer can default to
+    # showing the strongest alignment when multiple skills are cached.
+    out.sort(
+        key=lambda x: -float(((x.get("workflow_completion") or {}).get("rate") or 0.0))
+    )
+    return out
+
+
 @router.get("/{employee_id}/task_runs/{session_id}/{task_index}/trajectory")
 async def employee_task_trajectory(employee_id: str, session_id: str, task_index: int):
     if _db_available:
@@ -1410,6 +1830,7 @@ async def employee_task_trajectory(employee_id: str, session_id: str, task_index
 
         annotations = run.get("trajectory_annotations") or {}
         tree_dict = apply_annotations(to_dict(tree), annotations)
+        workflow_aligns = await _hydrate_workflow_aligns(annotations)
 
         return {
             "available": True,
@@ -1421,6 +1842,7 @@ async def employee_task_trajectory(employee_id: str, session_id: str, task_index
             "raw_events": raw_events,
             "annotations": annotations,
             "annotated": bool(annotations),
+            "workflow_aligns": workflow_aligns,
         }
 
     emp = next((e for e in _memory_store if e.get("id") == employee_id), None)
@@ -1457,6 +1879,7 @@ async def employee_task_trajectory(employee_id: str, session_id: str, task_index
         "raw_events": raw_events,
         "annotations": {},
         "annotated": False,
+        "workflow_aligns": [],
     }
 
 
@@ -1578,6 +2001,205 @@ async def annotate_task_trajectory(
         "annotations": annotations,
         "annotated": True,
         "source": "cache" if (cached and not force) else "llm",
+    }
+
+
+@router.post("/{employee_id}/task_runs/{session_id}/{task_index}/trajectory/workflow_align")
+async def align_task_trajectory(
+    employee_id: str,
+    session_id: str,
+    task_index: int,
+    skill_id: str,
+    force: bool = False,
+):
+    """LLM-map this task run's trajectory onto a chosen skill's workflow.
+
+    Returns ``{action_assignments, workflow_alignment, workflow_completion,
+    workflow}`` so the trajectory drawer can render per-step adherence
+    (same shape as ``test_case_runs.workflow_alignment``) and decorate
+    each agent action with the workflow step it most closely advances.
+
+    Results are cached under
+    ``task_runs.trajectory_annotations.workflow_aligns[<skill_id>]`` so
+    flipping back to the same skill in the picker is free. Pass
+    ``?force=true`` to recompute.
+    """
+    if not _db_available:
+        raise HTTPException(
+            503,
+            "Trajectory workflow alignment requires the database to be available.",
+        )
+    if not skill_id:
+        raise HTTPException(400, "skill_id query parameter is required")
+
+    from db.engine import async_session
+    from db.models import Employee, Skill, TaskRun
+    from sqlalchemy import select, update
+
+    emp_uuid = _parse_uuid(employee_id)
+
+    # Resolve the chosen skill -> on-disk slug -> workflow.json before we
+    # touch the trajectory; if the skill has no workflow we want a clean
+    # 404 rather than an opaque LLM error.
+    try:
+        skill_uuid = uuid.UUID(skill_id)
+    except (ValueError, TypeError):
+        skill_uuid = None
+
+    expected_workflow_dict: dict | None = None
+    skill_slug: str | None = None
+    if skill_uuid is not None:
+        async with async_session() as session:
+            skill_row = (
+                await session.execute(select(Skill).where(Skill.id == skill_uuid))
+            ).scalar_one_or_none()
+            if skill_row is None:
+                raise HTTPException(404, "Skill not found")
+            skill_slug = skill_row.slug
+    else:
+        # Allow callers to pass the slug directly (in-memory fallback or
+        # legacy callers).
+        skill_slug = skill_id
+
+    if skill_slug:
+        wf = await asyncio.to_thread(load_workflow, skill_slug)
+        if wf is not None:
+            expected_workflow_dict = wf.to_dict()
+    if expected_workflow_dict is None:
+        raise HTTPException(
+            404,
+            f"No workflow.json on file for skill '{skill_slug or skill_id}'",
+        )
+
+    async with async_session() as session:
+        emp_row = (
+            await session.execute(select(Employee).where(Employee.id == emp_uuid))
+        ).scalar_one_or_none()
+        if emp_row is None:
+            raise HTTPException(404, "Employee not found")
+
+        row = (
+            await session.execute(
+                select(TaskRun).where(
+                    TaskRun.employee_id == emp_uuid,
+                    TaskRun.session_id == session_id,
+                    TaskRun.task_index == task_index,
+                )
+            )
+        ).scalar_one_or_none()
+        if row is None:
+            raise HTTPException(404, "Task run not found")
+
+        run = serialize_task_run(row)
+        cached_all = run.get("trajectory_annotations") or {}
+        cached_aligns = (
+            cached_all.get("workflow_aligns") if isinstance(cached_all, dict) else None
+        ) or {}
+        cached_for_skill = (
+            cached_aligns.get(skill_id) if isinstance(cached_aligns, dict) else None
+        )
+        raw_events = run.get("raw_events") or []
+
+    # Fall back to in-memory chat if the DB row predates raw-event persistence.
+    if not raw_events:
+        try:
+            from server import _chats  # type: ignore
+        except Exception:
+            _chats = {}
+        chat = _chats.get(session_id)
+        if chat is not None:
+            live_run = next(
+                (
+                    r for r in task_runs_from_chat(chat)
+                    if r.get("session_id") == session_id and r.get("task_index") == task_index
+                ),
+                None,
+            )
+            if live_run is not None:
+                raw_events = live_run.get("raw_events") or []
+
+    if not raw_events:
+        raise HTTPException(
+            status_code=410,
+            detail={"available": False, "reason": "trajectory_not_persisted"},
+        )
+
+    action_nodes, trial_boundaries = build_nodes_from_events(raw_events)
+    tree = segment_nodes(action_nodes, trial_boundaries)
+    actions = flatten_action_nodes(tree)
+    action_descriptions = [_action_subgoal(a) for a in actions]
+
+    if cached_for_skill and not force:
+        align_result = cached_for_skill
+        source = "cache"
+    else:
+        try:
+            align_result = await align_trajectory_to_workflow(
+                workflow=expected_workflow_dict,
+                action_descriptions=action_descriptions,
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(
+                status_code=502,
+                detail=f"LLM workflow alignment failed: {exc}",
+            ) from exc
+        source = "llm"
+
+    # Always derive completion from the freshly loaded workflow + alignment
+    # so the cache row carries the headline numbers the report card uses.
+    workflow_completion = compute_workflow_completion(
+        expected_workflow_dict,
+        align_result.get("workflow_alignment"),
+    )
+
+    if source == "llm":
+        # Write-through cache nested under trajectory_annotations so we
+        # don't need a new column. We also stash skill_slug + completion
+        # so metrics aggregation can read them without reloading
+        # workflow.json for every task on every dashboard render.
+        cache_payload = {
+            "action_assignments": align_result.get("action_assignments") or [],
+            "workflow_alignment": align_result.get("workflow_alignment"),
+            "workflow_completion": workflow_completion,
+            "skill_slug": skill_slug,
+        }
+        async with async_session() as session:
+            row = (
+                await session.execute(
+                    select(TaskRun).where(
+                        TaskRun.employee_id == emp_uuid,
+                        TaskRun.session_id == session_id,
+                        TaskRun.task_index == task_index,
+                    )
+                )
+            ).scalar_one_or_none()
+            if row is not None:
+                merged = dict(row.trajectory_annotations or {})
+                aligns = dict(merged.get("workflow_aligns") or {})
+                aligns[skill_id] = cache_payload
+                merged["workflow_aligns"] = aligns
+                await session.execute(
+                    update(TaskRun)
+                    .where(
+                        TaskRun.employee_id == emp_uuid,
+                        TaskRun.session_id == session_id,
+                        TaskRun.task_index == task_index,
+                    )
+                    .values(trajectory_annotations=merged)
+                )
+                await session.commit()
+
+    return {
+        "available": True,
+        "session_id": session_id,
+        "task_index": task_index,
+        "skill_id": skill_id,
+        "skill_slug": skill_slug,
+        "workflow": expected_workflow_dict,
+        "action_assignments": align_result.get("action_assignments") or [],
+        "workflow_alignment": align_result.get("workflow_alignment"),
+        "workflow_completion": workflow_completion,
+        "source": source,
     }
 
 

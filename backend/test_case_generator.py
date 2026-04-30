@@ -256,7 +256,7 @@ async def generate_test_cases(
         resp = await client.chat.completions.create(
             model=target_model,
             messages=messages,
-            temperature=0.1,
+            temperature=1.0,
             max_completion_tokens=2200,
             response_format={"type": "json_object"},
         )
@@ -271,7 +271,7 @@ async def generate_test_cases(
         resp = await client.chat.completions.create(
             model=target_model,
             messages=messages,
-            temperature=0.1,
+            temperature=1.0,
             max_completion_tokens=2200,
         )
 

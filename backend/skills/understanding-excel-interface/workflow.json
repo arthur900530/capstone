@@ -1,0 +1,32 @@
+{
+  "skill_name": "understanding-excel-interface",
+  "title": "Understanding Excel Interface",
+  "summary": "This skill helps users understand the basic layout of the Excel interface, including the concepts of workbooks and worksheets.",
+  "source_file": "2-2. Main interface\uff1a Workbook and worksheet [2CZugf2ZC6Q].mp400:00",
+  "root_steps": [
+    {
+      "node_type": "workflow_step",
+      "title": "Introduction to Excel Interface",
+      "description": "",
+      "start_time": 13.56,
+      "end_time": 14.04,
+      "children": []
+    },
+    {
+      "node_type": "workflow_step",
+      "title": "Differentiate between workbook and worksheet",
+      "description": "",
+      "start_time": 14.28,
+      "end_time": 25.22,
+      "children": []
+    },
+    {
+      "node_type": "workflow_step",
+      "title": "Locate and identify worksheets",
+      "description": "",
+      "start_time": 25.22,
+      "end_time": 31.22,
+      "children": []
+    }
+  ]
+}

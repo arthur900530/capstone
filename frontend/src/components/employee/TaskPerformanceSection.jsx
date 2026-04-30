@@ -3,6 +3,7 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  GitCompareArrows,
   Loader2,
   Sparkles,
   Target,
@@ -10,6 +11,12 @@ import {
   ListChecks,
 } from "lucide-react";
 import { backfillRecentAnnotations } from "../../services/api";
+import {
+  alignmentForPath,
+  formatRate,
+  leafPaths,
+  subtreeCompletion,
+} from "../workflow/workflowScore";
 
 const BUCKET_STYLES = {
   all: {
@@ -160,11 +167,16 @@ function aggregatedGoalScore(goal) {
    sub-goals at 0.25, leaf steps at 0.125, and so on — matching the
    "overall success rate = 0.5·L1_avg + 0.25·L2_avg + …" spec.
 
-   Prefers the backend-computed ``task_score`` (shared with the employee
-   aggregate KPI) so the headline %, tooltip and aggregate tile can't
-   drift out of sync; falls back to the in-page recomputation when the
-   field is absent (older payloads). */
+   Prefers the backend-computed ``effective_task_score`` so workflow
+   alignment (when the user has compared this run against a skill
+   workflow in the trajectory drawer's Workflow tab) drives the
+   headline %, tooltip and aggregate tile. Falls back to ``task_score``
+   (the LLM-goal weighted score) and finally to the in-page recomputation
+   for older payloads. */
 function aggregatedTaskScore(run) {
+  if (run && typeof run.effective_task_score === "number") {
+    return run.effective_task_score;
+  }
   if (run && typeof run.task_score === "number") return run.task_score;
   const goals = run?.top_level_goals || [];
   if (goals.length === 0) return null;
@@ -175,6 +187,14 @@ function aggregatedTaskScore(run) {
   const offset = _seedAncestors(levels, goals[0]?.ancestor_statuses);
   for (const g of goals) _collectLevels(g, levels, offset);
   return _scoreFromLevels(levels);
+}
+
+function workflowBest(run) {
+  return run?.workflow_summary?.best || null;
+}
+
+function isWorkflowAligned(run) {
+  return Boolean(run?.workflow_summary?.aligned);
 }
 
 function scoreBucket(score) {
@@ -243,6 +263,133 @@ function BarTooltip({ goal }) {
       {goal.status_reason ? (
         <p className="border-t border-border/40 pt-1 text-[10px] italic leading-snug text-text-muted">
           {goal.status_reason}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+// Workflow-aware bar that replaces ``GoalBar`` for aligned runs.
+//
+// One segment per TOP-LEVEL workflow step. Width is proportional to the
+// number of leaf steps under that subtree so a complex top-level step
+// doesn't visually weigh the same as a single-leaf one. Color is the
+// score bucket of ``subtreeCompletion(rate)``: a step where every leaf
+// satisfied is green, a half-failed step is amber, all-missed is red.
+//
+// Tooltip surfaces the step title + ``passed/total · rate%`` so the
+// underlying alignment numbers are still discoverable on hover.
+function WorkflowBar({ workflow, alignment }) {
+  const [hoveredIdx, setHoveredIdx] = useState(null);
+
+  const segments = useMemo(() => {
+    const roots = workflow?.root_steps || [];
+    return roots.map((step, i) => {
+      const path = [i];
+      const completion = subtreeCompletion(step, path, alignment);
+      const leaves = leafPaths([step]);
+      // Equal-fallback width keeps a step with zero leaves (degenerate
+      // workflow) visible rather than collapsing the segment to 0.
+      const units = Math.max(1, leaves.length || 1);
+      const bucket =
+        completion.total === 0 ? "empty" : scoreBucket(completion.rate);
+      return { step, path, completion, units, bucket };
+    });
+  }, [workflow, alignment]);
+
+  if (!segments.length) {
+    return <div className="h-3 w-full rounded bg-zinc-700/40" />;
+  }
+
+  const totalUnits = segments.reduce((s, seg) => s + seg.units, 0);
+
+  const laidOut = segments.reduce(
+    (acc, seg, i) => {
+      const widthPct = (seg.units / totalUnits) * 100;
+      const leftPct = acc.total;
+      acc.items.push({ ...seg, i, widthPct, leftPct });
+      acc.total += widthPct;
+      return acc;
+    },
+    { items: [], total: 0 },
+  ).items;
+
+  const hovered = hoveredIdx != null ? laidOut[hoveredIdx] : null;
+
+  return (
+    <div className="relative" onMouseLeave={() => setHoveredIdx(null)}>
+      <div className="flex h-3 w-full overflow-hidden rounded border border-border/40">
+        {laidOut.map((seg) => {
+          const style = BUCKET_STYLES[seg.bucket] || BUCKET_STYLES.unknown;
+          const isHovered = hoveredIdx === seg.i;
+          const dim = hoveredIdx != null && !isHovered;
+          return (
+            <div
+              key={seg.path.join(".")}
+              role="button"
+              tabIndex={0}
+              aria-label={`${seg.step?.title || "Step"}, ${seg.completion.passed}/${seg.completion.total} satisfied`}
+              onMouseEnter={() => setHoveredIdx(seg.i)}
+              onFocus={() => setHoveredIdx(seg.i)}
+              onBlur={() => setHoveredIdx((prev) => (prev === seg.i ? null : prev))}
+              className={`h-full cursor-pointer transition-[filter,opacity] duration-150 ${style.bar} ${
+                seg.i > 0 ? "border-l border-[#2a2c31]" : ""
+              } ${isHovered ? "brightness-125" : dim ? "opacity-60" : ""}`}
+              style={{ width: `${seg.widthPct}%` }}
+            />
+          );
+        })}
+      </div>
+      {hovered ? (
+        <div
+          className="pointer-events-none absolute bottom-full z-20 mb-2 -translate-x-1/2 rounded-md border border-border/70 bg-[#1a1c1f] px-2.5 py-1.5 shadow-[0_6px_24px_rgba(0,0,0,0.45)]"
+          style={{ left: `${hovered.leftPct + hovered.widthPct / 2}%` }}
+        >
+          <WorkflowBarTooltip segment={hovered} alignment={alignment} />
+          <span
+            className="absolute left-1/2 top-full -translate-x-1/2 border-x-4 border-t-4 border-x-transparent border-t-[#1a1c1f]"
+            aria-hidden
+          />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function WorkflowBarTooltip({ segment, alignment }) {
+  const style = BUCKET_STYLES[segment.bucket] || BUCKET_STYLES.unknown;
+  const ratePct = formatRate(segment.completion.rate);
+  const isLeafSegment =
+    !Array.isArray(segment.step?.children) || segment.step.children.length === 0;
+  const leafEntry = isLeafSegment
+    ? alignmentForPath(alignment, segment.path)
+    : null;
+  const evidence = leafEntry?.evidence;
+  return (
+    <div className="pointer-events-none w-56 space-y-1.5">
+      <div className="flex items-start gap-1.5">
+        <span className={`mt-0.5 h-2 w-2 shrink-0 rounded-sm ${style.swatch}`} />
+        <span className="text-[12px] font-medium leading-snug text-text-primary">
+          {segment.step?.title || "Step"}
+        </span>
+      </div>
+      <div className="flex items-center justify-between gap-2 text-[11px]">
+        <span className="text-text-muted">
+          {segment.completion.passed}/{segment.completion.total}
+          {isLeafSegment ? " (leaf step)" : " leaf steps"}
+        </span>
+        <span className={`font-semibold tabular-nums ${style.text}`}>
+          {ratePct}
+        </span>
+      </div>
+      <div className="flex items-center justify-between gap-2">
+        <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${style.badge}`}>
+          {style.label}
+        </span>
+      </div>
+      {evidence ? (
+        <p className="border-t border-border/40 pt-1 text-[10px] italic leading-snug text-text-muted">
+          {evidence}
         </p>
       ) : null}
     </div>
@@ -432,10 +579,9 @@ function TaskRow({ index, run, expanded, onToggle, onOpenTrajectory }) {
   const goals = run.top_level_goals || [];
   const leaf = run.leaf_summary || { total: 0, achieved: 0, rate: 0 };
   // The headline % is the depth-weighted aggregated score so the number
-  // and the bar color always tell the same story. A 100%-leaf trace with
-  // an LLM "failure" at the top will correctly read ~33% in red instead
-  // of 100% in red. Raw leaf rate is still available in the tooltip and
-  // the expanded breakdown.
+  // and the bar color always tell the same story — and now prefers the
+  // workflow-alignment rate when the user has compared this run against
+  // a skill workflow in the trajectory drawer's Workflow tab.
   const score = aggregatedTaskScore(run);
   const bucket = taskBucket(run);
   const hasSignal = score != null || (leaf.total || 0) > 0;
@@ -444,6 +590,13 @@ function TaskRow({ index, run, expanded, onToggle, onOpenTrajectory }) {
   const pctColor = hasSignal
     ? BUCKET_STYLES[bucket]?.text || "text-text-primary"
     : "text-text-muted";
+
+  const aligned = isWorkflowAligned(run);
+  const wfBest = workflowBest(run);
+  const wfPct = wfBest ? Math.round((wfBest.rate || 0) * 100) : null;
+  const wfAccent =
+    wfBest != null ? BUCKET_STYLES[scoreBucket(wfBest.rate)] : null;
+  const isAutotest = run.source === "autotest";
 
   const title =
     run.prompt_preview?.trim() ||
@@ -467,6 +620,14 @@ function TaskRow({ index, run, expanded, onToggle, onOpenTrajectory }) {
         <span className="mt-0.5 w-4 shrink-0 text-right text-[11px] tabular-nums text-text-muted">
           {index + 1}
         </span>
+        {isAutotest ? (
+          <span
+            className="mt-0.5 shrink-0 rounded bg-yellow-500/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-yellow-400"
+            title="Mirrored from an autotest run"
+          >
+            Autotest
+          </span>
+        ) : null}
         <button
           type="button"
           onClick={onOpenTrajectory}
@@ -475,6 +636,17 @@ function TaskRow({ index, run, expanded, onToggle, onOpenTrajectory }) {
         >
           {title}
         </button>
+        {aligned && wfBest ? (
+          <span
+            className={`inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium ${
+              wfAccent?.badge || "bg-surface text-text-muted"
+            }`}
+            title={`Workflow alignment vs. ${wfBest.skill_slug || wfBest.skill_id}: ${wfBest.passed}/${wfBest.total} steps`}
+          >
+            <GitCompareArrows size={10} />
+            workflow {wfPct}%
+          </span>
+        ) : null}
         <span
           className={`shrink-0 text-[13px] font-semibold tabular-nums ${pctColor}`}
         >
@@ -483,7 +655,18 @@ function TaskRow({ index, run, expanded, onToggle, onOpenTrajectory }) {
       </div>
 
       <div className="mt-2 pl-10">
-        <GoalBar goals={goals} />
+        {aligned && wfBest?.workflow ? (
+          // For workflow-aligned runs the bar reflects the chosen
+          // skill's workflow steps and the LLM's per-leaf alignment so
+          // the visual matches the score the user just saw in the
+          // drawer's Workflow tab.
+          <WorkflowBar
+            workflow={wfBest.workflow}
+            alignment={wfBest.workflow_alignment}
+          />
+        ) : (
+          <GoalBar goals={goals} />
+        )}
         {!hasSignal && !run.annotated ? (
           <p className="mt-1 text-[11px] italic text-text-muted">
             Not yet annotated — run the LLM to score this task.
@@ -515,7 +698,19 @@ const BUCKET_HEX = {
   empty: "#3f3f46",    // zinc-700
 };
 
-function TrendChart({ tasks, onPointClick }) {
+function defaultTrendMetric(task) {
+  // Default per-task metric: depth-weighted aggregated score so an LLM
+  // "failure" at the top level visibly drags the trend line down even
+  // when every leaf step passed. Falls back to the raw leaf rate when
+  // there's no annotation signal yet.
+  const rate = task.leaf_summary?.rate ?? 0;
+  const hasData = (task.leaf_summary?.total ?? 0) > 0;
+  const bucket = taskBucket(task);
+  const score = aggregatedTaskScore(task);
+  return { rate, hasData, bucket, score };
+}
+
+function TrendChart({ tasks, onPointClick, getMetric, hoverContextLabel }) {
   // `tasks` is newest-first; flip to chronological (T1 = oldest → Tn = newest).
   const ordered = useMemo(() => [...tasks].reverse(), [tasks]);
   const [hoveredIdx, setHoveredIdx] = useState(null);
@@ -538,15 +733,13 @@ function TrendChart({ tasks, onPointClick }) {
   const yFor = (rate) =>
     padT + chartH * (1 - Math.max(0, Math.min(1, rate)));
 
+  const metricFn = getMetric || defaultTrendMetric;
   const points = ordered.map((task, i) => {
-    const rate = task.leaf_summary?.rate ?? 0;
-    const hasData = (task.leaf_summary?.total ?? 0) > 0;
-    // Y-position and color both track the depth-weighted aggregated
-    // score so an LLM "failure" at the top level visibly drags the trend
-    // line down even when every leaf step passed. Falls back to raw leaf
-    // rate if there's no annotation signal at all.
-    const bucket = taskBucket(task);
-    const score = aggregatedTaskScore(task);
+    const m = metricFn(task) || {};
+    const rate = m.rate ?? 0;
+    const hasData = Boolean(m.hasData);
+    const bucket = m.bucket || "unknown";
+    const score = m.score ?? null;
     const yValue = score != null ? score : hasData ? rate : 0;
     return {
       i,
@@ -555,15 +748,31 @@ function TrendChart({ tasks, onPointClick }) {
       hasData,
       bucket,
       score,
+      passed: m.passed ?? null,
+      total: m.total ?? null,
       x: xFor(i),
       y: yFor(yValue),
       label: `T${i + 1}`,
     };
   });
 
-  const linePath = points
-    .map((p, i) => `${i === 0 ? "M" : "L"} ${p.x} ${p.y}`)
-    .join(" ");
+  // Build the line as one or more subpaths so trajectories without data
+  // (e.g. when a workflow step is selected and a task wasn't aligned to
+  // that skill) leave a gap rather than artificially dragging the line
+  // down to 0%.
+  const linePath = (() => {
+    let d = "";
+    let inSegment = false;
+    for (const p of points) {
+      if (!p.hasData) {
+        inSegment = false;
+        continue;
+      }
+      d += `${inSegment ? "L" : "M"} ${p.x} ${p.y} `;
+      inSegment = true;
+    }
+    return d.trim();
+  })();
 
   // Space labels out if there are many points; every-other label above ~10.
   const labelStride = n > 10 ? 2 : 1;
@@ -647,11 +856,11 @@ function TrendChart({ tasks, onPointClick }) {
             >
               <title>
                 {`${p.label} — ${
-                  p.score != null
-                    ? `${Math.round(p.score * 100)}% weighted`
-                    : p.hasData
-                      ? `${Math.round(p.rate * 100)}% leaf rate`
-                      : "not scored"
+                  p.hasData
+                    ? `${Math.round(
+                        (p.score != null ? p.score : p.rate) * 100,
+                      )}%${hoverContextLabel ? ` ${hoverContextLabel}` : p.score != null ? " weighted" : " leaf rate"}`
+                    : "not scored"
                 }`}
               </title>
             </rect>
@@ -661,18 +870,35 @@ function TrendChart({ tasks, onPointClick }) {
 
       {/* Hover card */}
       {hovered ? (
-        <TrendHoverCard point={hovered} chartWidth={W} padL={padL} padR={padR} />
+        <TrendHoverCard
+          point={hovered}
+          chartWidth={W}
+          padL={padL}
+          padR={padR}
+          contextLabel={hoverContextLabel}
+        />
       ) : null}
     </div>
   );
 }
 
-function TrendHoverCard({ point, chartWidth, padL, padR }) {
+function TrendHoverCard({ point, chartWidth, padL, padR, contextLabel }) {
   const leftFrac = point.x / chartWidth;
   const clampedLeftFrac = Math.max(padL / chartWidth, Math.min(1 - padR / chartWidth, leftFrac));
   const title =
     point.task.prompt_preview?.trim() || "(empty prompt)";
   const bucketStyle = BUCKET_STYLES[point.bucket] || BUCKET_STYLES.unknown;
+  const aligned = isWorkflowAligned(point.task);
+  const stepCtx = contextLabel || null;
+  const inferredLabel = aligned ? "workflow" : "weighted";
+  const inferredTooltip = aligned
+    ? "Workflow alignment rate: passed leaf steps / total leaf steps"
+    : "Depth-weighted score: 0.5·top + 0.25·L2 + 0.125·L3 + …";
+  // When the parent passed step-specific passed/total (i.e. a workflow
+  // step is selected in the dropdown) prefer that summary line over the
+  // task-wide leaf summary so the tooltip matches the dot.
+  const stepHasCounts =
+    point.total != null && point.passed != null && point.total > 0;
   return (
     <div
       className="pointer-events-none absolute top-2 z-20 -translate-x-1/2 rounded-md border border-border/70 bg-[#1a1c1f] px-2.5 py-1.5 text-[11px] shadow-[0_6px_24px_rgba(0,0,0,0.45)]"
@@ -695,12 +921,25 @@ function TrendHoverCard({ point, chartWidth, padL, padR }) {
         </span>
         <span
           className="text-[10px] uppercase tracking-wider text-text-muted"
-          title="Depth-weighted score: 0.5·top + 0.25·L2 + 0.125·L3 + …"
+          title={
+            stepCtx
+              ? "Workflow step alignment rate: passed leaf steps / total leaf steps under this step"
+              : inferredTooltip
+          }
         >
-          weighted
+          {stepCtx || inferredLabel}
         </span>
       </div>
-      {point.task.leaf_summary?.total ? (
+      {stepHasCounts ? (
+        <div className="mt-0.5 flex items-center gap-1 text-[10px] text-text-muted">
+          <span>
+            {point.passed}/{point.total} step leaves
+          </span>
+          <span className="text-text-muted">
+            · {Math.round((point.rate || 0) * 100)}%
+          </span>
+        </div>
+      ) : point.task.leaf_summary?.total ? (
         <div className="mt-0.5 flex items-center gap-1 text-[10px] text-text-muted">
           <span>
             {point.task.leaf_summary.achieved}/{point.task.leaf_summary.total} leaf steps
@@ -781,11 +1020,161 @@ export default function TaskPerformanceSection({
   // null = "All". `recent` is newest-first, so slicing from the head
   // keeps the chart focused on the most recent N sessions.
   const [trendWindow, setTrendWindow] = useState(10);
+  // null = "Overall" (existing depth-weighted/score behaviour). When a
+  // workflow step is picked from the dropdown the trend chart instead
+  // plots the per-task success rate of that one step across all
+  // trajectories the user is looking at.
+  const [selectedStepKey, setSelectedStepKey] = useState(null);
 
   const trendTasks = useMemo(() => {
     if (trendWindow == null) return recent;
     return recent.slice(0, trendWindow);
   }, [recent, trendWindow]);
+
+  // Walk every task's cached workflow alignments to discover the set of
+  // top-level workflow steps the user can drill into. We key by
+  // ``<skill>::<rootIndex>`` so two skills that happen to share a step
+  // title stay distinct, and we count how many trajectories surfaced
+  // each step so the dropdown can show "step (4)" hints.
+  const stepOptions = useMemo(() => {
+    const map = new Map();
+    for (const task of recent) {
+      const skills = task?.workflow_summary?.skills || [];
+      for (const s of skills) {
+        const wf = s?.workflow;
+        if (!wf || !Array.isArray(wf.root_steps)) continue;
+        const skillKey = s.skill_slug || s.skill_id || "_unknown";
+        const skillTitle = wf.title || s.skill_slug || s.skill_id || "Skill";
+        wf.root_steps.forEach((step, idx) => {
+          const key = `${skillKey}::${idx}`;
+          const existing = map.get(key);
+          if (existing) {
+            existing.taskCount += 1;
+          } else {
+            map.set(key, {
+              key,
+              skillKey,
+              skillSlug: s.skill_slug || null,
+              skillId: s.skill_id || null,
+              skillTitle,
+              path: [idx],
+              stepTitle: step?.title || `Step ${idx + 1}`,
+              taskCount: 1,
+            });
+          }
+        });
+      }
+    }
+    return Array.from(map.values()).sort((a, b) => {
+      if (a.skillTitle !== b.skillTitle) {
+        return a.skillTitle.localeCompare(b.skillTitle);
+      }
+      return a.path[0] - b.path[0];
+    });
+  }, [recent]);
+
+  // Group options by skill so the <select> can render <optgroup> headers
+  // when multiple skills are aligned.
+  const stepGroups = useMemo(() => {
+    const groups = new Map();
+    for (const opt of stepOptions) {
+      if (!groups.has(opt.skillKey)) {
+        groups.set(opt.skillKey, { title: opt.skillTitle, options: [] });
+      }
+      groups.get(opt.skillKey).options.push(opt);
+    }
+    return Array.from(groups.values());
+  }, [stepOptions]);
+
+  // If the underlying recent list shrinks/changes (e.g. annotation
+  // refresh) and the previously-selected step is no longer present, fall
+  // back to "Overall" so the chart never references a stale option.
+  useEffect(() => {
+    if (
+      selectedStepKey != null &&
+      !stepOptions.some((o) => o.key === selectedStepKey)
+    ) {
+      setSelectedStepKey(null);
+    }
+  }, [selectedStepKey, stepOptions]);
+
+  const selectedStep = useMemo(() => {
+    if (!selectedStepKey) return null;
+    return stepOptions.find((o) => o.key === selectedStepKey) || null;
+  }, [selectedStepKey, stepOptions]);
+
+  // Resolve the step within a single task's cached alignment and return
+  // the same {score, rate, hasData, bucket} shape the default trend
+  // metric uses, plus passed/total so the hover card can show step
+  // counts. Tasks that weren't aligned to this step's skill come back
+  // ``hasData: false`` so the chart renders an unknown gray dot and the
+  // line skips the gap.
+  const buildStepMetric = (step) => (task) => {
+    if (!step) return { score: null, rate: 0, hasData: false, bucket: "unknown" };
+    const skills = task?.workflow_summary?.skills || [];
+    const skill = skills.find(
+      (s) =>
+        (step.skillSlug && s.skill_slug === step.skillSlug) ||
+        (step.skillId && s.skill_id === step.skillId),
+    );
+    if (!skill || !skill.workflow || !skill.workflow_alignment) {
+      return { score: null, rate: 0, hasData: false, bucket: "unknown" };
+    }
+    let node = skill.workflow.root_steps?.[step.path[0]];
+    for (let d = 1; d < step.path.length; d += 1) {
+      node = node?.children?.[step.path[d]];
+    }
+    if (!node) {
+      return { score: null, rate: 0, hasData: false, bucket: "unknown" };
+    }
+    const completion = subtreeCompletion(node, step.path, skill.workflow_alignment);
+    if (!completion || completion.total === 0) {
+      return { score: null, rate: 0, hasData: false, bucket: "unknown" };
+    }
+    const rate = completion.rate ?? 0;
+    return {
+      score: rate,
+      rate,
+      hasData: true,
+      bucket: scoreBucket(rate),
+      passed: completion.passed,
+      total: completion.total,
+    };
+  };
+
+  const trendMetricFn = useMemo(() => {
+    if (!selectedStep) return null;
+    return buildStepMetric(selectedStep);
+  }, [selectedStep]);
+
+  // Average step success rate across the currently-windowed trajectories
+  // that actually had this step aligned. Used for the small summary line
+  // above the chart so the user sees a single number alongside the
+  // per-trajectory plot.
+  const stepSummary = useMemo(() => {
+    if (!selectedStep || !trendMetricFn) return null;
+    let sum = 0;
+    let count = 0;
+    let passed = 0;
+    let total = 0;
+    for (const task of trendTasks) {
+      const m = trendMetricFn(task);
+      if (m.hasData) {
+        sum += m.rate;
+        count += 1;
+        passed += m.passed || 0;
+        total += m.total || 0;
+      }
+    }
+    if (count === 0) return { count, total: 0, passed: 0, avg: null, microRate: null };
+    return {
+      count,
+      total,
+      passed,
+      avg: sum / count,
+      microRate: total > 0 ? passed / total : null,
+    };
+  }, [selectedStep, trendMetricFn, trendTasks]);
 
   const PAGE_SIZE = 5;
   const pageCount = Math.max(1, Math.ceil(recent.length / PAGE_SIZE));
@@ -803,14 +1192,27 @@ export default function TaskPerformanceSection({
 
   // The headline KPI uses the depth-weighted aggregated mean (0.5·L1_avg
   // + 0.25·L2_avg + …) so it honours the spec. ``avg_task_score`` is
-  // provided by the backend; falling back to ``avg_leaf_rate`` keeps old
-  // payloads from rendering "—" during a deploy window.
+  // provided by the backend and now prefers workflow-alignment rate for
+  // any run the user has compared against a skill workflow, with
+  // ``avg_task_score_goal_only`` and ``avg_leaf_rate`` kept around for
+  // diagnostics / parity checks.
   const weightedRate =
     typeof aggregate?.avg_task_score === "number"
       ? aggregate.avg_task_score
       : aggregate?.avg_leaf_rate;
   const leafPct = Math.round((weightedRate || 0) * 100);
   const leafAccent = accentForRate(weightedRate);
+  const tasksWorkflowAligned = aggregate?.tasks_workflow_aligned ?? 0;
+  const goalOnlyRate = aggregate?.avg_task_score_goal_only ?? null;
+  const workflowRate = aggregate?.avg_workflow_rate ?? null;
+  const workflowSteps = {
+    total: aggregate?.total_workflow_steps ?? 0,
+    passed: aggregate?.total_workflow_steps_passed ?? 0,
+  };
+  const workflowMicroPct =
+    workflowSteps.total > 0
+      ? Math.round((workflowSteps.passed / workflowSteps.total) * 100)
+      : 0;
 
   const leafTotals = useMemo(
     () => ({
@@ -858,14 +1260,55 @@ export default function TaskPerformanceSection({
   return (
     <div className="space-y-4">
       {/* Goal-oriented KPI tiles */}
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+      <div
+        className={`grid grid-cols-1 gap-3 ${
+          tasksWorkflowAligned > 0 ? "sm:grid-cols-4" : "sm:grid-cols-3"
+        }`}
+      >
         <Kpi
           icon={TrendingUp}
           label="Avg success rate"
           value={annotatedTasks > 0 ? `${leafPct}%` : "—"}
-          sub="depth-weighted mean (0.5·L1 + 0.25·L2 + …)"
+          sub={
+            tasksWorkflowAligned > 0
+              ? `workflow alignment for ${tasksWorkflowAligned} task${
+                  tasksWorkflowAligned !== 1 ? "s" : ""
+                }${
+                  typeof goalOnlyRate === "number"
+                    ? ` · LLM-goal only ${Math.round(goalOnlyRate * 100)}%`
+                    : ""
+                }`
+              : "depth-weighted mean (0.5·L1 + 0.25·L2 + …)"
+          }
           accent={annotatedTasks > 0 ? leafAccent : undefined}
         />
+        {tasksWorkflowAligned > 0 ? (
+          <Kpi
+            icon={GitCompareArrows}
+            label="Workflow alignment"
+            value={
+              workflowSteps.total > 0 ? (
+                <>
+                  <span>{workflowSteps.passed}</span>
+                  <span className="text-lg font-normal text-text-muted">
+                    {" / "}
+                    {workflowSteps.total}
+                  </span>
+                </>
+              ) : (
+                "—"
+              )
+            }
+            sub={
+              workflowSteps.total > 0
+                ? `${workflowMicroPct}% of leaf steps · avg ${Math.round(
+                    (workflowRate || 0) * 100,
+                  )}% per task`
+                : "no leaf-step signal yet"
+            }
+            accent={accentForRate(workflowRate)}
+          />
+        ) : null}
         <Kpi
           icon={Target}
           label="Tasks achieved"
@@ -942,55 +1385,111 @@ export default function TaskPerformanceSection({
       {/* Goal achievement trend (T1 = oldest → Tn = newest) */}
       {recent.length > 0 ? (
         <div className="rounded-lg border border-border/60 bg-[#2a2c31] p-4 shadow-[0_2px_12px_rgba(0,0,0,0.25)]">
-          <div className="mb-1 flex items-center justify-between gap-2">
+          <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
             <div className="flex items-center gap-2">
               <TrendingUp size={14} className="text-accent-teal" />
               <h3 className="text-xs font-semibold uppercase tracking-wider text-text-secondary">
                 Goal achievement trend
               </h3>
             </div>
-            <div
-              className="flex items-center gap-1"
-              role="group"
-              aria-label="Trend window"
-            >
-              {[
-                { label: "5", value: 5 },
-                { label: "10", value: 10 },
-                { label: "All", value: null },
-              ].map((opt) => {
-                const active = trendWindow === opt.value;
-                const disabled =
-                  opt.value != null && opt.value >= recent.length;
-                return (
-                  <button
-                    key={opt.label}
-                    type="button"
-                    onClick={() => setTrendWindow(opt.value)}
-                    disabled={disabled && !active}
-                    className={`rounded border px-2 py-0.5 text-[11px] tabular-nums transition-colors ${
-                      active
-                        ? "border-accent-teal/50 bg-accent-teal/15 text-accent-teal"
-                        : "border-border/50 bg-surface/60 text-text-muted hover:border-accent-teal/30 hover:text-text-primary"
-                    } ${
-                      disabled && !active
-                        ? "cursor-not-allowed opacity-40 hover:border-border/50 hover:text-text-muted"
-                        : ""
-                    }`}
+            <div className="flex flex-wrap items-center gap-2">
+              {stepOptions.length > 0 ? (
+                <label className="flex items-center gap-1.5 text-[11px] text-text-muted">
+                  <span className="uppercase tracking-wider">Inspect</span>
+                  <select
+                    value={selectedStepKey || ""}
+                    onChange={(e) => setSelectedStepKey(e.target.value || null)}
+                    className="max-w-[220px] truncate rounded border border-border/50 bg-surface/60 px-1.5 py-0.5 text-[11px] text-text-secondary hover:border-accent-teal/40 hover:text-text-primary focus:border-accent-teal/60 focus:outline-none"
+                    aria-label="Inspect a specific workflow step"
                   >
-                    {opt.label}
-                  </button>
-                );
-              })}
+                    <option value="">Overall</option>
+                    {stepGroups.map((g) => (
+                      <optgroup key={g.title} label={g.title}>
+                        {g.options.map((opt) => (
+                          <option key={opt.key} value={opt.key}>
+                            {opt.stepTitle}
+                            {opt.taskCount > 1 ? ` (${opt.taskCount})` : ""}
+                          </option>
+                        ))}
+                      </optgroup>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
+              <div
+                className="flex items-center gap-1"
+                role="group"
+                aria-label="Trend window"
+              >
+                {[
+                  { label: "5", value: 5 },
+                  { label: "10", value: 10 },
+                  { label: "All", value: null },
+                ].map((opt) => {
+                  const active = trendWindow === opt.value;
+                  const disabled =
+                    opt.value != null && opt.value >= recent.length;
+                  return (
+                    <button
+                      key={opt.label}
+                      type="button"
+                      onClick={() => setTrendWindow(opt.value)}
+                      disabled={disabled && !active}
+                      className={`rounded border px-2 py-0.5 text-[11px] tabular-nums transition-colors ${
+                        active
+                          ? "border-accent-teal/50 bg-accent-teal/15 text-accent-teal"
+                          : "border-border/50 bg-surface/60 text-text-muted hover:border-accent-teal/30 hover:text-text-primary"
+                      } ${
+                        disabled && !active
+                          ? "cursor-not-allowed opacity-40 hover:border-border/50 hover:text-text-muted"
+                          : ""
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
           </div>
-          <p className="mb-1 text-[11px] text-text-muted">
-            Leaf-step achievement across the most recent {trendTasks.length} task
-            {trendTasks.length !== 1 ? "s" : ""} · dots colored by bucket · hover for details
-            {onOpenTrajectory ? " · click a point to open" : ""}
-          </p>
+          {selectedStep ? (
+            <p className="mb-1 text-[11px] text-text-muted">
+              <span className="text-text-secondary">{selectedStep.stepTitle}</span>
+              {" "}· per-task success rate of this workflow step across {trendTasks.length} task
+              {trendTasks.length !== 1 ? "s" : ""}
+              {stepSummary && stepSummary.count > 0 ? (
+                <>
+                  {" · avg "}
+                  <span
+                    className={`font-semibold tabular-nums ${accentForRate(stepSummary.avg)}`}
+                  >
+                    {Math.round(stepSummary.avg * 100)}%
+                  </span>
+                  {" over "}
+                  {stepSummary.count} aligned trajector{stepSummary.count === 1 ? "y" : "ies"}
+                  {stepSummary.total > 0 ? (
+                    <>
+                      {" · "}
+                      {stepSummary.passed}/{stepSummary.total} leaf steps
+                    </>
+                  ) : null}
+                </>
+              ) : (
+                " · no aligned trajectories in this window"
+              )}
+              {onOpenTrajectory ? " · click a point to open" : ""}
+            </p>
+          ) : (
+            <p className="mb-1 text-[11px] text-text-muted">
+              Leaf-step achievement across the most recent {trendTasks.length} task
+              {trendTasks.length !== 1 ? "s" : ""} · dots colored by bucket · hover for details
+              {onOpenTrajectory ? " · click a point to open" : ""}
+            </p>
+          )}
           <TrendChart
             tasks={trendTasks}
+            getMetric={trendMetricFn}
+            hoverContextLabel={selectedStep ? "step rate" : undefined}
             onPointClick={
               onOpenTrajectory
                 ? (task) =>

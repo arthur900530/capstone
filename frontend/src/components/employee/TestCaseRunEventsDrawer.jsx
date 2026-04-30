@@ -5,20 +5,26 @@ import {
   ChevronRight,
   Eye,
   Loader2,
+  ListTree,
   MessageSquare,
   PanelRightClose,
   ScrollText,
+  Sparkles,
   Terminal,
   User,
   XCircle,
 } from "lucide-react";
-import { useEffect, useState } from "react";
-import { fetchTestCaseRunEvents } from "../../services/api";
+import { useEffect, useMemo, useState } from "react";
+import { fetchSkillWorkflow, fetchTestCaseRunEvents } from "../../services/api";
+import WorkflowTree from "../workflow/WorkflowTree";
+import { formatRate } from "../workflow/workflowScore";
 
 export default function TestCaseRunEventsDrawer({
   employeeId,
   caseId,
   runId,
+  run = null,
+  testCase = null,
   onClose,
 }) {
   const [requestState, setRequestState] = useState({
@@ -26,6 +32,9 @@ export default function TestCaseRunEventsDrawer({
     data: null,
     error: null,
   });
+  const [workflow, setWorkflow] = useState(null);
+  const [workflowLoading, setWorkflowLoading] = useState(false);
+  const [activeTab, setActiveTab] = useState("trajectory");
 
   useEffect(() => {
     if (!runId) return undefined;
@@ -53,6 +62,47 @@ export default function TestCaseRunEventsDrawer({
     };
   }, [employeeId, caseId, runId]);
 
+  const skillId = testCase?.skill_id || null;
+  const alignment = run?.workflow_alignment || null;
+
+  useEffect(() => {
+    if (!alignment || !skillId) {
+      setWorkflow(null);
+      return undefined;
+    }
+    let cancelled = false;
+    setWorkflowLoading(true);
+    fetchSkillWorkflow(skillId)
+      .then((wf) => {
+        if (!cancelled) setWorkflow(wf);
+      })
+      .catch(() => {
+        if (!cancelled) setWorkflow(null);
+      })
+      .finally(() => {
+        if (!cancelled) setWorkflowLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [skillId, alignment]);
+
+  // When alignment data lands, surface it by switching to the workflow
+  // tab so the user sees the new view immediately. Default back to
+  // trajectory if alignment goes away (run without a linked skill).
+  useEffect(() => {
+    setActiveTab(alignment ? "workflow" : "trajectory");
+  }, [alignment, runId]);
+
+  const completion = run?.workflow_completion || null;
+
+  const completionLabel = useMemo(() => {
+    if (!completion || completion.total === 0) return null;
+    return `Workflow: ${completion.passed}/${completion.total} · ${formatRate(
+      completion.rate,
+    )}`;
+  }, [completion]);
+
   if (!runId) return null;
 
   const requestKey = `${employeeId}:${caseId}:${runId}`;
@@ -63,6 +113,7 @@ export default function TestCaseRunEventsDrawer({
   const available = data?.available !== false;
   const transcript = data?.transcript || "";
   const sections = available && transcript ? parseTranscript(transcript) : [];
+  const showWorkflowTab = Boolean(alignment);
 
   return (
     <div className="fixed inset-0 z-40 flex justify-end bg-black/50 backdrop-blur-[1px]">
@@ -80,6 +131,12 @@ export default function TestCaseRunEventsDrawer({
               <h2 className="text-base font-semibold text-text-primary">
                 Agent trajectory
               </h2>
+              {completionLabel ? (
+                <span className="inline-flex items-center gap-1 rounded-full bg-accent-teal/10 px-2 py-0.5 text-[11px] font-medium text-accent-teal">
+                  <Sparkles size={11} />
+                  {completionLabel}
+                </span>
+              ) : null}
             </div>
             <p className="text-xs text-text-muted">
               Step-by-step reasoning and actions from this auto-test run.
@@ -97,6 +154,23 @@ export default function TestCaseRunEventsDrawer({
           </button>
         </div>
 
+        {showWorkflowTab ? (
+          <div className="flex gap-2 border-b border-border/20 px-6 py-3">
+            <TabButton
+              active={activeTab === "workflow"}
+              icon={ListTree}
+              label="Workflow adherence"
+              onClick={() => setActiveTab("workflow")}
+            />
+            <TabButton
+              active={activeTab === "trajectory"}
+              icon={ScrollText}
+              label="Trajectory"
+              onClick={() => setActiveTab("trajectory")}
+            />
+          </div>
+        ) : null}
+
         <div className="flex-1 overflow-y-auto px-6 py-5">
           {loading ? (
             <div className="flex h-full items-center justify-center">
@@ -111,36 +185,79 @@ export default function TestCaseRunEventsDrawer({
             </div>
           ) : null}
 
-          {!loading && !error && !available ? (
-            <div className="rounded-xl border border-border/40 bg-[#2a2c31] px-5 py-6">
-              <div className="mb-2 flex items-center gap-2 text-text-primary">
-                <AlertCircle size={16} className="text-yellow-400" />
-                <p className="font-medium">Trajectory unavailable</p>
-              </div>
-              <p className="text-sm text-text-muted">
-                No trajectory is in memory for this run. Trajectories are kept
-                only until the server restarts; re-run the test case to capture
-                a fresh one.
-              </p>
+          {!loading && !error && showWorkflowTab && activeTab === "workflow" ? (
+            <div className="space-y-3">
+              {workflowLoading ? (
+                <div className="flex items-center gap-2 text-xs text-text-muted">
+                  <Loader2 size={14} className="animate-spin" />
+                  Loading expected workflow…
+                </div>
+              ) : workflow ? (
+                <WorkflowTree
+                  nodes={workflow.root_steps || []}
+                  mode="alignment"
+                  alignment={alignment}
+                  emptyMessage="The expected workflow for this skill has no steps."
+                />
+              ) : (
+                <div className="rounded-xl border border-border/40 bg-[#2a2c31] px-5 py-6 text-sm text-text-muted">
+                  Could not load the expected workflow for the linked skill.
+                  The judge graded against an internal copy of the workflow,
+                  but it is not available for display here.
+                </div>
+              )}
             </div>
           ) : null}
 
-          {!loading && !error && available && sections.length === 0 ? (
-            <div className="rounded-xl border border-border/40 bg-[#2a2c31] px-5 py-6 text-sm text-text-muted">
-              The agent did not produce any trajectory steps during this run.
-            </div>
-          ) : null}
-
-          {!loading && !error && available && sections.length > 0 ? (
-            <div className="space-y-2">
-              {sections.map((section, i) => (
-                <TrajectorySection key={i} section={section} index={i} />
-              ))}
-            </div>
+          {!loading && !error && (!showWorkflowTab || activeTab === "trajectory") ? (
+            <>
+              {!available ? (
+                <div className="rounded-xl border border-border/40 bg-[#2a2c31] px-5 py-6">
+                  <div className="mb-2 flex items-center gap-2 text-text-primary">
+                    <AlertCircle size={16} className="text-yellow-400" />
+                    <p className="font-medium">Trajectory unavailable</p>
+                  </div>
+                  <p className="text-sm text-text-muted">
+                    No trajectory is in memory for this run. Trajectories are
+                    kept only until the server restarts; re-run the test case to
+                    capture a fresh one.
+                  </p>
+                </div>
+              ) : sections.length === 0 ? (
+                <div className="rounded-xl border border-border/40 bg-[#2a2c31] px-5 py-6 text-sm text-text-muted">
+                  The agent did not produce any trajectory steps during this
+                  run.
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {sections.map((section, i) => (
+                    <TrajectorySection key={i} section={section} index={i} />
+                  ))}
+                </div>
+              )}
+            </>
           ) : null}
         </div>
       </div>
     </div>
+  );
+}
+
+function TabButton({ active, icon, label, onClick }) {
+  const Icon = icon;
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`inline-flex items-center gap-2 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
+        active
+          ? "bg-accent-teal text-charcoal"
+          : "bg-surface text-text-secondary hover:text-text-primary"
+      }`}
+    >
+      <Icon size={12} />
+      {label}
+    </button>
   );
 }
 

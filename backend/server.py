@@ -35,8 +35,6 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
-from skills_ingestor.mm_train import MMSkillTrainer
-
 import metrics
 
 dotenv.load_dotenv()
@@ -120,6 +118,73 @@ _SHARED_WS: dict[str, Any] = {
 }
 
 
+def _agent_state_dir() -> str:
+    return os.path.expanduser(
+        os.getenv("AGENT_WORKSPACE_DIR", "~/.bny_agent_workspace")
+    )
+
+
+def _agent_state_path() -> str:
+    return os.path.join(_agent_state_dir(), "agent_state.json")
+
+
+def _load_persisted_state() -> None:
+    """Restore _chats, _SESSION_EMPLOYEE_IDS, and Slack-side state from disk
+    if a snapshot exists. Silently no-ops on first boot or read failure."""
+    path = _agent_state_path()
+    if not os.path.isfile(path):
+        return
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        _chats.update(data.get("chats", {}))
+        _SESSION_EMPLOYEE_IDS.update(data.get("session_employees", {}))
+        try:
+            from slack_bot import restore_state as _slack_restore
+            _slack_restore(
+                thread_sessions=data.get("thread_sessions"),
+                dm_last_employee=data.get("dm_last_employee"),
+            )
+        except Exception:
+            logger.exception("Failed to restore Slack state from snapshot")
+        logger.info(
+            "Restored %d chats, %d session→employee links from %s",
+            len(_chats), len(_SESSION_EMPLOYEE_IDS), path,
+        )
+    except Exception:
+        logger.exception("Failed to load persisted state from %s", path)
+
+
+def _save_persisted_state() -> None:
+    """Snapshot _chats, _SESSION_EMPLOYEE_IDS, and Slack state to disk.
+
+    Atomic write via temp-file + os.replace so a crash mid-save can't leave
+    a corrupt JSON file.
+    """
+    path = _agent_state_path()
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        slack_state: dict = {}
+        try:
+            from slack_bot import get_state as _slack_state
+            slack_state = _slack_state()
+        except Exception:
+            logger.exception("Failed to read Slack state for snapshot")
+        payload = {
+            "chats": _chats,
+            "session_employees": _SESSION_EMPLOYEE_IDS,
+            "thread_sessions": slack_state.get("thread_sessions", {}),
+            "dm_last_employee": slack_state.get("dm_last_employee", {}),
+        }
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(payload, f)
+        os.replace(tmp, path)
+        logger.info("Persisted %d chats to %s", len(_chats), path)
+    except Exception:
+        logger.exception("Failed to save persisted state to %s", path)
+
+
 @asynccontextmanager
 async def lifespan(application):
     """Start DB engine, seed skills, and warm the shared DockerWorkspace."""
@@ -146,7 +211,14 @@ async def lifespan(application):
 
     # Warm the shared DockerWorkspace once, before accepting requests.
     if REAL_AGENT_ENABLED:
-        host_dir = tempfile.mkdtemp(prefix="shared_ws_")
+        # Stable host dir so MEMORY.md, per-conversation logs, and any
+        # agent-written workspace files survive server restarts. Override
+        # via AGENT_WORKSPACE_DIR if you want a different location; rm -rf
+        # this path manually to wipe agent memory.
+        host_dir = os.path.expanduser(
+            os.getenv("AGENT_WORKSPACE_DIR", "~/.bny_agent_workspace")
+        )
+        os.makedirs(host_dir, exist_ok=True)
         logger.info("Starting shared DockerWorkspace (host_dir=%s) …", host_dir)
         workspace = None
         last_exc: Exception | None = None
@@ -176,12 +248,39 @@ async def lifespan(application):
                 "Last error: %s",
                 last_exc,
             )
-            shutil.rmtree(host_dir, ignore_errors=True)
+            # Don't rmtree the host_dir on warmup failure — it may have
+            # accumulated MEMORY.md and conversation history from prior
+            # successful runs that we'd rather not destroy on a transient
+            # Docker hiccup.
             _SHARED_WS["workspace"] = None
             _SHARED_WS["host_dir"] = None
             _SHARED_WS["lock"] = None
 
+    # Restore _chats / session→employee map / Slack thread state from the
+    # last shutdown's snapshot, before the Slack bot starts and before the
+    # frontend can fetch /api/chats. First boot finds no file and no-ops.
+    _load_persisted_state()
+
+    # Spin up the Slack bot once the rest of the app is ready. Returns None
+    # (and logs a one-line "disabled" notice) when SLACK_BOT_TOKEN /
+    # SLACK_APP_TOKEN are not set, so dev environments are unaffected.
+    from slack_bot import start_in_background as _start_slack
+    slack_task = await _start_slack()
+
     yield
+
+    # Snapshot the in-memory chat history + session/Slack maps before we
+    # tear anything down. Done eagerly here so even if the workspace
+    # teardown hangs and gets force-killed, the state file is already on
+    # disk and ready to be read on the next boot.
+    _save_persisted_state()
+
+    if slack_task is not None:
+        slack_task.cancel()
+        try:
+            await slack_task
+        except (asyncio.CancelledError, Exception):
+            pass
 
     if _SHARED_WS.get("workspace") is not None:
         try:
@@ -192,9 +291,9 @@ async def lifespan(application):
         except Exception:
             logger.exception("Error while tearing down shared DockerWorkspace")
         finally:
-            host_dir = _SHARED_WS.get("host_dir")
-            if host_dir and os.path.isdir(host_dir):
-                shutil.rmtree(host_dir, ignore_errors=True)
+            # Keep the host_dir on disk so MEMORY.md and conversation
+            # history are still here on the next boot. Stop the container,
+            # forget the in-memory handle, but leave the files alone.
             _SHARED_WS["workspace"] = None
             _SHARED_WS["host_dir"] = None
 
@@ -1253,36 +1352,31 @@ def _sync_current_owner_back_sync() -> None:
         )
 
 
-def _try_get_skill_from_db(skill_id: str) -> dict | None:
-    """Try to fetch skill materialization data from DB. Returns None if DB unavailable."""
+async def _try_get_skill_from_db(skill_id: str) -> dict | None:
+    """Fetch skill materialization data from the DB on the running event loop.
+
+    Returns ``None`` if the DB layer is disabled or the query raises. Stays
+    on the caller's loop so the SQLAlchemy/asyncpg pool's connections (which
+    are loop-pinned) can be used safely.
+    """
     from routers.skills import _db_available
     if not _db_available:
         return None
     try:
-        import asyncio
         from db import async_session
         from services.skill_service import get_skill_for_materialization
 
-        async def _fetch():
-            async with async_session() as session:
-                return await get_skill_for_materialization(session, skill_id)
-
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            # We're in an async context — use to_thread with a new loop
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor() as pool:
-                return pool.submit(lambda: asyncio.run(_fetch())).result(timeout=5)
-        return asyncio.run(_fetch())
+        async with async_session() as session:
+            return await get_skill_for_materialization(session, skill_id)
     except Exception:
         return None
 
 
-def _validate_skills_for_runtime(skill_ids: list[str]) -> None:
+async def _validate_skills_for_runtime(skill_ids: list[str]) -> None:
     """Ensure each skill can be materialized under workspace/skills/."""
     for sid in skill_ids:
         # Check DB first, then in-memory
-        db_skill = _try_get_skill_from_db(sid)
+        db_skill = await _try_get_skill_from_db(sid)
         if db_skill:
             continue
         if sid not in _SKILLS:
@@ -1305,10 +1399,10 @@ def _validate_skills_for_runtime(skill_ids: list[str]) -> None:
             )
 
 
-def _materialize_skill_package(skills_root: str, skill_id: str) -> None:
+async def _materialize_skill_package(skills_root: str, skill_id: str) -> None:
     """Write one skill package (SKILL.md + auxiliary files) under skills_root/skill_id/."""
     # Try DB first for marketplace skills
-    db_data = _try_get_skill_from_db(skill_id)
+    db_data = await _try_get_skill_from_db(skill_id)
     if db_data:
         pkg = os.path.join(skills_root, skill_id)
         os.makedirs(pkg, exist_ok=True)
@@ -1357,7 +1451,7 @@ def _materialize_skill_package(skills_root: str, skill_id: str) -> None:
             f.write(text)
 
 
-def _resolve_workspace_for_runtime(
+async def _resolve_workspace_for_runtime(
     session_id: str,
     mount_dir: str | None,
     skill_ids: list[str] | None,
@@ -1404,7 +1498,7 @@ def _resolve_workspace_for_runtime(
             skill_ids,
         )
         for sid in skill_ids:
-            _materialize_skill_package(skills_dir, sid)
+            await _materialize_skill_package(skills_dir, sid)
     except Exception:
         if staging:
             _upload_dirs[session_id] = staging
@@ -1603,7 +1697,7 @@ async def _stream_real_task(
     queue: asyncio.Queue = asyncio.Queue()
     loop = asyncio.get_running_loop()
 
-    effective_mount, cleanup_dirs = _resolve_workspace_for_runtime(
+    effective_mount, cleanup_dirs = await _resolve_workspace_for_runtime(
         session_id, mount_dir, skill_ids
     )
     if skill_ids:
@@ -1999,6 +2093,57 @@ async def _fetch_employee_profile_by_id(employee_id: str) -> dict | None:
         return None
 
 
+async def _link_session_to_employee(employee_id: str, session_id: str) -> None:
+    """Append ``session_id`` to the employee's ``chat_session_ids`` list.
+
+    Idempotent. The React frontend does this from its own update-employee
+    flow when starting a chat, but Slack-originated chats skip the frontend
+    and would otherwise be invisible in the UI sidebar (which filters chats
+    by ``employee.chatSessionIds``). Calling this from the backend chat
+    handler covers both code paths.
+    """
+    try:
+        from routers.employees import _db_available as db_flag
+    except Exception:
+        db_flag = False
+
+    if db_flag:
+        try:
+            from db.engine import async_session
+            from db.models import Employee
+            from sqlalchemy import select
+            try:
+                emp_uuid = uuid.UUID(employee_id)
+            except ValueError:
+                return
+            async with async_session() as session:
+                row = (
+                    await session.execute(select(Employee).where(Employee.id == emp_uuid))
+                ).scalar_one_or_none()
+                if row is None:
+                    return
+                ids = list(row.chat_session_ids or [])
+                if session_id not in ids:
+                    ids.append(session_id)
+                    row.chat_session_ids = ids
+                    await session.commit()
+        except Exception:
+            logger.exception("[chat] failed to link session %s to employee %s", session_id, employee_id)
+        return
+
+    try:
+        from routers.employees import _memory_store
+        for emp in _memory_store:
+            if emp.get("id") == employee_id:
+                ids = list(emp.get("chatSessionIds") or [])
+                if session_id not in ids:
+                    ids.append(session_id)
+                    emp["chatSessionIds"] = ids
+                return
+    except Exception:
+        logger.exception("[chat] failed to link session %s to memory employee %s", session_id, employee_id)
+
+
 async def _lookup_employee_profile(
     employee_id: str | None, session_id: str | None = None
 ) -> tuple[str | None, dict | None, str]:
@@ -2070,13 +2215,18 @@ async def chat(req: ChatRequest):
                 skill_ids,
             )
     if skill_ids:
-        _validate_skills_for_runtime(skill_ids)
+        await _validate_skills_for_runtime(skill_ids)
 
     # Remember the session→employee mapping in-process so subsequent turns on
     # the same uvicorn keep resolving the persona even if the frontend drops
     # ``employee_id`` later.
     if resolved_id:
         _SESSION_EMPLOYEE_IDS[session_id] = resolved_id
+        # Also link the session to the employee in the DB / memory store so
+        # the UI sidebar shows Slack-originated chats under the right
+        # employee. The React UI does this from its own flow, so this call
+        # is a no-op for UI-originated chats (idempotent on session_id).
+        await _link_session_to_employee(resolved_id, session_id)
 
     logger.info(
         "[chat] persona_resolution employee_id=%s resolved_id=%s source=%s "
@@ -2436,41 +2586,10 @@ async def get_skill_file_content(skill_id: str, filename: str):
     raise HTTPException(status_code=404, detail="File not found")
 
 
-@app.post("/api/skills/train")
-async def train_skills(files: list[UploadFile] = File(...)):
-    """Accept media uploads, run MMSkillTrainer, return newly created skills."""
-    if not files:
-        raise HTTPException(status_code=400, detail="No files provided")
-
-    tmp_dir = tempfile.mkdtemp(prefix="mm_train_")
-    try:
-        saved_paths: list[str] = []
-        for upload in files:
-            dest = os.path.join(tmp_dir, upload.filename)
-            with open(dest, "wb") as f:
-                content = await upload.read()
-                f.write(content)
-            saved_paths.append(dest)
-
-        existing_ids = set(_SKILLS.keys())
-
-        trainer = MMSkillTrainer()
-        await asyncio.to_thread(trainer.train, saved_paths)
-
-        refreshed = _load_skills_from_disk()
-        new_skills = []
-        for sid, skill in refreshed.items():
-            if sid not in existing_ids:
-                _SKILLS[sid] = skill
-                new_skills.append(skill)
-            else:
-                _SKILLS[sid] = skill
-
-        return new_skills
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
+# Note: the canonical POST /api/skills/train handler now lives in
+# routers/skills.py (returns the session_id + workflows payload). The
+# legacy in-memory copy that used to live here was removed when the
+# workflow ingestor was added; do not re-add it.
 
 
 _SKILLSBENCH_ROOT = Path(__file__).resolve().parent / "skillsbench"

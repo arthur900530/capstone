@@ -121,6 +121,45 @@ def build_task_run_from_buffer(
     }
 
 
+def summarize_compact_events(events: list[dict]) -> dict:
+    """Derive counting fields from a ``test_case_runner.compact_trajectory``.
+
+    Autotest runs land in ``task_runs`` so the report card can render them
+    next to chat turns. The compact-event format is different from the
+    SSE-shaped events ``build_task_run_from_buffer`` consumes (keys
+    ``event_type``/``tool_name``/``args`` instead of
+    ``type``/``tool``/``args``), so this helper walks the compact list and
+    produces the same four metric fields chat turns expose.
+
+    The compact event shape is the one ``agent_event_utils.compact_event``
+    emits: ``ActionEvent`` rows with a ``tool_name`` are tool calls (with
+    ``is_finish: True`` flagging the agent's terminal answer, which we do
+    *not* count as a tool invocation). ``MessageEvent``/``ObservationEvent``
+    rows don't contribute to the tool histogram. Reflexion isn't surfaced
+    explicitly in the compact stream, so ``n_reflections`` is conservative
+    (zero for a single-trial autotest run).
+    """
+    tool_calls: list[dict] = []
+    for ev in events or []:
+        if ev.get("event_type") != "ActionEvent":
+            continue
+        if ev.get("is_finish"):
+            continue
+        if ev.get("tool_name"):
+            tool_calls.append(ev)
+
+    tool_histogram = dict(
+        Counter((ev.get("tool_name") or "unknown") for ev in tool_calls)
+    )
+
+    return {
+        "n_tool_calls": len(tool_calls),
+        "n_trials": 1,
+        "n_reflections": 0,
+        "tool_histogram": tool_histogram,
+    }
+
+
 def task_runs_from_chat(chat: dict) -> list[dict]:
     """Reconstruct task-run records from an in-memory chat transcript.
 
@@ -240,6 +279,107 @@ def _attach_goal_fields(run: dict) -> None:
     run["task_score"] = weighted_task_score_from_tree(tree_dict, annotations)
     run["annotated"] = bool(annotations)
 
+    # Workflow-alignment overlay. When the user has compared this run
+    # against one or more skill workflows from the trajectory drawer's
+    # Workflow tab, the cached result(s) live under
+    # ``trajectory_annotations.workflow_aligns[<skill_id>]``. We surface
+    # a per-skill summary plus the BEST completion rate as a structured
+    # field so the report card can switch the headline KPI from the
+    # LLM-goal weighted score to the workflow-alignment ground truth.
+    workflow_summary, effective_score = _summarize_workflow_aligns(
+        annotations, fallback_score=run["task_score"]
+    )
+    run["workflow_summary"] = workflow_summary
+    run["effective_task_score"] = effective_score
+
+
+def _summarize_workflow_aligns(
+    annotations: dict | None,
+    *,
+    fallback_score: float | None,
+) -> tuple[dict, float | None]:
+    """Reduce the cached ``workflow_aligns`` into a per-run summary.
+
+    Returns ``(summary, effective_score)`` where ``summary`` is JSON-safe
+    and ``effective_score`` is the rate the report card should treat as
+    the task's authoritative success number — workflow alignment when
+    available, otherwise the existing LLM-goal weighted score.
+
+    Robust to legacy cache entries that pre-date the
+    ``workflow_completion``/``skill_slug`` enrichment: when those fields
+    are missing we recompute completion from the on-disk ``workflow.json``
+    so an older alignment still flows into the headline KPI rather than
+    being silently dropped.
+    """
+    from workflow import compute_workflow_completion, load_workflow
+
+    aligns_raw = (annotations or {}).get("workflow_aligns") or {}
+    if not isinstance(aligns_raw, dict):
+        aligns_raw = {}
+
+    workflow_by_slug: dict[str, dict | None] = {}
+
+    def _workflow_dict_for(slug: str | None) -> dict | None:
+        if not slug:
+            return None
+        if slug in workflow_by_slug:
+            return workflow_by_slug[slug]
+        wf = load_workflow(slug)
+        workflow_by_slug[slug] = wf.to_dict() if wf is not None else None
+        return workflow_by_slug[slug]
+
+    skills_summary: list[dict] = []
+    for skill_id, entry in aligns_raw.items():
+        if not isinstance(entry, dict):
+            continue
+
+        wf_dict = _workflow_dict_for(entry.get("skill_slug"))
+        completion = entry.get("workflow_completion")
+        if not isinstance(completion, dict) or int(completion.get("total") or 0) <= 0:
+            # Legacy cache row — recompute on the fly so the score
+            # reflects the alignment we already paid the LLM for.
+            if wf_dict is not None:
+                completion = compute_workflow_completion(
+                    wf_dict, entry.get("workflow_alignment")
+                )
+
+        if not isinstance(completion, dict):
+            continue
+        total = int(completion.get("total") or 0)
+        if total <= 0:
+            # A workflow with zero leaf steps is not a useful score signal.
+            continue
+        passed = int(completion.get("passed") or 0)
+        rate = float(completion.get("rate") or 0.0)
+        skills_summary.append(
+            {
+                "skill_id": str(skill_id),
+                "skill_slug": entry.get("skill_slug"),
+                "passed": passed,
+                "total": total,
+                "rate": rate,
+                # Attach the workflow tree + per-step alignment so the
+                # report card's task-row bar can render workflow steps
+                # as colored segments without re-fetching the workflow.
+                # We only carry these on the per-skill summary (and the
+                # ``best`` pointer below it points at the same dict) so
+                # the payload doesn't balloon for runs with many cached
+                # alignments.
+                "workflow": wf_dict,
+                "workflow_alignment": entry.get("workflow_alignment"),
+            }
+        )
+
+    skills_summary.sort(key=lambda x: (-x["rate"], -x["total"]))
+    best = skills_summary[0] if skills_summary else None
+    summary = {
+        "aligned": bool(skills_summary),
+        "skills": skills_summary,
+        "best": best,
+    }
+    effective_score = best["rate"] if best is not None else fallback_score
+    return summary, effective_score
+
 
 def aggregate_task_runs(runs: Iterable[dict]) -> dict:
     """Roll a list of task-run dicts up into the shape the report card wants.
@@ -262,6 +402,7 @@ def aggregate_task_runs(runs: Iterable[dict]) -> dict:
             "reflexion_rate": 0.0,
             "avg_leaf_rate": 0.0,
             "avg_task_score": 0.0,
+            "avg_task_score_goal_only": 0.0,
             "total_leaf_steps": 0,
             "total_leaf_achieved": 0,
             "tasks_fully_achieved": 0,
@@ -269,6 +410,10 @@ def aggregate_task_runs(runs: Iterable[dict]) -> dict:
             "top_level_fully_achieved": 0,
             "annotated_tasks": 0,
             "unannotated_tasks": 0,
+            "tasks_workflow_aligned": 0,
+            "avg_workflow_rate": 0.0,
+            "total_workflow_steps": 0,
+            "total_workflow_steps_passed": 0,
             "avg_user_rating": 0.0,
             "rated_tasks": 0,
             "unrated_tasks": 0,
@@ -302,11 +447,33 @@ def aggregate_task_runs(runs: Iterable[dict]) -> dict:
         for r in runs
         if r.get("task_score") is not None
     ]
+    # ``effective_task_score`` prefers workflow-alignment rate when
+    # available so the headline KPI on the report card reflects the
+    # workflow ground truth the user explicitly picked, with the
+    # LLM-goal weighted score as the fallback for un-aligned runs.
+    effective_scores = [
+        float(r["effective_task_score"])
+        for r in runs
+        if r.get("effective_task_score") is not None
+    ]
     leaf_rates = [
         float((r.get("leaf_summary") or {}).get("rate") or 0.0)
         for r in runs
         if int((r.get("leaf_summary") or {}).get("total") or 0) > 0
     ]
+    workflow_summaries = [
+        r.get("workflow_summary") or {} for r in runs
+    ]
+    aligned_summaries = [
+        s for s in workflow_summaries if s.get("aligned") and s.get("best")
+    ]
+    workflow_rates = [float(s["best"]["rate"]) for s in aligned_summaries]
+    total_workflow_steps = sum(
+        int((s["best"] or {}).get("total") or 0) for s in aligned_summaries
+    )
+    total_workflow_steps_passed = sum(
+        int((s["best"] or {}).get("passed") or 0) for s in aligned_summaries
+    )
     total_leaf = sum(int((r.get("leaf_summary") or {}).get("total") or 0) for r in runs)
     total_leaf_achieved = sum(
         int((r.get("leaf_summary") or {}).get("achieved") or 0) for r in runs
@@ -322,9 +489,14 @@ def aggregate_task_runs(runs: Iterable[dict]) -> dict:
     # User-submitted 1–5 ratings. Un-rated runs are excluded from the mean so
     # a backlog of unrated turns doesn't drag the average down — the report
     # card renders ``rated_tasks`` alongside the avg as the honest denominator.
+    # Autotest rows can never be rated by a user (no chat surface) so we
+    # also exclude them from the denominator; otherwise an autotest-heavy
+    # employee would show "0/N rated" forever and the rating block would
+    # render misleading "no ratings" copy.
+    chat_runs = [r for r in runs if r.get("source", "chat") != "autotest"]
     user_ratings = [
         int(r["user_rating"])
-        for r in runs
+        for r in chat_runs
         if r.get("user_rating") is not None
     ]
     rating_distribution: dict[int, int] = {k: 0 for k in range(1, 6)}
@@ -352,16 +524,36 @@ def aggregate_task_runs(runs: Iterable[dict]) -> dict:
         "p95_latency_ms":  _percentile(durations, 0.95),
         "tool_mix":        tool_mix.most_common(10),
         "reflexion_rate":  round(multi_trial / n, 3) if n else 0.0,
-        # Goal/step oriented (new). ``avg_task_score`` is the weighted
-        # aggregated mean the report card's KPIs render; ``avg_leaf_rate``
+        # Goal/step oriented (new). ``avg_task_score`` is the headline
+        # KPI on the report card and now reflects workflow alignment for
+        # any run the user has compared against a skill workflow, with
+        # the LLM-goal weighted score as the fallback. ``avg_leaf_rate``
         # stays alongside as the raw count ratio for callers that want
-        # "how many leaf steps succeeded" without the depth weighting.
+        # "how many leaf steps succeeded" without the depth weighting,
+        # and ``avg_task_score_goal_only`` preserves the prior semantics
+        # (LLM-goal weighted score) for diagnostics / parity checks.
         "avg_task_score":
+            round(sum(effective_scores) / len(effective_scores), 4)
+            if effective_scores
+            else 0.0,
+        "avg_task_score_goal_only":
             round(sum(task_scores) / len(task_scores), 4) if task_scores else 0.0,
         "avg_leaf_rate":
             round(sum(leaf_rates) / len(leaf_rates), 4) if leaf_rates else 0.0,
         "total_leaf_steps": total_leaf,
         "total_leaf_achieved": total_leaf_achieved,
+        # Workflow-alignment rollups. ``tasks_workflow_aligned`` is the
+        # number of runs the user has compared against at least one
+        # skill workflow; ``avg_workflow_rate`` and the totals are the
+        # cross-task averages of the BEST completion across cached
+        # alignments per run.
+        "tasks_workflow_aligned": len(aligned_summaries),
+        "avg_workflow_rate":
+            round(sum(workflow_rates) / len(workflow_rates), 4)
+            if workflow_rates
+            else 0.0,
+        "total_workflow_steps": total_workflow_steps,
+        "total_workflow_steps_passed": total_workflow_steps_passed,
         # Task-level rollup for the "Top-level goals" KPI tile.
         "tasks_fully_achieved": tasks_fully_achieved,
         # Kept for back-compat with any callers still reading the old
@@ -375,13 +567,18 @@ def aggregate_task_runs(runs: Iterable[dict]) -> dict:
             round(sum(user_ratings) / len(user_ratings), 2)
             if user_ratings else 0.0,
         "rated_tasks": len(user_ratings),
-        "unrated_tasks": n - len(user_ratings),
+        # ``unrated_tasks`` is the count of *chat* turns without a rating;
+        # autotests are excluded from the denominator (above) so the UI
+        # surfaces them as "rate-able" only when they correspond to real
+        # chat turns.
+        "unrated_tasks": len(chat_runs) - len(user_ratings),
         "rating_distribution": rating_distribution,
     }
 
 
 def serialize_task_run(row) -> dict:
     """Convert a ``TaskRun`` ORM row to a plain JSON-ready dict."""
+    test_case_run_id = getattr(row, "test_case_run_id", None)
     run = {
         "session_id": row.session_id,
         "task_index": row.task_index,
@@ -401,6 +598,10 @@ def serialize_task_run(row) -> dict:
             if getattr(row, "user_rating_at", None)
             else None
         ),
+        # Discriminates chat turns from autotest mirror rows so the UI can
+        # render an AUTOTEST chip without a separate fetch.
+        "source": getattr(row, "source", "chat") or "chat",
+        "test_case_run_id": str(test_case_run_id) if test_case_run_id else None,
     }
     _attach_goal_fields(run)
     return run
