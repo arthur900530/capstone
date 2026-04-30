@@ -70,10 +70,10 @@ SKILL_SELECTION_MODEL = os.getenv("SKILL_SELECTION_MODEL", "openai/gpt-4o")
 # Requires an OpenAI API key — the generator and verifier use the OpenAI client.
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 # Latency cap applied when the LLM omits max_latency_ms.
-TEST_CASE_DEFAULT_MAX_LATENCY_MS = int(os.getenv("TEST_CASE_DEFAULT_MAX_LATENCY_MS", "240000"))
+TEST_CASE_DEFAULT_MAX_LATENCY_MS = int(os.getenv("TEST_CASE_DEFAULT_MAX_LATENCY_MS", "600000"))
 # Hard floor — no test run can time out before the agent has had at least this
 # many milliseconds to respond, regardless of what the generated case says.
-TEST_CASE_MIN_LATENCY_MS = int(os.getenv("TEST_CASE_MIN_LATENCY_MS", "120000"))
+TEST_CASE_MIN_LATENCY_MS = int(os.getenv("TEST_CASE_MIN_LATENCY_MS", "600000"))
 
 # ── PostgreSQL ──────────────────────────────────────────────────────────────
 # Leave empty to use the in-memory fallback. Set this in ``.env`` when you

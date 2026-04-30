@@ -412,6 +412,20 @@ async def run_test_case(
 
     finished_at = _now()
     duration_ms = int((finished_at - started_at).total_seconds() * 1000)
+
+    # When the agent's workflow is file-centric (file_editor + finish), the
+    # runtime sometimes returns an empty string even though the agent did call
+    # the `finish` tool with a closing message. The finish event's content IS
+    # captured in compact_trajectory (marked with is_finish=True by
+    # _compact_action_event in agent_event_utils). Recover it here so the
+    # deterministic non-empty-output check reflects what the agent actually
+    # communicated, not just the raw return value of _agent_runtime().
+    if not (final_answer or "").strip():
+        for event in compact_trajectory:
+            if event.get("is_finish") and event.get("content", "").strip():
+                final_answer = event["content"].strip()
+                break
+
     non_empty_output = bool((final_answer or "").strip())
     latency_within_budget = duration_ms <= latency_cap_ms
     deterministic_checks = {
