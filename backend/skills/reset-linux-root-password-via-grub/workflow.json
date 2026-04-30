@@ -1,0 +1,96 @@
+{
+  "skill_name": "reset-linux-root-password-via-grub",
+  "title": "Reset Linux Root Password via Grub Menu",
+  "summary": "This skill describes how to reset a forgotten Linux root password by booting into single-user mode through the Grub menu.",
+  "source_file": "Change-the-Root-Password-in-Linux_e38d3efe6c.txt",
+  "root_steps": [
+    {
+      "node_type": "workflow_step",
+      "title": "Restart your Linux computer",
+      "description": "",
+      "start_time": null,
+      "end_time": null,
+      "children": []
+    },
+    {
+      "node_type": "workflow_step",
+      "title": "Press E at the Grub menu",
+      "description": "The Grub menu appears right after you turn on the computer. In most cases, it only stays on the screen for a few moments.",
+      "start_time": null,
+      "end_time": null,
+      "children": []
+    },
+    {
+      "node_type": "workflow_step",
+      "title": "Scroll to the line that begins with linux /boot",
+      "description": "Use the \u2191 and \u2193 keys to do so. This is the line you will need to modify in order to boot into single-user mode.",
+      "start_time": null,
+      "end_time": null,
+      "children": []
+    },
+    {
+      "node_type": "workflow_step",
+      "title": "Move the cursor to the end of the line",
+      "description": "Use the \u2192, \u2190, \u2191, and \u2193 keys to place the cursor right after ro.",
+      "start_time": null,
+      "end_time": null,
+      "children": []
+    },
+    {
+      "node_type": "workflow_step",
+      "title": "Type init=/bin/bash after ro",
+      "description": "The end of the line should now look like this: ro init=/bin/bash. Note the space between ro and init=/bin/bash.",
+      "start_time": null,
+      "end_time": null,
+      "children": []
+    },
+    {
+      "node_type": "workflow_step",
+      "title": "Press Ctrl+X",
+      "description": "This tells the system to boot directly to a root-level command prompt in single-user mode.",
+      "start_time": null,
+      "end_time": null,
+      "children": []
+    },
+    {
+      "node_type": "workflow_step",
+      "title": "Type mount \u2013o remount,rw / at the prompt",
+      "description": "This mounts the file system in read-write mode.",
+      "start_time": null,
+      "end_time": null,
+      "children": []
+    },
+    {
+      "node_type": "workflow_step",
+      "title": "Type passwd at the prompt",
+      "description": "Since booting into single-user mode gives you root access, there is no need to pass additional parameters to the passwd command.",
+      "start_time": null,
+      "end_time": null,
+      "children": []
+    },
+    {
+      "node_type": "workflow_step",
+      "title": "Type a new root password",
+      "description": "The characters you type will not be displayed on the screen. This is normal.",
+      "start_time": null,
+      "end_time": null,
+      "children": []
+    },
+    {
+      "node_type": "workflow_step",
+      "title": "Retype the new password",
+      "description": "When the system confirms you\u2019ve re-entered the same password, you will see a message that reads \u201cpassword updated successfully.\u201d",
+      "start_time": null,
+      "end_time": null,
+      "children": []
+    },
+    {
+      "node_type": "workflow_step",
+      "title": "Type reboot \u2013f and press \u21b5 Enter",
+      "description": "This command reboots the system normally.",
+      "start_time": null,
+      "end_time": null,
+      "children": []
+    }
+  ]
+}

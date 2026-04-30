@@ -62,6 +62,10 @@ class MMSkillTrainer:
         # Original (pre-compression) basenames of inputs, for the LLM to
         # reference when filling ``source_file`` in record_workflow calls.
         self._original_basenames: list[str] = []
+        # Basenames that have already been bound to a workflow. Used by
+        # ``_resolve_source_file`` to round-robin un-claimed files when
+        # the model omits or garbles ``source_file`` in multi-file uploads.
+        self._claimed_basenames: set[str] = set()
 
     def _save_skill(self, skill_name: str, skill_description: str):
         skill_file_path = self.skill_base_dir / skill_name / "SKILL.md"
@@ -164,6 +168,7 @@ class MMSkillTrainer:
 
         # Snapshot original filenames before compression substitutes them.
         self._original_basenames = [os.path.basename(p) for p in input_file_paths]
+        self._claimed_basenames = set()
         self._saved_slugs: list[str] = []
         self._saved_workflows: dict[str, dict] = {}
 
@@ -295,8 +300,12 @@ class MMSkillTrainer:
                         "source_file": {
                             "type": "string",
                             "description": (
-                                "Original uploaded filename the steps reference, when "
-                                "multiple files were provided."
+                                "EXACT original uploaded filename (verbatim, including "
+                                "extension, with no extra characters or timestamps "
+                                "appended) that this workflow's steps were observed in. "
+                                "Must match one of the filenames listed in the user "
+                                "message. Required so the frontend can pair the "
+                                "workflow with the right source video."
                             ),
                         },
                         "steps": {
@@ -308,7 +317,7 @@ class MMSkillTrainer:
                             "items": _STEP_SCHEMA,
                         },
                     },
-                    "required": ["skill_name", "title", "steps"],
+                    "required": ["skill_name", "title", "source_file", "steps"],
                 },
             },
         },
@@ -323,16 +332,83 @@ class MMSkillTrainer:
             return self._handle_record_workflow(args)
         return f"Unknown tool: {name}"
 
+    @staticmethod
+    def _normalize_basename(value: str | None) -> str:
+        """Lower-case basename with trailing timestamp-ish noise stripped.
+
+        Models occasionally append things like ``00:00`` or ``_t=12.3`` to a
+        filename ("foo.mp400:00"). We tolerate that by trimming everything
+        after the first known media extension.
+        """
+
+        if not value:
+            return ""
+        name = os.path.basename(str(value)).strip().lower()
+        # If a recognizable extension appears in the middle, cut at its end.
+        match = re.search(
+            r"\.(mp4|mov|webm|m4v|avi|mp3|wav|m4a|txt|md|py|sh|json|yaml|yml|csv)",
+            name,
+        )
+        if match:
+            name = name[: match.end()]
+        return name
+
+    def _resolve_source_file(self, raw: str | None) -> str | None:
+        """Pair a model-supplied ``source_file`` with an uploaded basename.
+
+        Tries (in order):
+          1. exact match against an original basename,
+          2. case-insensitive / extension-trimmed match,
+          3. the next un-claimed original basename (round-robin), so a 2-
+             video upload yields one workflow per video by default.
+
+        Returns ``None`` only when no files were uploaded.
+        """
+
+        if not self._original_basenames:
+            return None
+
+        if raw:
+            raw_str = str(raw).strip()
+            for name in self._original_basenames:
+                if name == raw_str:
+                    self._claimed_basenames.add(name)
+                    return name
+            raw_norm = self._normalize_basename(raw_str)
+            if raw_norm:
+                for name in self._original_basenames:
+                    if self._normalize_basename(name) == raw_norm:
+                        self._claimed_basenames.add(name)
+                        return name
+
+        for name in self._original_basenames:
+            if name not in self._claimed_basenames:
+                self._claimed_basenames.add(name)
+                return name
+
+        return self._original_basenames[0]
+
     def _handle_record_workflow(self, args: dict) -> str:
         try:
             workflow = Workflow.from_tool_args(**args)
         except Exception as exc:
             return f"Failed to record workflow: {exc}"
 
-        # If the model didn't supply a source_file but there's exactly one
-        # uploaded file, attach it implicitly so the frontend can sync.
-        if not workflow.source_file and len(self._original_basenames) == 1:
-            workflow.source_file = self._original_basenames[0]
+        # Normalize ``source_file`` against the actually-uploaded basenames
+        # so the frontend can pair each workflow with its source video. The
+        # model is asked to return the filename verbatim, but in practice
+        # it sometimes:
+        #   * omits the field entirely (single-file uploads used to rely
+        #     on a one-shot fallback that broke with N>1 files),
+        #   * tacks a timestamp onto the extension (e.g. ``foo.mp400:00``),
+        #   * returns a different case or includes a path prefix.
+        # A strict ``files.find(name === source_file)`` then misses, and
+        # the frontend collapses every workflow onto the first video.
+        resolved = self._resolve_source_file(workflow.source_file)
+        if resolved is not None:
+            workflow.source_file = resolved
+        else:
+            workflow.source_file = None
 
         self._workflows[workflow.skill_name] = workflow
         leaf_count = sum(1 for _ in _iter_workflow_leaves(workflow.root_steps))
@@ -366,13 +442,18 @@ class MMSkillTrainer:
                 content_parts.append(self._build_media_part(data, mime_type))
 
         # Surface the original filenames to the model so it can populate
-        # ``source_file`` on record_workflow tool calls when multiple files
-        # were uploaded.
+        # ``source_file`` on record_workflow tool calls. This matters most
+        # for multi-file uploads, where the frontend uses ``source_file``
+        # to pair each extracted workflow with its source video.
         intro_lines = ["Please analyze this media and extract skills from it."]
         if self._original_basenames:
+            quoted = ", ".join(f'"{b}"' for b in self._original_basenames)
             intro_lines.append(
-                "Uploaded files (use these names verbatim when filling source_file): "
-                + ", ".join(self._original_basenames)
+                "Uploaded files: " + quoted + ". When you call record_workflow you "
+                "MUST set source_file to one of these filenames EXACTLY (no "
+                "trailing timestamps, no path prefix, no case changes). Each "
+                "workflow must reference the file it was demonstrated in; do "
+                "not reuse the same source_file for unrelated skills."
             )
 
         messages: list[dict] = [

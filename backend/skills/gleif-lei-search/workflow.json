@@ -1,0 +1,40 @@
+{
+  "skill_name": "gleif-lei-search",
+  "title": "Perform LEI Search on GLEIF Website",
+  "summary": "This skill describes how to perform an LEI search on the GLEIF website to find a company's LEI number for KYC analysis.",
+  "source_file": "VIDEO-2026-04-30-17-41-02.mp4",
+  "root_steps": [
+    {
+      "node_type": "workflow_step",
+      "title": "Open browser and navigate to GLEIF website",
+      "description": "Open a browser and navigate to search.gleif.org.",
+      "start_time": 9.839,
+      "end_time": 15.939,
+      "children": []
+    },
+    {
+      "node_type": "workflow_step",
+      "title": "Type company name into search bar",
+      "description": "In the \"Search LEI Records\" section, type the company name (e.g., \"nvidia\") into the search bar.",
+      "start_time": 22.842,
+      "end_time": 29.352,
+      "children": []
+    },
+    {
+      "node_type": "workflow_step",
+      "title": "Select relevant company from options",
+      "description": "From the list of options, select the company that is related to your search (e.g., NVIDIA Corporation).",
+      "start_time": 30.407,
+      "end_time": 37.787,
+      "children": []
+    },
+    {
+      "node_type": "workflow_step",
+      "title": "Locate LEI code",
+      "description": "The website will load information related to the company; locate the LEI code, which is at the very top.",
+      "start_time": 47.502,
+      "end_time": 55.432,
+      "children": []
+    }
+  ]
+}

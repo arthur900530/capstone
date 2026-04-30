@@ -268,24 +268,24 @@ if [[ "$DB_MODE" == "postgres" && -z "$DATABASE_URL" ]]; then
   die "--postgres requires DATABASE_URL. Set it in .env, backend/.env, or the shell."
 fi
 
-# ── Skillsbench ───────────────────────────────────────────────────────────────
+# # ── Skillsbench ───────────────────────────────────────────────────────────────
 
-if [[ "${SKIP_SKILLSBENCH:-0}" == "1" ]]; then
-  info "Skillsbench skipped ${DIM}(SKIP_SKILLSBENCH=1)${RESET}"
-else
-  header "Skillsbench"
-  if [[ ! -d "$SKILLSBENCH_DIR/.venv" ]]; then
-    info "Creating venv ${DIM}(first run may take a few minutes)${RESET}..."
-    "$PYTHON_BENCH" -m venv "$SKILLSBENCH_DIR/.venv"
-  fi
-  info "Installing evaluation framework..."
-  if command -v uv >/dev/null 2>&1; then
-    uv pip install -e "$SKILLSBENCH_DIR" --python "$SKILLSBENCH_DIR/.venv/bin/python" 2>&1 | pip_filter
-  else
-    "$SKILLSBENCH_DIR/.venv/bin/pip" install -q -e "$SKILLSBENCH_DIR" 2>&1 | pip_filter
-  fi
-  step "Skillsbench ready"
-fi
+# if [[ "${SKIP_SKILLSBENCH:-0}" == "1" ]]; then
+#   info "Skillsbench skipped ${DIM}(SKIP_SKILLSBENCH=1)${RESET}"
+# else
+#   header "Skillsbench"
+#   if [[ ! -d "$SKILLSBENCH_DIR/.venv" ]]; then
+#     info "Creating venv ${DIM}(first run may take a few minutes)${RESET}..."
+#     "$PYTHON_BENCH" -m venv "$SKILLSBENCH_DIR/.venv"
+#   fi
+#   info "Installing evaluation framework..."
+#   if command -v uv >/dev/null 2>&1; then
+#     uv pip install -e "$SKILLSBENCH_DIR" --python "$SKILLSBENCH_DIR/.venv/bin/python" 2>&1 | pip_filter
+#   else
+#     "$SKILLSBENCH_DIR/.venv/bin/pip" install -q -e "$SKILLSBENCH_DIR" 2>&1 | pip_filter
+#   fi
+#   step "Skillsbench ready"
+# fi
 
 # ── PostgreSQL ────────────────────────────────────────────────────────────────
 
