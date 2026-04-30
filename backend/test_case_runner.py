@@ -9,6 +9,7 @@ from typing import Any
 from config import TEST_CASE_DEFAULT_MAX_LATENCY_MS
 from test_case_verifier import verify_test_case_run
 from agent_event_utils import compact_event as _compact_event, serialize_trajectory
+from workflow import compute_workflow_completion
 
 try:
     from reflexion_agent.agent import runtime as _agent_runtime
@@ -70,6 +71,7 @@ async def run_test_case(
     workspace: Any = None,
     host_dir: str | None = None,
     workspace_lock: Any = None,  # asyncio.Lock | None
+    expected_workflow: dict | None = None,
 ) -> dict[str, Any]:
     started_at = _now()
     session_id = f"testcase-{uuid.uuid4().hex}"
@@ -282,6 +284,7 @@ async def run_test_case(
             hard_failure_signals=hard_failure_signals,
             final_answer=final_answer,
             compact_trajectory=compact_trajectory,
+            expected_workflow=expected_workflow,
         )
         # region agent log
         _dbg("llm_judge result", {
@@ -290,6 +293,7 @@ async def run_test_case(
             "rationale": judged["rationale"][:200],
             "evidence_quote": judged["evidence_quote"][:120],
             "success_criteria": success_criteria[:150],
+            "has_workflow_alignment": bool(judged.get("workflow_alignment")),
         }, "H-G")
         # endregion
     except Exception as _verifier_exc:
@@ -304,7 +308,14 @@ async def run_test_case(
             "rationale": f"Verifier failed: {_verifier_exc}",
             "evidence_quote": "",
             "confidence": 0.0,
+            "workflow_alignment": None,
         }
+    workflow_alignment = judged.get("workflow_alignment")
+    workflow_completion = (
+        compute_workflow_completion(expected_workflow, workflow_alignment)
+        if expected_workflow and workflow_alignment
+        else None
+    )
     return {
         "started_at": started_at,
         "finished_at": finished_at,
@@ -320,4 +331,6 @@ async def run_test_case(
         "deterministic_checks": deterministic_checks,
         "events": list(compact_trajectory),
         "transcript": serialize_trajectory(raw_events),
+        "workflow_alignment": workflow_alignment,
+        "workflow_completion": workflow_completion,
     }

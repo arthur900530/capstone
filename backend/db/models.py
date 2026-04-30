@@ -413,6 +413,16 @@ class TestCase(Base):
         ForeignKey("employees.id", ondelete="CASCADE"),
         nullable=False,
     )
+    # Optional: when set, this test case is targeting one specific skill's
+    # workflow. The verifier loads ``backend/skills/<slug>/workflow.json``
+    # for this skill (if present) and includes it in the LLM-judge prompt
+    # so the verdict can score per-step adherence.
+    skill_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("skills.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     title: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     prompt: Mapped[str] = mapped_column(Text, nullable=False, default="")
     success_criteria: Mapped[str] = mapped_column(Text, nullable=False, default="")
@@ -429,6 +439,7 @@ class TestCase(Base):
     )
 
     employee: Mapped[Employee] = relationship()
+    skill: Mapped["Skill | None"] = relationship(lazy="joined")
     runs: Mapped[list["TestCaseRun"]] = relationship(
         back_populates="test_case", cascade="all, delete-orphan"
     )
@@ -461,5 +472,10 @@ class TestCaseRun(Base):
     failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     agent_session_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
     deterministic_checks: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # Per-step adherence to the expected workflow as returned by the LLM
+    # judge: ``{"steps": [{"path": [int, ...], "satisfied": bool, "evidence": str}]}``.
+    # The deterministic ``workflow_completion`` rollup is derived from this
+    # at read time; we deliberately don't persist that derived field.
+    workflow_alignment: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     test_case: Mapped[TestCase] = relationship(back_populates="runs")

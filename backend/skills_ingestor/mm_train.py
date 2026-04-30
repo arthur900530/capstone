@@ -11,6 +11,7 @@ import openai
 from typing import *
 from pathlib import Path
 from .prompts import MMSkillTrainer_PROMPT_TEMPLATE
+from workflow import Workflow, save_workflow
 import config
 
 
@@ -50,7 +51,18 @@ client = openai.OpenAI(base_url=SKILL_BASE_URL, api_key=SKILL_API_KEY)
 class MMSkillTrainer:
     skill_base_dir: Path = Path(__file__).resolve().parent.parent / "skills"
     skill_base_dir.mkdir(parents=True, exist_ok=True)
-    
+
+    def __init__(self) -> None:
+        # Workflows recorded by the LLM via the ``record_workflow`` tool,
+        # keyed by the (raw, un-normalized) skill_name argument the model
+        # supplied. They are paired with parsed skills at the end of
+        # training so the saved ``workflow.json`` matches the saved
+        # ``SKILL.md``'s slug.
+        self._workflows: dict[str, Workflow] = {}
+        # Original (pre-compression) basenames of inputs, for the LLM to
+        # reference when filling ``source_file`` in record_workflow calls.
+        self._original_basenames: list[str] = []
+
     def _save_skill(self, skill_name: str, skill_description: str):
         skill_file_path = self.skill_base_dir / skill_name / "SKILL.md"
         skill_file_path.parent.mkdir(parents=True, exist_ok=True)
@@ -138,9 +150,22 @@ class MMSkillTrainer:
             return compressed, compressed
         return file_path, None
 
-    def train(self, input_file_paths: str | list[str]):
+    def train(self, input_file_paths: str | list[str]) -> dict:
+        """Run the multimodal skill ingestor.
+
+        Returns a dict ``{"skills": [slug, ...], "workflows": {slug: workflow_dict}}``
+        capturing the new skills written to disk and any workflows the LLM
+        recorded via the ``record_workflow`` tool. Callers (the train route
+        handler) merge this into the HTTP response so the frontend can
+        render the post-train video / workflow review.
+        """
         if isinstance(input_file_paths, str):
             input_file_paths = [input_file_paths]
+
+        # Snapshot original filenames before compression substitutes them.
+        self._original_basenames = [os.path.basename(p) for p in input_file_paths]
+        self._saved_slugs: list[str] = []
+        self._saved_workflows: dict[str, dict] = {}
 
         prepared: list[tuple[str, str | None]] = []
         try:
@@ -151,6 +176,11 @@ class MMSkillTrainer:
             for _, tmp in prepared:
                 if tmp:
                     os.unlink(tmp)
+
+        return {
+            "skills": list(self._saved_slugs),
+            "workflows": dict(self._saved_workflows),
+        }
 
     @staticmethod
     def _build_media_part(data: str, mime_type: str) -> dict:
@@ -186,6 +216,31 @@ class MMSkillTrainer:
         filename = os.path.basename(file_path)
         return {"type": "text", "text": f"[File: {filename}]\n{content}"}
 
+    _STEP_SCHEMA: dict = {
+        "type": "object",
+        "properties": {
+            "title": {"type": "string", "description": "Short label of the step."},
+            "description": {
+                "type": "string",
+                "description": "Longer detail of what happens during this step.",
+            },
+            "start_time": {
+                "type": "number",
+                "description": "Start of the step in the source video, in seconds.",
+            },
+            "end_time": {
+                "type": "number",
+                "description": "End of the step in the source video, in seconds.",
+            },
+            "children": {
+                "type": "array",
+                "description": "Optional nested sub-steps.",
+                "items": {"type": "object"},
+            },
+        },
+        "required": ["title"],
+    }
+
     _TOOLS = [
         {
             "type": "function",
@@ -212,12 +267,87 @@ class MMSkillTrainer:
                 },
             },
         },
+        {
+            "type": "function",
+            "function": {
+                "name": "record_workflow",
+                "description": (
+                    "Record the structured workflow + per-step video timestamps for "
+                    "one identified skill. Call once per skill BEFORE returning the "
+                    "<skill_name> / <skill_description> blocks. Use the same "
+                    "skill_name string here that you will use inside <skill_name>."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "skill_name": {
+                            "type": "string",
+                            "description": "Skill name (matches the <skill_name> XML block).",
+                        },
+                        "title": {
+                            "type": "string",
+                            "description": "Human-readable title for the workflow.",
+                        },
+                        "summary": {
+                            "type": "string",
+                            "description": "1-2 sentence summary of what the workflow accomplishes.",
+                        },
+                        "source_file": {
+                            "type": "string",
+                            "description": (
+                                "Original uploaded filename the steps reference, when "
+                                "multiple files were provided."
+                            ),
+                        },
+                        "steps": {
+                            "type": "array",
+                            "description": (
+                                "Ordered list of root-level workflow steps. Each step "
+                                "may contain nested children for sub-steps."
+                            ),
+                            "items": _STEP_SCHEMA,
+                        },
+                    },
+                    "required": ["skill_name", "title", "steps"],
+                },
+            },
+        },
     ]
 
-    _TOOL_DISPATCH: dict[str, Callable[..., str]] = {
-        "list_skills": lambda **_kw: json.dumps(_list_skills()),
-        "read_skill": lambda skill_name, **_kw: _read_skill(skill_name),
-    }
+    def _dispatch_tool(self, name: str, args: dict) -> str:
+        if name == "list_skills":
+            return json.dumps(_list_skills())
+        if name == "read_skill":
+            return _read_skill(args.get("skill_name", ""))
+        if name == "record_workflow":
+            return self._handle_record_workflow(args)
+        return f"Unknown tool: {name}"
+
+    def _handle_record_workflow(self, args: dict) -> str:
+        try:
+            workflow = Workflow.from_tool_args(**args)
+        except Exception as exc:
+            return f"Failed to record workflow: {exc}"
+
+        # If the model didn't supply a source_file but there's exactly one
+        # uploaded file, attach it implicitly so the frontend can sync.
+        if not workflow.source_file and len(self._original_basenames) == 1:
+            workflow.source_file = self._original_basenames[0]
+
+        self._workflows[workflow.skill_name] = workflow
+        leaf_count = sum(1 for _ in _iter_workflow_leaves(workflow.root_steps))
+        print(
+            f"[MMTrainer] Recorded workflow for '{workflow.skill_name}' "
+            f"({len(workflow.root_steps)} root steps, {leaf_count} leaves)"
+        )
+        return json.dumps(
+            {
+                "ok": True,
+                "skill_name": workflow.skill_name,
+                "step_count": len(workflow.root_steps),
+                "leaf_count": leaf_count,
+            }
+        )
 
     def _train_impl(self, input_file_paths: list[str]):
         if not SKILL_API_KEY:
@@ -235,10 +365,20 @@ class MMSkillTrainer:
                 data, mime_type = self._encode_media(path)
                 content_parts.append(self._build_media_part(data, mime_type))
 
+        # Surface the original filenames to the model so it can populate
+        # ``source_file`` on record_workflow tool calls when multiple files
+        # were uploaded.
+        intro_lines = ["Please analyze this media and extract skills from it."]
+        if self._original_basenames:
+            intro_lines.append(
+                "Uploaded files (use these names verbatim when filling source_file): "
+                + ", ".join(self._original_basenames)
+            )
+
         messages: list[dict] = [
             {"role": "system", "content": MMSkillTrainer_PROMPT_TEMPLATE},
             {"role": "user", "content": [
-                {"type": "text", "text": "Please analyze this media and extract skills from it."},
+                {"type": "text", "text": "\n".join(intro_lines)},
                 *content_parts,
             ]},
         ]
@@ -276,30 +416,44 @@ class MMSkillTrainer:
             })
             for tool_call in choice.message.tool_calls:
                 fn_name = tool_call.function.name
-                fn_args = json.loads(tool_call.function.arguments)
-                print(f"[MMTrainer] Tool call: {fn_name}({fn_args})")
-                result = self._TOOL_DISPATCH[fn_name](**fn_args)
+                try:
+                    fn_args = json.loads(tool_call.function.arguments or "{}")
+                except json.JSONDecodeError:
+                    fn_args = {}
+                preview = {k: v for k, v in fn_args.items() if k != "steps"}
+                if "steps" in fn_args:
+                    preview["steps"] = f"[{len(fn_args.get('steps') or [])} steps]"
+                print(f"[MMTrainer] Tool call: {fn_name}({preview})")
+                result = self._dispatch_tool(fn_name, fn_args)
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tool_call.id,
                     "content": result,
                 })
 
-        output = choice.message.content
-        print(f"[MMTrainer] Response: {output}")
-        
+        # ``content`` is None when the model finishes a turn with only tool
+        # calls (no assistant text) — coerce to "" so the regex parsing
+        # below doesn't blow up with "expected string or bytes-like
+        # object, got 'NoneType'".
+        output = choice.message.content or ""
+        print(f"[MMTrainer] Response: {output!r}")
+
         # Parse the output into skills using regex for robustness
         skill_names = []
         skill_descriptions = []
-        
+
         name_pattern = re.compile(r"<skill_name>\s*(.*?)\s*</skill_name>", re.DOTALL)
         desc_pattern = re.compile(r"<skill_description>\s*(.*?)\s*</skill_description>", re.DOTALL)
-        
+
         names_found = name_pattern.findall(output)
         descs_found = desc_pattern.findall(output)
-        
+
         if not names_found:
-            print(f"[MMTrainer] WARNING: No <skill_name> tags found in LLM response. Raw output:\n{output}")
+            print(
+                "[MMTrainer] WARNING: No <skill_name> tags found in LLM response. "
+                f"finish_reason={choice.finish_reason!r}, recorded_workflows="
+                f"{list(self._workflows.keys())}, raw output:\n{output}"
+            )
             return
         
         if len(names_found) != len(descs_found):
@@ -314,10 +468,46 @@ class MMSkillTrainer:
             skill_names.append(clean_name)
             skill_descriptions.append(desc)
         
-        # Save results
-        for skill_name, skill_description in zip(skill_names, skill_descriptions):
-            self._save_skill(skill_name, skill_description)
+        # Save results, pairing each skill with the workflow the LLM
+        # recorded via record_workflow. The model is instructed to use the
+        # same skill_name string in both places, but be defensive about
+        # case / whitespace mismatches by also matching against the cleaned
+        # slug.
+        raw_skill_keys = list(names_found)
+        for raw_name, clean_name, description in zip(
+            raw_skill_keys, skill_names, skill_descriptions
+        ):
+            self._save_skill(clean_name, description)
+            self._saved_slugs.append(clean_name)
+
+            workflow = self._workflows.get(raw_name) or self._workflows.get(
+                clean_name
+            )
+            if workflow is None:
+                stripped = raw_name.strip()
+                if stripped and stripped in self._workflows:
+                    workflow = self._workflows[stripped]
+            if workflow is not None:
+                workflow.skill_name = clean_name
+                save_workflow(clean_name, workflow)
+                self._saved_workflows[clean_name] = workflow.to_dict()
+                print(
+                    f"[MMTrainer] Saved workflow.json for {clean_name}"
+                )
+            else:
+                print(
+                    f"[MMTrainer] WARNING: No workflow recorded for skill '{clean_name}'"
+                )
         
+
+def _iter_workflow_leaves(steps: Iterable) -> Iterable:
+    for step in steps or []:
+        children = list(step.children) if hasattr(step, "children") else []
+        if not children:
+            yield step
+        else:
+            yield from _iter_workflow_leaves(children)
+
 
 def _skills_dir() -> Path:
     return Path(__file__).resolve().parent.parent / "skills"

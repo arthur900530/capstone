@@ -1,4 +1,11 @@
-import { ChevronDown, ChevronRight, Loader2, Play, Trash2 } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronRight,
+  Loader2,
+  Play,
+  Sparkles,
+  Trash2,
+} from "lucide-react";
 import { useMemo, useState } from "react";
 
 function VerdictPill({ run }) {
@@ -13,6 +20,7 @@ export default function TestCaseCard({
   testCase,
   latestRun,
   runLoading,
+  availableSkills = [],
   onRun,
   onDelete,
   onUpdate,
@@ -24,9 +32,27 @@ export default function TestCaseCard({
     title: testCase.title,
     prompt: testCase.prompt,
     success_criteria: testCase.success_criteria,
+    // Empty string in the form means "no linked skill"; we send "" to
+    // the backend on save so it explicitly clears the column.
+    skill_id: testCase.skill_id || "",
   });
 
   const snippet = useMemo(() => (testCase.prompt || "").slice(0, 120), [testCase.prompt]);
+
+  const linkedSkillLabel = useMemo(() => {
+    if (testCase.skill_name) return testCase.skill_name;
+    if (testCase.skill_slug) return testCase.skill_slug;
+    if (!testCase.skill_id) return null;
+    const match = availableSkills.find(
+      (s) => s.id === testCase.skill_id || s.slug === testCase.skill_id,
+    );
+    return match?.name || match?.display_name || match?.slug || testCase.skill_id;
+  }, [
+    testCase.skill_id,
+    testCase.skill_name,
+    testCase.skill_slug,
+    availableSkills,
+  ]);
 
   return (
     <div className="rounded-xl border border-border/40 bg-surface">
@@ -64,6 +90,29 @@ export default function TestCaseCard({
                 value={draft.success_criteria}
                 onChange={(e) => setDraft((d) => ({ ...d, success_criteria: e.target.value }))}
               />
+              <label className="flex flex-col gap-1 text-xs text-text-muted">
+                <span className="font-medium text-text-secondary">
+                  Target skill (optional)
+                </span>
+                <select
+                  className="rounded border border-border/50 bg-workspace px-3 py-2 text-sm"
+                  value={draft.skill_id || ""}
+                  onChange={(e) =>
+                    setDraft((d) => ({ ...d, skill_id: e.target.value }))
+                  }
+                >
+                  <option value="">— None —</option>
+                  {availableSkills.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name || s.display_name || s.slug}
+                    </option>
+                  ))}
+                </select>
+                <span className="text-[11px] text-text-muted">
+                  Pick a skill to score per-step workflow adherence in the LLM
+                  judge.
+                </span>
+              </label>
               <div className="flex gap-2">
                 <button
                   type="button"
@@ -86,6 +135,12 @@ export default function TestCaseCard({
               <p className="text-xs text-text-muted">
                 <span className="font-medium text-text-secondary">Success criteria:</span> {testCase.success_criteria}
               </p>
+              {linkedSkillLabel ? (
+                <p className="inline-flex items-center gap-1 rounded-md bg-accent-teal/10 px-2 py-0.5 text-[11px] font-medium text-accent-teal">
+                  <Sparkles size={10} />
+                  Skill: {linkedSkillLabel}
+                </p>
+              ) : null}
               {latestRun?.judge_rationale ? (
                 <p className="rounded bg-accent-teal/10 px-2 py-1 text-xs text-text-secondary">
                   {latestRun.judge_rationale}

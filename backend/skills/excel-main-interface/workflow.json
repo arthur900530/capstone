@@ -1,0 +1,24 @@
+{
+  "skill_name": "excel-main-interface",
+  "title": "Understanding the Excel Main Interface: Workbook and Worksheet",
+  "summary": "This skill helps users understand the basic structure of an Excel file, differentiating between a workbook and its constituent worksheets, and how to navigate between them. It is foundational for anyone new to Excel or needing a refresher on its basic organization.",
+  "source_file": "2-2. Main interface\uff1a Workbook and worksheet [2CZugf2ZC6Q].mp4",
+  "root_steps": [
+    {
+      "node_type": "workflow_step",
+      "title": "Identify the Excel Workbook",
+      "description": "Understand that an Excel file is referred to as a workbook, which acts as a container for various sheets of data.",
+      "start_time": 14.0,
+      "end_time": 22.0,
+      "children": []
+    },
+    {
+      "node_type": "workflow_step",
+      "title": "Locate and Differentiate Worksheets",
+      "description": "Identify individual worksheets within the workbook, accessible as tabs at the bottom of the Excel window, and recognize their role in organizing data.",
+      "start_time": 22.0,
+      "end_time": 32.0,
+      "children": []
+    }
+  ]
+}
