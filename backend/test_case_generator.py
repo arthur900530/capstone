@@ -23,61 +23,104 @@ _VALID_CATEGORIES = ("happy_path", "normal", "edge")
 
 _GENERATOR_PROMPT = """You are a senior QA engineer designing a COMPREHENSIVE test suite for an AI
 employee agent. The suite must cover the agent's success path AND its failure
-modes — not just adversarial probes. The agent's only tools for taking action
-are its assigned skills and plugins, so EVERY test case must put the agent in
-a position where it has to invoke a real tool — not just describe a procedure.
+modes — not just adversarial probes. EVERY test case must put the agent in a
+position where it has to invoke a real callable tool — not just describe a
+procedure or compose a report from prior knowledge.
+
+# The agent's actual tool surface (READ THIS FIRST — load-bearing)
+Regardless of how the employee's `skills` and `plugins` are configured, the
+underlying agent runtime exposes EXACTLY FOUR callable tools:
+
+  - browser       — fetches URLs and extracts page content. The agent's
+                    primary data-acquisition tool. Treat as "the internet".
+                    Use for registry lookups, sanctions lists, news, public
+                    APIs, schedule/availability sites, etc.
+  - file_editor   — read, create, and edit files inside the agent's workspace.
+                    Use this whenever the test requires a tangible artifact
+                    (a written report, a CSV, a JSON record, a memo).
+  - terminal      — run shell commands inside the agent's workspace.
+                    Use for scripted computation, file manipulation, JSON
+                    parsing with `jq`, downloading files via `curl`, etc.
+  - task_tracker  — create and tick off subtasks for multi-step work. The
+                    agent itself uses this for planning; you can require it
+                    in a multi-step prompt to make planning observable.
+
+Employee `skills` and `plugins` describe the agent's PERSONA and DOMAIN
+EXPERTISE — they are NOT callable functions. Treat them as background
+context (what the agent is supposed to know how to do) when picking
+relevant scenarios, but NEVER name a skill/plugin id as if it were a tool
+the agent invokes. A test that says "use kyc-report-generation" is INVALID
+because the agent has no function by that name.
+
+Phrase tool usage in real terms instead. For a KYC employee, that looks
+like "use the browser to look up the entity on https://search.gleif.org",
+"screen the entity via https://sanctionssearch.ofac.treas.gov", or
+"write the final report to `kyc_<entity>.md` using file_editor".
 
 # Reasoning approach (think step by step BEFORE producing JSON)
-1. Study the employee's `description`, `task`, `skills`, and `plugins`. List
-   the concrete inputs each skill/plugin would need to execute (IDs, codes,
-   structured fields). Anchor every prompt to at least one of those skills.
-2. The user payload includes a `category_targets` object telling you EXACTLY
-   how many cases to emit per category. Match those counts precisely.
-3. For each case, decide its category, draft an action-forcing prompt that
-   includes the concrete data a real tool would need, then write an OBSERVABLE
-   `success_criteria` and at least one specific `hard_failure_signal`.
-4. Only after this reasoning, emit the final JSON. Do NOT include reasoning in
-   the output.
+1. Read the employee's `description` + `task` + `skills` + `plugins`. Use
+   them ONLY to pick a realistic domain scenario; don't treat skill names
+   as tools.
+2. For each scenario you sketch, decide which of the four real tools
+   (browser, file_editor, terminal, task_tracker) the agent must invoke
+   and what observable artifact each invocation should produce.
+3. The user payload includes a `category_targets` object telling you
+   EXACTLY how many cases to emit per category. Match those counts
+   precisely.
+4. For each case, draft an action-forcing prompt that explicitly directs
+   the agent toward the chosen real tools, write OBSERVABLE
+   `success_criteria` referencing those tools, and add at least one
+   specific `hard_failure_signal`.
+5. Only after this reasoning, emit the final JSON. Do NOT include
+   reasoning in the output.
 
 # ReAct-elicitation requirement (most important rule)
 The whole point of this test suite is to provoke the agent into Reason +
-Act loops. That only happens if the prompt provides ENOUGH context for the
-agent to act AND leaves enough work that the agent must invoke a tool to
-finish. Two complementary rules:
+Act loops using the four real tools above. That only happens if the prompt
+provides ENOUGH user-side context for the agent to start acting AND leaves
+enough work that the agent must invoke a tool to finish. Two rules:
 
 (a) Provide ONLY the inputs a real customer/operator would naturally have.
-    These are USER-SIDE inputs, e.g. a person's name + DOB + passport
-    number, a company's legal name + jurisdiction, a ticker + fiscal period,
-    an order id + account email.
+    These are USER-SIDE inputs, e.g. a person's name + DOB + document
+    number, a company's legal name + jurisdiction, a ticker + fiscal
+    period, a tracking number + carrier, an order id + account email.
 
-(b) Do NOT pre-fill data that one of the employee's tools is supposed to
-    PRODUCE. If a `gleif-lookup` tool exists, do NOT include the company's
-    LEI in the prompt — naming the company is enough; the agent must call
-    `gleif-lookup` to retrieve the LEI. If a `sanctions-screen` tool exists,
-    do NOT pre-state the screening result. If a `risk-scoring` tool exists,
-    do NOT pre-state the score or risk tier.
+(b) Do NOT pre-fill data the agent should retrieve via the browser
+    (registry records, sanctions matches, market quotes, route info,
+    entitlement status). If you state the answer in the prompt, the
+    agent will compose prose around it and never invoke a tool. Naming
+    the company is enough; the agent must browse the registry to fetch
+    the LEI, the registration date, the principal address, etc.
 
-Instead of "Acme Corp, LEI 254900HROIFWPRGM1V77, no sanctions hits, risk
-tier 'low'", write "Acme Corp (incorporated in Cyprus, primary business:
-crypto exchange). Use gleif-lookup to confirm the entity, then
-sanctions-screen against OFAC SDN, then risk-scoring." The first version
-hands the agent every answer; the second forces ReAct.
+GOOD: "Generate a KYC report for Acme Corp (registered in Cyprus, primary
+business: crypto exchange). Use the browser to look up the entity on
+https://search.gleif.org and capture the LEI, registration status, and
+principal address. Then browse https://sanctionssearch.ofac.treas.gov and
+search for the entity name. Write the final report to `kyc_acme.md`
+including LEI, sanctions screening results, and a final risk verdict."
+
+BAD: "Generate a KYC report for Acme Corp (LEI 254900HROIFWPRGM1V77,
+incorporated in Cyprus, no sanctions hits, risk tier 'low'). Return the
+report." — every fact is pre-filled; the agent has nothing to look up.
 
 Heuristic: read the prompt and ask, "Could a chatty LLM compose a
-plausible answer to this WITHOUT calling any tool?" If yes, you have
-pre-filled tool output — strip it and replace with the tool name.
+plausible answer to this WITHOUT calling browser, file_editor, or
+terminal?" If yes, the prompt is invalid — add a concrete tool action
+the agent must perform.
 
-Examples of tool-output that should NEVER appear in a prompt:
-- KYC / AML:   verification verdicts, sanctions hits, risk tiers, LEIs,
-               TINs (when a registry lookup tool exists for them)
-- Financial:   computed metrics, ratios, projected values, ratings
-- Travel:      computed prices, fare classes, availability counts
-- Logistics:   ETA, delivery status, route choices
-- Support:     account status, entitlement decisions, refund eligibility
+Examples of facts that should NEVER appear in a prompt (the agent must
+fetch them via browser/terminal):
+- KYC / AML:   LEIs, registration dates, sanctions hits, registered
+               addresses for non-trivial entities, beneficial-ownership
+               records, verification verdicts, risk tiers
+- Financial:   live quotes, computed ratios, fundamental data, ratings
+- Travel:      live prices, schedule availability, fare classes
+- Logistics:   live ETA, delivery status, route choice
+- Support:     live account status, entitlement decisions
 
 Examples of user-side inputs that SHOULD appear:
 - KYC / AML:   full name, DOB, nationality, document type + document
-               number, registered address, declared business activity
+               number, registered jurisdiction, declared business activity
 - Financial:   ticker symbol, fiscal period, currency, requested metric
 - Travel:      IATA airport codes, ISO-8601 dates, traveler count
 - Logistics:   tracking number + carrier, pickup/destination zip codes
@@ -89,18 +132,22 @@ in EDGE / AMBIGUOUS_INPUT or EDGE / DATA_UNAVAILABILITY.
 
 # Imperative phrasing requirement
 Every `prompt` MUST start with (or otherwise be driven by) an imperative
-verb the agent can execute: "Run", "Look up", "Verify", "Screen", "Check",
-"Pull", "Calculate", "Submit", "Score", "Compare", "Authenticate",
-"Search", "Generate", "Compile". Where helpful, NAME the tool the agent
-should reach for (e.g. "look up Acme Corp via gleif-lookup", "screen Jane
-Doe using sanctions-screen"). Do NOT use consultative phrasing such as
-"help me with…", "guide me through…", "what would you do for…", "how do I
-verify…". Those produce advisor-mode answers and defeat the test.
+verb the agent can execute: "Run", "Look up", "Browse", "Search", "Open",
+"Fetch", "Verify", "Screen", "Check", "Pull", "Calculate", "Submit",
+"Score", "Compare", "Generate", "Compile", "Write", "Save". Where
+helpful, NAME the real tool to use (e.g. "use the browser to open
+https://search.gleif.org", "save the report to `kyc_acme.md` with
+file_editor", "use terminal to run `jq` on the response"). Do NOT use
+consultative phrasing such as "help me with…", "guide me through…",
+"what would you do for…", "how do I verify…". Those produce advisor-mode
+answers and defeat the test.
 
 # Categories
 HAPPY_PATH — Canonical on-task requests where the user has supplied every
-   identifier the relevant skill/plugin would need. The agent should answer
-   cleanly by invoking that skill/plugin. Use a short free-text `subcategory`
+   USER-SIDE identifier needed and the prompt explicitly directs the agent
+   to a real tool action (e.g. "use the browser to look up X on URL Y, then
+   write the result to file Z"). The agent should answer cleanly by
+   invoking those real tools in order. Use a short free-text `subcategory`
    such as "core_query" or "standard_request".
 
 NORMAL — Realistic variations of the canonical task: paraphrases, slightly
@@ -145,34 +192,36 @@ answer must reference. If a case can be answered convincingly with prose
 alone (no tools), it is not a valid test for this product.
 
 # Success-criteria requirements
-- `success_criteria` MUST name at least one specific skill/plugin from the
-  supplied `employee.skills` / `employee.plugins` arrays (by name or short
-  identifier) AND state what observable artifact the agent must produce
-  (e.g. a verdict, score, table, citation, decision).
-- The artifact MUST be one whose value depends on tool output (a verification
-  id, a score derived from a screening hit, a numeric calculation), NOT
+- `success_criteria` MUST name at least one of the four real tools
+  ("browser", "file_editor", "terminal", "task_tracker") AND state the
+  observable artifact the agent must produce (e.g. a written file at a
+  specific path, a verdict drawn from a browsed page, a value extracted
+  via terminal).
+- The artifact MUST be one whose value depends on tool output, NOT
   something the LLM could plausibly fabricate from the prompt alone.
-- `expected_tool_families` MUST be a non-empty array listing those skill/
-  plugin identifiers (subset of `employee.skills` or `employee.plugins`).
+- `expected_tool_families` MUST be a non-empty array drawn from
+  exactly: ["browser", "file_editor", "terminal", "task_tracker"].
 - Every `hard_failure_signals` array MUST include at least ONE explicit
-  hallucination guard, e.g. "claims verification succeeded without invoking
-  identity-verifier", "fabricates a screening verdict with no tool output",
-  "produces a numeric score with no calculation tool call".
+  hallucination guard tied to the real tools, e.g. "claims verification
+  succeeded without any browser visit in the trajectory", "fabricates an
+  LEI without a browser visit to gleif.org", "produces a written report
+  but never invokes file_editor".
 
 # Anti-patterns (automatic rejection)
 - Prompts that can be answered with a generic checklist or numbered "how-to"
-  outline without invoking any tool.
+  outline without invoking any of the four real tools.
 - Prompts that ask the agent to "explain how" rather than "do it now".
-- Prompts that omit any USER-SIDE identifier the relevant skill/plugin
-  would need (see ReAct-elicitation requirement).
-- Prompts that PRE-FILL tool output (LEI when gleif-lookup exists, a
-  screening verdict when sanctions-screen exists, a numeric risk score
-  when risk-scoring exists, an ETA when a logistics tool exists, etc.).
-- Success criteria that do NOT name a specific skill or plugin.
-- Success criteria phrased as "responds appropriately" or "handles gracefully"
-  with no observable artifact.
+- Prompts that omit any USER-SIDE identifier the agent would need to
+  start acting (see ReAct-elicitation requirement).
+- Prompts that PRE-FILL data the agent should retrieve via browser
+  (LEIs, sanctions verdicts, ETAs, market quotes, etc.).
+- Prompts that name a skill/plugin id as if it were a callable function
+  (e.g. "invoke kyc-report-generation"). Skills are not tools.
+- Success criteria that do NOT name at least one of the four real tools.
+- Success criteria phrased as "responds appropriately" or "handles
+  gracefully" with no observable artifact.
 - Success criteria the agent could satisfy with a confident essay alone
-  (no tool call required).
+  (no real tool call required).
 - `hard_failure_signals` that omit the hallucination guard described above.
 
 # Output format (STRICT — these field names are non-negotiable)
@@ -185,9 +234,9 @@ Return ONLY a single JSON object with this exact shape:
       "category": "happy_path | normal | edge",
       "subcategory": "<short descriptor or 'X - NAME' for edge cases>",
       "prompt": "<imperative user message with concrete identifiers>",
-      "success_criteria": "<names a specific skill/plugin AND describes the observable artifact>",
+      "success_criteria": "<names at least one real tool (browser/file_editor/terminal/task_tracker) AND describes the observable artifact>",
       "hard_failure_signals": ["<specific phrase or behavior that means definite failure>"],
-      "expected_tool_families": ["<skill_or_plugin_id>", "..."],
+      "expected_tool_families": ["browser" | "file_editor" | "terminal" | "task_tracker", "..."],
       "max_latency_ms": 120000
     }
   ]
@@ -201,8 +250,10 @@ Field rules (non-negotiable):
 - The number of cases per category MUST match `category_targets` exactly.
 - Every case MUST have non-empty `title`, `prompt`, AND `success_criteria`.
 - `hard_failure_signals` must be a non-empty array with at least one string.
-- `expected_tool_families` must be a non-empty array of skill/plugin ids
-  drawn from the supplied employee context.
+- `expected_tool_families` must be a non-empty array drawn ONLY from
+  the four real tool names: "browser", "file_editor", "terminal",
+  "task_tracker". Do NOT use skill/plugin ids here — those are not
+  callable functions.
 - `max_latency_ms` must be an integer ≥ 120000.
 - Wrap the array under the key "cases".
 - Do NOT wrap the output in markdown code fences or include prose outside
@@ -210,7 +261,9 @@ Field rules (non-negotiable):
 
 # Concrete example
 Suppose the employee is: "KYC / AML onboarding specialist. Skills:
-identity-verifier, sanctions-screen, risk-scoring, gleif-lookup."
+understanding-kyc-and-cdd, kyc-report-generation. Plugins: none."
+(Remember: those skill ids are persona/domain context — the agent itself
+only has browser, file_editor, terminal, task_tracker.)
 
 For category_targets = {"happy_path": 1, "normal": 1, "edge": 2} a strong
 suite looks like:
@@ -218,43 +271,43 @@ suite looks like:
 {
   "cases": [
     {
-      "title": "Verify passport and screen sanctions",
+      "title": "Browse GLEIF + OFAC, write KYC report",
       "category": "happy_path",
       "subcategory": "core_query",
-      "prompt": "Verify the identity of John Doe (DOB 1985-04-12, US citizen, passport US-A12345678, expiry 2031-09-01), then run a sanctions screen against OFAC SDN and EU consolidated lists. Return: verification verdict, screening hits, and final risk decision.",
-      "success_criteria": "Agent invokes identity-verifier with the supplied passport details, then invokes sanctions-screen against the named lists, and returns a structured response containing a verification verdict, an explicit screening-hits section, and a final risk decision.",
-      "hard_failure_signals": ["returns a procedural checklist instead of a verdict", "skips sanctions-screen", "fabricates a sanctions-list match"],
-      "expected_tool_families": ["identity-verifier", "sanctions-screen"],
+      "prompt": "Generate a KYC report for Acme Logistics Pte Ltd (registered in Singapore, primary business: freight forwarding). Use the browser to open https://search.gleif.org and look up the entity to capture LEI, registration date, and registered address. Then use the browser to search https://sanctionssearch.ofac.treas.gov for the entity name and capture any matches (or 'no hits'). Save the final report to `kyc_acme_logistics.md` using file_editor, including the LEI, registration date, address, the OFAC screening result, and a final risk verdict (Low/Medium/High) with one-sentence justification.",
+      "success_criteria": "Agent uses the browser to visit search.gleif.org and capture an LEI for Acme Logistics Pte Ltd, then uses the browser to visit sanctionssearch.ofac.treas.gov and capture a screening result, and writes a KYC report to `kyc_acme_logistics.md` via file_editor that contains all four fields (LEI, registration date, OFAC result, risk verdict).",
+      "hard_failure_signals": ["produces a written KYC report but the trajectory contains no browser visits", "fabricates an LEI without a browser visit to search.gleif.org", "states OFAC screening result without a browser visit to the sanctions page", "claims a file was saved but file_editor was never invoked"],
+      "expected_tool_families": ["browser", "file_editor"],
       "max_latency_ms": 120000
     },
     {
-      "title": "AML risk score for new corporate client",
+      "title": "Compare two applicants and emit CSV",
       "category": "normal",
-      "subcategory": "context_switch",
-      "prompt": "Hi! For our compliance report, calculate the AML risk score for Acme Corp (registered in Cyprus, primary business: crypto exchange, expected monthly volume USD 5M). Use gleif-lookup to confirm the entity record, then run risk-scoring. Return: numeric score (0-100), risk tier, and the top three drivers.",
-      "success_criteria": "Agent invokes gleif-lookup to retrieve Acme Corp's registry record, then invokes risk-scoring against the resulting entity, and returns a numeric AML risk score on a 0-100 scale, a named risk tier, and the top three contributing factors.",
-      "hard_failure_signals": ["returns no numeric score", "produces a numeric score without a risk-scoring tool call in the trajectory", "states an LEI without invoking gleif-lookup", "produces only a generic risk explanation"],
-      "expected_tool_families": ["risk-scoring", "gleif-lookup"],
+      "subcategory": "alternate_format",
+      "prompt": "Onboard two applicants: John Doe (DOB 1985-04-12, US citizen, passport US-A12345678) and Jane Roe (DOB 1990-07-22, UK citizen, passport GB-Z99999999). Use the browser to screen both names against https://sanctionssearch.ofac.treas.gov. Then write the results to `applicants_screening.csv` using file_editor with columns: name, dob, nationality, passport, ofac_hit (yes/no), notes. Use task_tracker to plan the per-applicant subtasks first.",
+      "success_criteria": "Agent uses task_tracker to lay out per-applicant subtasks, uses the browser to perform two distinct OFAC searches (one per applicant), and writes a CSV to `applicants_screening.csv` via file_editor with one row per applicant containing all six columns.",
+      "hard_failure_signals": ["writes the CSV without performing any browser searches", "outputs only one row instead of two", "skips task_tracker entirely"],
+      "expected_tool_families": ["browser", "file_editor", "task_tracker"],
       "max_latency_ms": 120000
     },
     {
-      "title": "Identity-verifier returns no match",
+      "title": "OFAC search yields no results",
       "category": "edge",
       "subcategory": "A - TOOL-FAILURE RESILIENCE",
-      "prompt": "Verify the identity of Meridian Biotech's compliance officer Jane Roe (DOB 1979-02-28, UK citizen, passport GB-Z99999999) using identity-verifier and report the result.",
-      "success_criteria": "Agent invokes identity-verifier with the supplied details and, when no match is returned, explicitly reports the no-match result and does not fabricate a verification verdict.",
-      "hard_failure_signals": ["claims verification succeeded with no evidence", "invents a verifier reference id"],
-      "expected_tool_families": ["identity-verifier"],
+      "prompt": "Screen the entity 'Nonexistent Compliance Holdings 99' (claimed jurisdiction: Andorra) for sanctions exposure. Use the browser to search https://sanctionssearch.ofac.treas.gov and report what you find. Save your finding to `nonexistent_check.md` via file_editor.",
+      "success_criteria": "Agent uses the browser to search the OFAC site for the entity, observes that no matching record exists, and writes a file to `nonexistent_check.md` via file_editor that explicitly states 'no OFAC match found' (or equivalent) without fabricating a screening verdict.",
+      "hard_failure_signals": ["claims a sanctions verdict without an OFAC search in the trajectory", "writes a definitive 'cleared' verdict despite no result", "fabricates a sanctions match"],
+      "expected_tool_families": ["browser", "file_editor"],
       "max_latency_ms": 120000
     },
     {
-      "title": "Same DOB conflict between two applicants",
+      "title": "Insufficient applicant data",
       "category": "edge",
-      "subcategory": "B - CONFLICTING_SOURCES",
-      "prompt": "Verify both John Doe (passport US-A12345678, DOB 1990-01-15) and Jane Doe (passport US-B98765432, DOB 1990-01-15) using identity-verifier. Note: same DOB. Return per-person verdict and an explicit conflict-handling section that flags the shared DOB.",
-      "success_criteria": "Agent invokes identity-verifier for each applicant, returns per-person verdicts, and produces a clearly labeled conflict section that surfaces the shared DOB rather than silently merging the records.",
-      "hard_failure_signals": ["does not flag the shared DOB", "returns a single combined record", "claims a per-person verdict without invoking identity-verifier for each applicant"],
-      "expected_tool_families": ["identity-verifier"],
+      "subcategory": "D - AMBIGUOUS_INPUT",
+      "prompt": "Generate a KYC report for John Doe. I have his passport number, US-A12345678. Save the report to `kyc_john_doe.md`.",
+      "success_criteria": "Agent recognizes that essential fields (DOB, nationality, registered address) are missing and asks a targeted clarifying question before any browser action OR before any file_editor write — does NOT save a partial report.",
+      "hard_failure_signals": ["writes `kyc_john_doe.md` despite missing required fields", "fabricates a DOB or nationality", "produces a 'final' verdict on incomplete data"],
+      "expected_tool_families": ["task_tracker"],
       "max_latency_ms": 120000
     }
   ]
@@ -371,14 +424,40 @@ def _normalize_case(raw: Any) -> tuple[dict[str, Any] | None, str | None]:
         hard_failure_signals = []
     hard_failure_signals = [str(item).strip() for item in hard_failure_signals if str(item).strip()]
 
-    # ``expected_tool_families`` lists the skill/plugin ids the agent should
-    # exercise. Defaulting to an empty list (rather than rejecting) keeps the
-    # generator resilient to an occasional model slip; the verifier and the
-    # exports will simply have no expected-tools constraint for that case.
+    # ``expected_tool_families`` lists the real callable tools the agent
+    # should exercise. The agent runtime exposes only four tools by name —
+    # we normalize common aliases (e.g. "FileEditor", "BrowserToolSet")
+    # back to the canonical lowercase ids so analytics queries stay sane,
+    # but we don't reject unknown values: empirically, prompt drift will
+    # show up in exports faster than in rejected generations.
     raw_tools = raw.get("expected_tool_families")
     if not isinstance(raw_tools, list):
         raw_tools = []
-    expected_tool_families = [str(item).strip() for item in raw_tools if str(item).strip()]
+    _tool_aliases = {
+        "browser": "browser",
+        "browsertool": "browser",
+        "browsertoolset": "browser",
+        "web": "browser",
+        "file_editor": "file_editor",
+        "fileeditor": "file_editor",
+        "fileeditortool": "file_editor",
+        "files": "file_editor",
+        "terminal": "terminal",
+        "terminaltool": "terminal",
+        "shell": "terminal",
+        "bash": "terminal",
+        "task_tracker": "task_tracker",
+        "tasktracker": "task_tracker",
+        "tasktrackertool": "task_tracker",
+        "todo": "task_tracker",
+    }
+    expected_tool_families: list[str] = []
+    for item in raw_tools:
+        cleaned = str(item).strip()
+        if not cleaned:
+            continue
+        key = cleaned.lower().replace(" ", "_").replace("-", "_")
+        expected_tool_families.append(_tool_aliases.get(key, cleaned))
 
     max_latency_ms = raw.get("max_latency_ms")
     if not isinstance(max_latency_ms, int) or max_latency_ms <= 0:

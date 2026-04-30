@@ -27,13 +27,39 @@ def _extract_tool_name(event: Any) -> str | None:
     (``used_tools`` set in ``_callback``) needs the tool name even for events
     we *don't* end up appending to the compact trajectory (e.g. when the cap
     is hit, or when ``_compact_event`` returns None for filtered events).
+
+    The OpenHands SDK uses OpenAI's ``MessageToolCall`` shape on ActionEvents:
+    ``event.tool_call.function.name`` is the canonical place where the
+    invoked function name lives. ``event.tool_name`` is set on most events
+    but not all of them — when it's missing, the previous implementation
+    silently dropped the tool from ``tools_used`` even though
+    ``_compact_action_event`` in agent_event_utils could still recover it.
+    Walk the canonical path before declaring "no tool name".
     """
     name = getattr(event, "tool_name", None)
     if name:
         return str(name).strip()
+
+    # Canonical SDK path: ActionEvent.tool_call.function.name
+    tool_call = getattr(event, "tool_call", None)
+    if tool_call is not None:
+        function = getattr(tool_call, "function", None)
+        if function is not None:
+            fn_name = getattr(function, "name", None)
+            if fn_name:
+                return str(fn_name).strip()
+
+    # Dump fallback for non-pydantic event objects (older SDK builds, mocks).
     event_dict = event.model_dump() if hasattr(event, "model_dump") else {}
     fallback = event_dict.get("tool_name")
-    return str(fallback).strip() if fallback else None
+    if fallback:
+        return str(fallback).strip()
+    nested_call = event_dict.get("tool_call") or {}
+    if isinstance(nested_call, dict):
+        nested_fn = nested_call.get("function") or {}
+        if isinstance(nested_fn, dict) and nested_fn.get("name"):
+            return str(nested_fn["name"]).strip()
+    return None
 
 
 # Hard cap on events captured per test run. Prevents a runaway agent (or a
