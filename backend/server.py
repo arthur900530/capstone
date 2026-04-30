@@ -146,7 +146,14 @@ async def lifespan(application):
 
     # Warm the shared DockerWorkspace once, before accepting requests.
     if REAL_AGENT_ENABLED:
-        host_dir = tempfile.mkdtemp(prefix="shared_ws_")
+        # Stable host dir so MEMORY.md, per-conversation logs, and any
+        # agent-written workspace files survive server restarts. Override
+        # via AGENT_WORKSPACE_DIR if you want a different location; rm -rf
+        # this path manually to wipe agent memory.
+        host_dir = os.path.expanduser(
+            os.getenv("AGENT_WORKSPACE_DIR", "~/.bny_agent_workspace")
+        )
+        os.makedirs(host_dir, exist_ok=True)
         logger.info("Starting shared DockerWorkspace (host_dir=%s) …", host_dir)
         workspace = None
         last_exc: Exception | None = None
@@ -176,7 +183,10 @@ async def lifespan(application):
                 "Last error: %s",
                 last_exc,
             )
-            shutil.rmtree(host_dir, ignore_errors=True)
+            # Don't rmtree the host_dir on warmup failure — it may have
+            # accumulated MEMORY.md and conversation history from prior
+            # successful runs that we'd rather not destroy on a transient
+            # Docker hiccup.
             _SHARED_WS["workspace"] = None
             _SHARED_WS["host_dir"] = None
             _SHARED_WS["lock"] = None
@@ -205,9 +215,9 @@ async def lifespan(application):
         except Exception:
             logger.exception("Error while tearing down shared DockerWorkspace")
         finally:
-            host_dir = _SHARED_WS.get("host_dir")
-            if host_dir and os.path.isdir(host_dir):
-                shutil.rmtree(host_dir, ignore_errors=True)
+            # Keep the host_dir on disk so MEMORY.md and conversation
+            # history are still here on the next boot. Stop the container,
+            # forget the in-memory handle, but leave the files alone.
             _SHARED_WS["workspace"] = None
             _SHARED_WS["host_dir"] = None
 
@@ -2007,6 +2017,57 @@ async def _fetch_employee_profile_by_id(employee_id: str) -> dict | None:
         return None
 
 
+async def _link_session_to_employee(employee_id: str, session_id: str) -> None:
+    """Append ``session_id`` to the employee's ``chat_session_ids`` list.
+
+    Idempotent. The React frontend does this from its own update-employee
+    flow when starting a chat, but Slack-originated chats skip the frontend
+    and would otherwise be invisible in the UI sidebar (which filters chats
+    by ``employee.chatSessionIds``). Calling this from the backend chat
+    handler covers both code paths.
+    """
+    try:
+        from routers.employees import _db_available as db_flag
+    except Exception:
+        db_flag = False
+
+    if db_flag:
+        try:
+            from db.engine import async_session
+            from db.models import Employee
+            from sqlalchemy import select
+            try:
+                emp_uuid = uuid.UUID(employee_id)
+            except ValueError:
+                return
+            async with async_session() as session:
+                row = (
+                    await session.execute(select(Employee).where(Employee.id == emp_uuid))
+                ).scalar_one_or_none()
+                if row is None:
+                    return
+                ids = list(row.chat_session_ids or [])
+                if session_id not in ids:
+                    ids.append(session_id)
+                    row.chat_session_ids = ids
+                    await session.commit()
+        except Exception:
+            logger.exception("[chat] failed to link session %s to employee %s", session_id, employee_id)
+        return
+
+    try:
+        from routers.employees import _memory_store
+        for emp in _memory_store:
+            if emp.get("id") == employee_id:
+                ids = list(emp.get("chatSessionIds") or [])
+                if session_id not in ids:
+                    ids.append(session_id)
+                    emp["chatSessionIds"] = ids
+                return
+    except Exception:
+        logger.exception("[chat] failed to link session %s to memory employee %s", session_id, employee_id)
+
+
 async def _lookup_employee_profile(
     employee_id: str | None, session_id: str | None = None
 ) -> tuple[str | None, dict | None, str]:
@@ -2085,6 +2146,11 @@ async def chat(req: ChatRequest):
     # ``employee_id`` later.
     if resolved_id:
         _SESSION_EMPLOYEE_IDS[session_id] = resolved_id
+        # Also link the session to the employee in the DB / memory store so
+        # the UI sidebar shows Slack-originated chats under the right
+        # employee. The React UI does this from its own flow, so this call
+        # is a no-op for UI-originated chats (idempotent on session_id).
+        await _link_session_to_employee(resolved_id, session_id)
 
     logger.info(
         "[chat] persona_resolution employee_id=%s resolved_id=%s source=%s "
