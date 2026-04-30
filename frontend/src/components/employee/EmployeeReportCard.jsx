@@ -80,6 +80,7 @@ function RecentTaskRow({ run, onClick }) {
   const topTools = Object.entries(run.tool_histogram || {})
     .sort((a, b) => b[1] - a[1])
     .slice(0, 4);
+  const isAutotest = run.source === "autotest";
 
   return (
     <li>
@@ -89,12 +90,19 @@ function RecentTaskRow({ run, onClick }) {
         className="w-full rounded-lg border border-border/40 bg-surface/40 p-3 text-left transition-colors hover:border-accent-teal/30 hover:bg-surface/60"
       >
         <div className="flex items-start justify-between gap-3">
-          <p
-            className="min-w-0 flex-1 truncate text-sm text-text-primary"
-            title={run.prompt_preview}
-          >
-            {run.prompt_preview || <span className="italic text-text-muted">(empty prompt)</span>}
-          </p>
+          <div className="flex min-w-0 flex-1 items-center gap-2">
+            {isAutotest ? (
+              <span className="shrink-0 rounded bg-yellow-500/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-yellow-400">
+                Autotest
+              </span>
+            ) : null}
+            <p
+              className="min-w-0 flex-1 truncate text-sm text-text-primary"
+              title={run.prompt_preview}
+            >
+              {run.prompt_preview || <span className="italic text-text-muted">(empty prompt)</span>}
+            </p>
+          </div>
           <div className="flex shrink-0 items-center gap-3 text-[11px] text-text-muted tabular-nums">
             <span>{run.n_tool_calls} tools</span>
             <span>{durationSec.toFixed(1)}s</span>

@@ -596,6 +596,7 @@ function TaskRow({ index, run, expanded, onToggle, onOpenTrajectory }) {
   const wfPct = wfBest ? Math.round((wfBest.rate || 0) * 100) : null;
   const wfAccent =
     wfBest != null ? BUCKET_STYLES[scoreBucket(wfBest.rate)] : null;
+  const isAutotest = run.source === "autotest";
 
   const title =
     run.prompt_preview?.trim() ||
@@ -619,6 +620,14 @@ function TaskRow({ index, run, expanded, onToggle, onOpenTrajectory }) {
         <span className="mt-0.5 w-4 shrink-0 text-right text-[11px] tabular-nums text-text-muted">
           {index + 1}
         </span>
+        {isAutotest ? (
+          <span
+            className="mt-0.5 shrink-0 rounded bg-yellow-500/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-yellow-400"
+            title="Mirrored from an autotest run"
+          >
+            Autotest
+          </span>
+        ) : null}
         <button
           type="button"
           onClick={onOpenTrajectory}

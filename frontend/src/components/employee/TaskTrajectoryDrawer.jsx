@@ -21,6 +21,7 @@ import {
   annotateTaskTrajectory,
   fetchSkills,
   fetchTaskTrajectory,
+  fetchTestCaseRunVerdict,
 } from "../../services/api";
 import TrajectoryNodeCard from "./TrajectoryNodeCard";
 import WorkflowTree from "../workflow/WorkflowTree";
@@ -241,6 +242,10 @@ export default function TaskTrajectoryDrawer({ employeeId, task, onClose, onAnno
   const [aligning, setAligning] = useState(false);
   const [alignError, setAlignError] = useState(null);
   const [cachedAligns, setCachedAligns] = useState({});
+  // For autotest-mirrored task runs: the originating test_case_run's
+  // verdict + LLM-judge fields, fetched lazily so chat-turn drawers
+  // never pay this round trip.
+  const [verdict, setVerdict] = useState(null);
 
   useEffect(() => {
     if (!task) return undefined;
@@ -254,6 +259,8 @@ export default function TaskTrajectoryDrawer({ employeeId, task, onClose, onAnno
     setAlignError(null);
     setSelectedSkillId("");
     setCachedAligns({});
+
+    setVerdict(null);
 
     fetchTaskTrajectory(employeeId, task.sessionId, task.taskIndex)
       .then((result) => {
@@ -310,6 +317,26 @@ export default function TaskTrajectoryDrawer({ employeeId, task, onClose, onAnno
       cancelled = true;
     };
   }, [task]);
+
+  // For autotest-mirrored runs, fetch the originating test_case_run's
+  // verdict + judge rationale so the header can show a verdict pill
+  // and the LLM judge's reasoning. Chat turns skip this entirely.
+  const testCaseRunId = task?.run?.test_case_run_id;
+  const isAutotestTask = task?.run?.source === "autotest";
+  useEffect(() => {
+    if (!isAutotestTask || !testCaseRunId) return undefined;
+    let cancelled = false;
+    fetchTestCaseRunVerdict(employeeId, testCaseRunId)
+      .then((result) => {
+        if (!cancelled) setVerdict(result);
+      })
+      .catch(() => {
+        if (!cancelled) setVerdict(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [employeeId, isAutotestTask, testCaseRunId]);
 
   const linearNodes = useMemo(() => flattenActions(data?.tree), [data?.tree]);
   const workflowNodes = useMemo(
@@ -472,6 +499,9 @@ export default function TaskTrajectoryDrawer({ employeeId, task, onClose, onAnno
         </div>
 
         <div className="border-b border-border/20 px-6 py-4">
+          {isAutotestTask ? (
+            <AutotestVerdictBanner verdict={verdict} />
+          ) : null}
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
             <StatPill label="Duration" value={formatMs(summary?.duration_ms ?? task.run?.duration_ms)} />
             <StatPill label="Trials" value={summary?.n_trials ?? task.run?.n_trials ?? 1} />
@@ -870,6 +900,76 @@ function ActionAssignmentCard({ index, node, assignment, stepTitleByPath }) {
       {assignment?.rationale ? (
         <p className="mt-1.5 text-xs text-text-muted break-words">
           {assignment.rationale}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+// Header banner shown above the StatPills row when the open task is an
+// autotest mirror. Surfaces the LLM judge's verdict + rationale so the
+// drawer doesn't make the user dig through the test cases panel to see
+// why a run passed or failed. Renders a placeholder while the verdict
+// is in flight, and an "AUTOTEST" stub when the fetch failed (e.g. the
+// test_case_run row was deleted) so the user still sees they're looking
+// at synthetic data.
+function AutotestVerdictBanner({ verdict }) {
+  const verdictKey = (verdict?.verdict || "unknown").toLowerCase();
+  const verdictStyle =
+    verdictKey === "pass"
+      ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-300"
+      : verdictKey === "fail"
+        ? "border-red-500/40 bg-red-500/10 text-red-300"
+        : verdictKey === "timeout"
+          ? "border-amber-500/40 bg-amber-500/10 text-amber-300"
+          : "border-border/50 bg-surface text-text-muted";
+  const Icon =
+    verdictKey === "pass"
+      ? CheckCircle2
+      : verdictKey === "fail"
+        ? XCircle
+        : AlertCircle;
+  const rationale = verdict?.judge_rationale || verdict?.failure_reason || null;
+  const evidence = verdict?.judge_evidence_quote || null;
+
+  return (
+    <div className="mb-3 rounded-xl border border-yellow-500/30 bg-yellow-500/[0.04] px-4 py-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="rounded bg-yellow-500/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-yellow-300">
+          Autotest
+        </span>
+        {verdict ? (
+          <span
+            className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider ${verdictStyle}`}
+          >
+            <Icon size={12} />
+            {verdictKey}
+          </span>
+        ) : (
+          <span className="inline-flex items-center gap-1 rounded-full border border-border/50 bg-surface px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-text-muted">
+            <Loader2 size={12} className="animate-spin" />
+            loading verdict
+          </span>
+        )}
+        {verdict?.case_title ? (
+          <span className="truncate text-xs text-text-secondary" title={verdict.case_title}>
+            {verdict.case_title}
+          </span>
+        ) : null}
+        {typeof verdict?.judge_confidence === "number" ? (
+          <span className="ml-auto text-[10px] uppercase tracking-wider text-text-muted">
+            confidence {Math.round(verdict.judge_confidence * 100)}%
+          </span>
+        ) : null}
+      </div>
+      {rationale ? (
+        <p className="mt-2 text-xs text-text-secondary break-words">
+          {rationale}
+        </p>
+      ) : null}
+      {evidence ? (
+        <p className="mt-1 border-l-2 border-border/60 pl-2 text-[11px] italic text-text-muted break-words">
+          “{evidence}”
         </p>
       ) : null}
     </div>
