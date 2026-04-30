@@ -2,58 +2,31 @@
   "skill_name": "generate-kyc-report",
   "title": "Workflow of Generating a KYC Report",
   "summary": "This skill outlines the workflow for generating a Know Your Customer (KYC) report, encompassing company website research, GLEIF/LEI lookup, and adverse media/news screening to build a foundational client profile.",
-  "source_file": "WhatsApp Video 2026-04-29 at 22.02.26.mp400:00",
+  "source_file": "WhatsApp Video 2026-04-29 at 22.02.26.mp4",
   "root_steps": [
     {
       "node_type": "workflow_step",
       "title": "Company Website Research",
-      "description": "",
-      "start_time": 5.9,
-      "end_time": 25.0,
-      "children": [
-        {
-          "node_type": "workflow_step",
-          "title": "Gather Information",
-          "description": "Review the company's official website to understand its business overview, products/services, leadership team, strategic priorities, geographic footprint, and regulatory disclosures. This helps establish a basic understanding of the client.",
-          "start_time": 7.1,
-          "end_time": 25.0,
-          "children": []
-        }
-      ]
+      "description": "Gather information about the company from its official website, including business overview, products/services, leadership team, strategic priorities, geographic footprint, and regulatory disclosures.",
+      "start_time": 5.352,
+      "end_time": 25.262,
+      "children": []
     },
     {
       "node_type": "workflow_step",
       "title": "GLEIF / LEI Lookup",
-      "description": "",
-      "start_time": 26.0,
-      "end_time": 45.9,
-      "children": [
-        {
-          "node_type": "workflow_step",
-          "title": "Retrieve Company Information",
-          "description": "Pull the company's Legal Entity Identifier (LEI), registered address, entity status, and analyze the ownership/organizational hierarchy, including both direct and ultimate parent relationships, to understand the company's structure.",
-          "start_time": 28.7,
-          "end_time": 45.9,
-          "children": []
-        }
-      ]
+      "description": "Use the Global Legal Entity Identifier Foundation (GLEIF) database to pull the company\u2019s Legal Entity Identifier (LEI), registered address, entity status, and ownership structure.",
+      "start_time": 25.352,
+      "end_time": 47.162,
+      "children": []
     },
     {
       "node_type": "workflow_step",
       "title": "Adverse Media / News Screening",
-      "description": "",
-      "start_time": 46.9,
-      "end_time": 111.4,
-      "children": [
-        {
-          "node_type": "workflow_step",
-          "title": "Surface Negative Information",
-          "description": "Conduct adverse media screening by searching sources like Google News and public court/regulatory filings to identify any negative news, sanctions, regulatory actions, or legal proceedings involving the company.",
-          "start_time": 49.1,
-          "end_time": 60.8,
-          "children": []
-        }
-      ]
+      "description": "Conduct adverse media screening by searching news outlets and public filings for any negative news, sanctions, regulatory actions, or legal proceedings involving the company.",
+      "start_time": 47.462,
+      "end_time": 68.562,
+      "children": []
     }
   ]
 }

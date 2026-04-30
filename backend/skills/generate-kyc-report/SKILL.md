@@ -1,5 +1,5 @@
 ---
-name: Generate-KYC-Report
+name: generate-kyc-report
 description: >
   This skill outlines the workflow for generating a Know Your Customer (KYC) report, encompassing company website research, GLEIF/LEI lookup, and adverse media/news screening to build a foundational client profile.
 license: MIT
