@@ -241,6 +241,15 @@ export default function EmployeeReportCard({ employee }) {
           </div>
         </div>
 
+        {/* Goal-oriented task performance (new) */}
+        <TaskPerformanceSection
+          employeeId={employee.id}
+          aggregate={a}
+          recent={data.recent || []}
+          onOpenTrajectory={(task) => setSelectedTask(task)}
+          onRefresh={() => loadMetrics({ showSpinner: false })}
+        />
+
         {/* KPI strip */}
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
           <KpiCard label="Tasks completed" value={a.tasks} />
@@ -305,15 +314,6 @@ export default function EmployeeReportCard({ employee }) {
             />
           </MetricCard>
         </div>
-
-        {/* Goal-oriented task performance (new) */}
-        <TaskPerformanceSection
-          employeeId={employee.id}
-          aggregate={a}
-          recent={data.recent || []}
-          onOpenTrajectory={(task) => setSelectedTask(task)}
-          onRefresh={() => loadMetrics({ showSpinner: false })}
-        />
 
         {/* User ratings distribution — pinned to the bottom of the
             report card so the operator's qualitative signal sits below
