@@ -29,10 +29,9 @@ _VERIFIER_PROMPT = (
     "- test_case.prompt — the user instruction the agent was given.\n"
     "- test_case.success_criteria — the observable workflow + artifact required.\n"
     "- test_case.hard_failure_signals — definite-failure phrases or behaviors.\n"
-    "- test_case.expected_tool_families — skill/plugin ids the agent SHOULD "
-    "invoke. May be empty when the test does not pre-specify tools.\n"
     "- agent_run.tools_used — the set of tool names the agent ACTUALLY invoked. "
-    "This is observed by the runtime, not self-reported.\n"
+    "This is observed by the runtime, not self-reported. Empty list means the "
+    "agent invoked no tools at all.\n"
     "- agent_run.trajectory — the compacted event log the agent produced.\n"
     "- agent_run.final_answer — the agent's free-text response.\n"
     "\n"
@@ -40,18 +39,19 @@ _VERIFIER_PROMPT = (
     "Workflow > output. A well-formatted final answer that lacks supporting "
     "tool evidence in the trajectory is a HALLUCINATION, not a pass.\n"
     "Apply these gates BEFORE looking at output quality:\n"
-    "1. If success_criteria explicitly names a skill/plugin and the agent "
-    "   never invoked any tool from expected_tool_families AND tools_used is "
-    "   empty → set hallucination_detected=true and verdict=\"fail\".\n"
+    "1. If success_criteria explicitly names a skill, plugin, tool, or "
+    "   methodology AND tools_used is empty → set hallucination_detected=true "
+    "   and verdict=\"fail\". The agent cannot have followed a workflow it "
+    "   never invoked.\n"
     "2. If the final answer claims a concrete action was performed (e.g. "
     "   'I verified', 'I screened', 'I looked up', 'verification: success', "
     "   'sanctions: clear') but the trajectory shows no corresponding tool "
     "   call → set hallucination_detected=true and verdict=\"fail\". The "
     "   evidence_quote MUST quote the unsupported claim from final_answer.\n"
     "3. If the agent fabricates a fact a real tool would have produced "
-    "   (a verification id, a screening hit list, a numeric score) without a "
-    "   trajectory entry that produced it → hallucination_detected=true, "
-    "   verdict=\"fail\".\n"
+    "   (a verification id, a screening hit list, a numeric score, an LEI, "
+    "   a registry record) without a trajectory entry that produced it → "
+    "   hallucination_detected=true, verdict=\"fail\".\n"
     "\n"
     "# Output quality (only when process gates pass)\n"
     "Once process integrity is satisfied, judge whether the final answer "
@@ -118,7 +118,6 @@ async def verify_test_case_run(
     hard_failure_signals: list[str],
     final_answer: str,
     compact_trajectory: list[dict[str, Any]],
-    expected_tool_families: list[str] | None = None,
     tools_used: list[str] | None = None,
 ) -> dict[str, Any]:
     if not OPENAI_API_KEY:
@@ -131,7 +130,6 @@ async def verify_test_case_run(
             "prompt": case_prompt,
             "success_criteria": success_criteria,
             "hard_failure_signals": hard_failure_signals or [],
-            "expected_tool_families": list(expected_tool_families or []),
         },
         "agent_run": {
             "final_answer": final_answer,

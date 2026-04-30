@@ -294,18 +294,19 @@ async def run_test_case(
         }
 
     try:
-        # Pass the observed tool trace + the test's declared expected tool
-        # families to the judge so it can grade WORKFLOW integrity, not just
-        # output shape. Without these, a confident-looking final answer that
-        # was produced WITHOUT calling any tool would be graded "pass" because
-        # the judge has no signal that the workflow actually happened.
+        # Pass the observed tool trace to the judge so it can grade WORKFLOW
+        # integrity, not just output shape. We deliberately do NOT pass
+        # `expected_tool_families` — empirically, naming specific skills the
+        # agent "should" use was overfitting the judge to a brittle ground
+        # truth. The remaining process-integrity gates (claim-without-call
+        # and tool-output-fabrication) catch the same hallucinations via
+        # success_criteria + final_answer + tools_used.
         judged = await verify_test_case_run(
             case_prompt=case_prompt,
             success_criteria=success_criteria,
             hard_failure_signals=hard_failure_signals,
             final_answer=final_answer,
             compact_trajectory=compact_trajectory,
-            expected_tool_families=list(expected_tool_families or []),
             tools_used=sorted(used_tools),
         )
         # region agent log

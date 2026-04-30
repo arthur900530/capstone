@@ -39,26 +39,63 @@ a position where it has to invoke a real tool — not just describe a procedure.
 4. Only after this reasoning, emit the final JSON. Do NOT include reasoning in
    the output.
 
-# Concrete-data requirement (applies to ALL categories)
-Every test prompt MUST include enough STRUCTURED INPUTS for at least one of
-the employee's skills/plugins to be invoked. Examples by domain:
-- KYC / AML:   full name, date of birth, nationality, document type +
-               document number, address, optional LEI / passport / TIN
-- Financial:   ticker symbol, fiscal period, ISIN / CUSIP / LEI when relevant
+# ReAct-elicitation requirement (most important rule)
+The whole point of this test suite is to provoke the agent into Reason +
+Act loops. That only happens if the prompt provides ENOUGH context for the
+agent to act AND leaves enough work that the agent must invoke a tool to
+finish. Two complementary rules:
+
+(a) Provide ONLY the inputs a real customer/operator would naturally have.
+    These are USER-SIDE inputs, e.g. a person's name + DOB + passport
+    number, a company's legal name + jurisdiction, a ticker + fiscal period,
+    an order id + account email.
+
+(b) Do NOT pre-fill data that one of the employee's tools is supposed to
+    PRODUCE. If a `gleif-lookup` tool exists, do NOT include the company's
+    LEI in the prompt — naming the company is enough; the agent must call
+    `gleif-lookup` to retrieve the LEI. If a `sanctions-screen` tool exists,
+    do NOT pre-state the screening result. If a `risk-scoring` tool exists,
+    do NOT pre-state the score or risk tier.
+
+Instead of "Acme Corp, LEI 254900HROIFWPRGM1V77, no sanctions hits, risk
+tier 'low'", write "Acme Corp (incorporated in Cyprus, primary business:
+crypto exchange). Use gleif-lookup to confirm the entity, then
+sanctions-screen against OFAC SDN, then risk-scoring." The first version
+hands the agent every answer; the second forces ReAct.
+
+Heuristic: read the prompt and ask, "Could a chatty LLM compose a
+plausible answer to this WITHOUT calling any tool?" If yes, you have
+pre-filled tool output — strip it and replace with the tool name.
+
+Examples of tool-output that should NEVER appear in a prompt:
+- KYC / AML:   verification verdicts, sanctions hits, risk tiers, LEIs,
+               TINs (when a registry lookup tool exists for them)
+- Financial:   computed metrics, ratios, projected values, ratings
+- Travel:      computed prices, fare classes, availability counts
+- Logistics:   ETA, delivery status, route choices
+- Support:     account status, entitlement decisions, refund eligibility
+
+Examples of user-side inputs that SHOULD appear:
+- KYC / AML:   full name, DOB, nationality, document type + document
+               number, registered address, declared business activity
+- Financial:   ticker symbol, fiscal period, currency, requested metric
 - Travel:      IATA airport codes, ISO-8601 dates, traveler count
 - Logistics:   tracking number + carrier, pickup/destination zip codes
 - Support:     order id, account email, plan/subscription tier
-A prompt that mentions only a person's name, only a company name, or only a
-vague "this client" is INSUFFICIENT. Rewrite with concrete identifiers
-before emitting the case.
+
+A prompt that mentions ONLY a name, ONLY a company name, or a vague
+"this client" with no user-side inputs is also insufficient — that lands
+in EDGE / AMBIGUOUS_INPUT or EDGE / DATA_UNAVAILABILITY.
 
 # Imperative phrasing requirement
-Every `prompt` MUST start with (or otherwise be driven by) an imperative verb
-the agent can execute: "Run", "Look up", "Verify", "Screen", "Check", "Pull",
-"Calculate", "Submit", "Score", "Compare", "Authenticate", "Search".
-Do NOT use consultative phrasing such as "help me with…", "guide me through…",
-"what would you do for…", "how do I verify…". Those produce advisor-mode
-answers and defeat the test.
+Every `prompt` MUST start with (or otherwise be driven by) an imperative
+verb the agent can execute: "Run", "Look up", "Verify", "Screen", "Check",
+"Pull", "Calculate", "Submit", "Score", "Compare", "Authenticate",
+"Search", "Generate", "Compile". Where helpful, NAME the tool the agent
+should reach for (e.g. "look up Acme Corp via gleif-lookup", "screen Jane
+Doe using sanctions-screen"). Do NOT use consultative phrasing such as
+"help me with…", "guide me through…", "what would you do for…", "how do I
+verify…". Those produce advisor-mode answers and defeat the test.
 
 # Categories
 HAPPY_PATH — Canonical on-task requests where the user has supplied every
@@ -126,7 +163,11 @@ alone (no tools), it is not a valid test for this product.
 - Prompts that can be answered with a generic checklist or numbered "how-to"
   outline without invoking any tool.
 - Prompts that ask the agent to "explain how" rather than "do it now".
-- Prompts that omit any identifier the relevant skill/plugin would need.
+- Prompts that omit any USER-SIDE identifier the relevant skill/plugin
+  would need (see ReAct-elicitation requirement).
+- Prompts that PRE-FILL tool output (LEI when gleif-lookup exists, a
+  screening verdict when sanctions-screen exists, a numeric risk score
+  when risk-scoring exists, an ETA when a logistics tool exists, etc.).
 - Success criteria that do NOT name a specific skill or plugin.
 - Success criteria phrased as "responds appropriately" or "handles gracefully"
   with no observable artifact.
@@ -190,9 +231,9 @@ suite looks like:
       "title": "AML risk score for new corporate client",
       "category": "normal",
       "subcategory": "context_switch",
-      "prompt": "Hi! For our compliance report, calculate the AML risk score for Acme Corp, LEI 254900HROIFWPRGM1V77, headquartered in Cyprus, primary business: crypto exchange, expected monthly volume USD 5M. Return: numeric score (0-100), risk tier, and the top three drivers.",
-      "success_criteria": "Agent invokes risk-scoring (and gleif-lookup if it needs to confirm the entity) and returns a numeric AML risk score on a 0-100 scale, a named risk tier, and the top three contributing factors.",
-      "hard_failure_signals": ["returns no numeric score", "asks for inputs already provided", "produces only a generic risk explanation", "produces a numeric score without a risk-scoring tool call in the trajectory"],
+      "prompt": "Hi! For our compliance report, calculate the AML risk score for Acme Corp (registered in Cyprus, primary business: crypto exchange, expected monthly volume USD 5M). Use gleif-lookup to confirm the entity record, then run risk-scoring. Return: numeric score (0-100), risk tier, and the top three drivers.",
+      "success_criteria": "Agent invokes gleif-lookup to retrieve Acme Corp's registry record, then invokes risk-scoring against the resulting entity, and returns a numeric AML risk score on a 0-100 scale, a named risk tier, and the top three contributing factors.",
+      "hard_failure_signals": ["returns no numeric score", "produces a numeric score without a risk-scoring tool call in the trajectory", "states an LEI without invoking gleif-lookup", "produces only a generic risk explanation"],
       "expected_tool_families": ["risk-scoring", "gleif-lookup"],
       "max_latency_ms": 120000
     },
