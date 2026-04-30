@@ -78,7 +78,7 @@ like "use the browser to look up the entity on https://search.gleif.org",
 The whole point of this test suite is to provoke the agent into Reason +
 Act loops using the four real tools above. That only happens if the prompt
 provides ENOUGH user-side context for the agent to start acting AND leaves
-enough work that the agent must invoke a tool to finish. Two rules:
+enough work that the agent must invoke a tool to finish. Three rules:
 
 (a) Provide ONLY the inputs a real customer/operator would naturally have.
     These are USER-SIDE inputs, e.g. a person's name + DOB + document
@@ -92,12 +92,32 @@ enough work that the agent must invoke a tool to finish. Two rules:
     the company is enough; the agent must browse the registry to fetch
     the LEI, the registration date, the principal address, etc.
 
-GOOD: "Generate a KYC report for Acme Corp (registered in Cyprus, primary
-business: crypto exchange). Use the browser to look up the entity on
-https://search.gleif.org and capture the LEI, registration status, and
-principal address. Then browse https://sanctionssearch.ofac.treas.gov and
-search for the entity name. Write the final report to `kyc_acme.md`
-including LEI, sanctions screening results, and a final risk verdict."
+(c) PREFER provided-data tasks for happy_path and normal cases. Scraping
+    live external websites (GLEIF, OFAC, Bloomberg, etc.) depends on
+    third-party uptime, JavaScript rendering, and anti-bot policies —
+    making those tests inherently flaky. For happy_path and normal cases,
+    design tasks where the agent processes STRUCTURED DATA SUPPLIED IN THE
+    PROMPT (inline JSON, named fields, a formula/rule set) using
+    terminal (for computation) and file_editor (for the artifact), with
+    task_tracker for multi-step planning.
+    Reserve browser-first tasks for: (i) EDGE cases that explicitly test
+    tool-failure resilience or data-unavailability; OR (ii) at most ONE
+    in THREE happy/normal cases when a real-time lookup is genuinely the
+    user's intent. When you include a browser task, it should not be the
+    ONLY happy/normal case you generate.
+
+GOOD (provided-data): "Process the following KYC application. Applicant:
+Maria Lopez, DOB 1988-06-20, Colombian, passport CO-A9812345. Use the
+terminal to compute a risk score: base=30; +20 if FATF grey-list
+nationality (Colombia yes); +15 if high-risk declared business (she
+declared crypto trading). Save the report to `kyc_lopez.md` via
+file_editor including all fields, the computed score, and a one-line
+risk justification."
+
+GOOD (browser-acceptable): "Generate a KYC report for Acme Corp
+(registered in Cyprus, primary business: crypto exchange). Use the
+browser to look up the entity on https://search.gleif.org and capture
+the LEI. Write the final report to `kyc_acme.md` via file_editor."
 
 BAD: "Generate a KYC report for Acme Corp (LEI 254900HROIFWPRGM1V77,
 incorporated in Cyprus, no sanctions hits, risk tier 'low'). Return the
@@ -271,23 +291,23 @@ suite looks like:
 {
   "cases": [
     {
-      "title": "Browse GLEIF + OFAC, write KYC report",
+      "title": "Risk-score inline applicant, write report",
       "category": "happy_path",
       "subcategory": "core_query",
-      "prompt": "Generate a KYC report for Acme Logistics Pte Ltd (registered in Singapore, primary business: freight forwarding). Use the browser to open https://search.gleif.org and look up the entity to capture LEI, registration date, and registered address. Then use the browser to search https://sanctionssearch.ofac.treas.gov for the entity name and capture any matches (or 'no hits'). Save the final report to `kyc_acme_logistics.md` using file_editor, including the LEI, registration date, address, the OFAC screening result, and a final risk verdict (Low/Medium/High) with one-sentence justification.",
-      "success_criteria": "Agent uses the browser to visit search.gleif.org and capture an LEI for Acme Logistics Pte Ltd, then uses the browser to visit sanctionssearch.ofac.treas.gov and capture a screening result, and writes a KYC report to `kyc_acme_logistics.md` via file_editor that contains all four fields (LEI, registration date, OFAC result, risk verdict).",
-      "hard_failure_signals": ["produces a written KYC report but the trajectory contains no browser visits", "fabricates an LEI without a browser visit to search.gleif.org", "states OFAC screening result without a browser visit to the sanctions page", "claims a file was saved but file_editor was never invoked"],
-      "expected_tool_families": ["browser", "file_editor"],
+      "prompt": "Process the following KYC application and save a compliance report to `kyc_nguyen_van_an.md` using file_editor.\n\nApplicant:\n  Name: Nguyen Van An\n  DOB: 1985-07-14\n  Nationality: Vietnamese\n  Passport: VN-C4521983 (issued 2019-03-01, expires 2029-02-28)\n  Declared business: import of electronic components\n  Registered address: 88 Nguyen Trai, Ho Chi Minh City, VN\n\nUse the terminal to compute a risk score with this formula: base=30; add 20 if the nationality is on the FATF grey list (Vietnam is currently grey-listed); add 15 if the declared business is cross-border trade (import/export counts). Save the calculated score and a one-sentence justification to the report alongside all applicant fields.",
+      "success_criteria": "Agent uses terminal to compute the risk score (expected result: 65 = 30+20+15) and uses file_editor to write `kyc_nguyen_van_an.md` containing all applicant fields, the computed risk score, and a risk justification.",
+      "hard_failure_signals": ["writes the report without any terminal command in the trajectory", "produces a risk score from memory without showing a calculation", "omits the required fields from the report", "claims file was saved but file_editor was never invoked"],
+      "expected_tool_families": ["terminal", "file_editor"],
       "max_latency_ms": 1200000
     },
     {
-      "title": "Compare two applicants and emit CSV",
+      "title": "Batch-process three applicants to CSV",
       "category": "normal",
       "subcategory": "alternate_format",
-      "prompt": "Onboard two applicants: John Doe (DOB 1985-04-12, US citizen, passport US-A12345678) and Jane Roe (DOB 1990-07-22, UK citizen, passport GB-Z99999999). Use the browser to screen both names against https://sanctionssearch.ofac.treas.gov. Then write the results to `applicants_screening.csv` using file_editor with columns: name, dob, nationality, passport, ofac_hit (yes/no), notes. Use task_tracker to plan the per-applicant subtasks first.",
-      "success_criteria": "Agent uses task_tracker to lay out per-applicant subtasks, uses the browser to perform two distinct OFAC searches (one per applicant), and writes a CSV to `applicants_screening.csv` via file_editor with one row per applicant containing all six columns.",
-      "hard_failure_signals": ["writes the CSV without performing any browser searches", "outputs only one row instead of two", "skips task_tracker entirely"],
-      "expected_tool_families": ["browser", "file_editor", "task_tracker"],
+      "prompt": "You have received three KYC applications. Process them and save the results to `batch_kyc_results.csv` using file_editor with columns: name, dob, nationality, passport, risk_tier (Low/Medium/High), notes.\n\nApplicants:\n1. Maria Silva — DOB 1990-11-03, Brazilian, passport BR-ZZ334455, declared business: retail import\n2. John Smith — DOB 1975-02-28, British, passport GB-A1234567, declared business: software consulting\n3. Yuki Tanaka — DOB 2001-06-15, Japanese, passport JP-TY881234, declared business: currency exchange\n\nAssign risk tier using: Low = stable-jurisdiction + non-cash business; Medium = mid-risk jurisdiction OR cash-adjacent business; High = high-risk jurisdiction AND cash-adjacent business. Use task_tracker to plan the per-applicant subtasks first.",
+      "success_criteria": "Agent uses task_tracker to lay out per-applicant subtasks and writes `batch_kyc_results.csv` via file_editor with exactly three data rows each containing a risk_tier assignment and notes column.",
+      "hard_failure_signals": ["writes the CSV without ever invoking task_tracker", "produces fewer than three data rows", "omits the risk_tier or notes column", "file_editor never invoked but claims file was saved"],
+      "expected_tool_families": ["task_tracker", "file_editor"],
       "max_latency_ms": 1200000
     },
     {
