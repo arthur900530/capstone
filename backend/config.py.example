@@ -35,6 +35,8 @@ Auto Test Generation settings (see ``test_case_generator.py`` and
   TEST_CASE_MIN_LATENCY_MS=          — hard floor applied to every test run so
                                        no case can time out before the agent
                                        even starts (default: 120000).
+  TEST_SUITE_GENERATION_COUNT=       — how many draft test cases to generate per
+                                       “Generate test suite” run (default: 6).
 """
 
 from __future__ import annotations
@@ -74,6 +76,8 @@ TEST_CASE_DEFAULT_MAX_LATENCY_MS = int(os.getenv("TEST_CASE_DEFAULT_MAX_LATENCY_
 # Hard floor — no test run can time out before the agent has had at least this
 # many milliseconds to respond, regardless of what the generated case says.
 TEST_CASE_MIN_LATENCY_MS = int(os.getenv("TEST_CASE_MIN_LATENCY_MS", "1200000"))
+# How many draft test cases to generate per “Generate test suite” run.
+TEST_SUITE_GENERATION_COUNT = max(1, int(os.getenv("TEST_SUITE_GENERATION_COUNT", "6")))
 
 # ── PostgreSQL ──────────────────────────────────────────────────────────────
 # Leave empty to use the in-memory fallback. Set this in ``.env`` when you

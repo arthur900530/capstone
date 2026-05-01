@@ -77,6 +77,11 @@ export default function TestCaseCard({
         </div>
         <div className="flex items-center gap-2">
           <VerdictPill run={latestRun} />
+          {latestRun?.judge_confidence != null && (
+            <span className="text-[10px] tabular-nums text-text-muted">
+              {Math.round(latestRun.judge_confidence * 100)}%
+            </span>
+          )}
           {expanded ? <ChevronDown size={16} className="text-text-muted" /> : <ChevronRight size={16} className="text-text-muted" />}
         </div>
       </button>

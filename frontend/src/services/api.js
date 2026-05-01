@@ -495,12 +495,20 @@ async function _extractDetail(res, fallback) {
   return `${fallback} (HTTP ${res.status})`;
 }
 
-export async function generateTestCases(employeeId, count = 5) {
-  const query = `?count=${encodeURIComponent(count)}`;
-  const res = await fetch(
-    `${API_BASE}/employees/${encodeURIComponent(employeeId)}/test_cases/generate${query}`,
-    { method: "POST" },
-  );
+export async function getAutoTestsConfig() {
+  const res = await fetch(`${API_BASE}/employees/auto_tests_config`);
+  if (!res.ok) throw new Error(await _extractDetail(res, "Failed to load auto-tests config"));
+  return res.json();
+}
+
+/** Omit ``count`` to use ``TEST_SUITE_GENERATION_COUNT`` from ``backend/config.py``. */
+export async function generateTestCases(employeeId, count) {
+  const path = `${API_BASE}/employees/${encodeURIComponent(employeeId)}/test_cases/generate`;
+  const url =
+    count === undefined || count === null
+      ? path
+      : `${path}?count=${encodeURIComponent(count)}`;
+  const res = await fetch(url, { method: "POST" });
   if (!res.ok) throw new Error(await _extractDetail(res, "Failed to generate test cases"));
   return res.json();
 }
@@ -532,6 +540,15 @@ export async function deleteTestCase(employeeId, caseId) {
     { method: "DELETE" },
   );
   if (!res.ok) throw new Error(await _extractDetail(res, "Failed to delete test case"));
+  return res.json();
+}
+
+export async function deleteTestSuite(employeeId) {
+  const res = await fetch(
+    `${API_BASE}/employees/${encodeURIComponent(employeeId)}/test_cases`,
+    { method: "DELETE" },
+  );
+  if (!res.ok) throw new Error(await _extractDetail(res, "Failed to delete test suite"));
   return res.json();
 }
 

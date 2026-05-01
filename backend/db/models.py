@@ -427,6 +427,7 @@ class TestCase(Base):
     # parity with the original adversarial-only generator.
     category: Mapped[str] = mapped_column(String(20), nullable=False, default="edge")
     subcategory: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    workflow_step: Mapped[str | None] = mapped_column(String(80), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow
     )

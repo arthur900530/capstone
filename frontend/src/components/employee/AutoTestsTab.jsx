@@ -1,7 +1,10 @@
-import { Download, FlaskConical, Loader2, ShieldCheck } from "lucide-react";
+import { Download, FlaskConical, Loader2, ShieldCheck, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+// Default batch size for generation lives in backend ``config.py`` (``TEST_SUITE_GENERATION_COUNT``).
+// See ``frontend/src/config/autoTests.js`` for the env key and optional UI fallback constant.
 import {
   deleteTestCase,
+  deleteTestSuite,
   exportTestCase,
   exportTestSuite,
   generateTestCases,
@@ -68,8 +71,33 @@ function estimateRemaining(progress) {
   return avg * (progress.total - progress.completed);
 }
 
+const CATEGORY_ORDER = ["happy_path", "normal", "edge"];
+
+const CATEGORY_META = {
+  happy_path: {
+    label: "Happy Path",
+    description:
+      "Canonical on-task requests where the agent has all inputs it needs to succeed end-to-end.",
+    badgeClass: "bg-emerald-500/15 text-emerald-400",
+    barClass: "bg-emerald-400",
+  },
+  normal: {
+    label: "Normal",
+    description:
+      "Realistic variations — paraphrases, alternate formats, or partial context — the agent should still handle correctly.",
+    badgeClass: "bg-sky-500/15 text-sky-400",
+    barClass: "bg-sky-400",
+  },
+  edge: {
+    label: "Edge",
+    description:
+      "Adversarial probes and failure-mode scenarios testing resilience, ambiguity handling, and policy boundaries.",
+    badgeClass: "bg-amber-500/15 text-amber-400",
+    barClass: "bg-amber-400",
+  },
+};
+
 export default function AutoTestsTab({ employee }) {
-  const [count, setCount] = useState(5);
   const [cases, setCases] = useState([]);
   const [runsByCase, setRunsByCase] = useState({});
   const [loading, setLoading] = useState(true);
@@ -87,6 +115,7 @@ export default function AutoTestsTab({ employee }) {
   // Shape: { total, completed, currentTitle, startedAt (Date.now), durations: ms[] }
   const [runAllProgress, setRunAllProgress] = useState(null);
   const [exportingSuite, setExportingSuite] = useState(false);
+  const [deletingSuite, setDeletingSuite] = useState(false);
   // Tick state — its only job is to force a re-render every second so the
   // elapsed-time label in the progress panel updates between case completions.
   const [, setNowTick] = useState(0);
@@ -128,11 +157,93 @@ export default function AutoTestsTab({ employee }) {
     [cases],
   );
 
+  // Aggregate pass/fail/error/unrun counts across the whole suite and per
+  // category. Returns null when no cases exist or none have been run yet,
+  // so the summary panel only renders after the first run.
+  const suiteStats = useMemo(() => {
+    if (cases.length === 0) return null;
+    const hasAnyRun = cases.some((c) => (runsByCase[c.id] || []).length > 0);
+    if (!hasAnyRun) return null;
+
+    const result = {
+      total: cases.length,
+      pass: 0,
+      fail: 0,
+      error: 0,
+      unrun: 0,
+      byCategory: {},
+    };
+
+    for (const tc of cases) {
+      const latestRun = (runsByCase[tc.id] || [])[0];
+      const cat = tc.category || "edge";
+      if (!result.byCategory[cat]) {
+        result.byCategory[cat] = { total: 0, pass: 0, fail: 0, error: 0, unrun: 0 };
+      }
+      result.byCategory[cat].total++;
+
+      if (!latestRun) {
+        result.unrun++;
+        result.byCategory[cat].unrun++;
+      } else if (latestRun.verdict === "pass") {
+        result.pass++;
+        result.byCategory[cat].pass++;
+      } else if (latestRun.verdict === "fail") {
+        result.fail++;
+        result.byCategory[cat].fail++;
+      } else {
+        result.error++;
+        result.byCategory[cat].error++;
+      }
+    }
+
+    const ran = result.total - result.unrun;
+    const passRate = ran > 0 ? result.pass / ran : 0;
+    result.ran = ran;
+    result.scoreColor =
+      passRate >= 0.8 ? "text-emerald-400" : passRate >= 0.5 ? "text-amber-400" : "text-red-400";
+    return result;
+  }, [cases, runsByCase]);
+
+  // Group cases by workflow_step so the list is organised by the phase of
+  // the employee's workflow each test exercises. Cases without a step (legacy
+  // rows or null from the LLM) fall into an "other" bucket shown last.
+  const groupedCases = useMemo(() => {
+    const map = {};
+    for (const tc of cases) {
+      const step = tc.workflow_step || "other";
+      if (!map[step]) map[step] = [];
+      map[step].push(tc);
+    }
+    const namedSteps = Object.keys(map)
+      .filter((s) => s !== "other")
+      .sort();
+    const orderedKeys = [...namedSteps, ...(map["other"] ? ["other"] : [])];
+    return orderedKeys.map((step) => ({ step, cases: map[step] }));
+  }, [cases]);
+
+  // Per-workflow-step pass/fail/error/unrun counts for the group headers.
+  const stepStats = useMemo(() => {
+    const result = {};
+    for (const tc of cases) {
+      const step = tc.workflow_step || "other";
+      if (!result[step]) result[step] = { total: 0, pass: 0, fail: 0, error: 0, unrun: 0 };
+      result[step].total++;
+      const latestRun = (runsByCase[tc.id] || [])[0];
+      if (!latestRun) result[step].unrun++;
+      else if (latestRun.verdict === "pass") result[step].pass++;
+      else if (latestRun.verdict === "fail") result[step].fail++;
+      else result[step].error++;
+    }
+    return result;
+  }, [cases, runsByCase]);
+
   const handleGenerate = async () => {
     setGenerating(true);
     setError(null);
     try {
-      await generateTestCases(employee.id, count);
+      // Batch size comes from ``TEST_SUITE_GENERATION_COUNT`` in ``backend/config.py`` (optional ``?count=`` override).
+      await generateTestCases(employee.id);
       await load();
     } catch (err) {
       setError(err.message || "Failed to generate test cases");
@@ -165,6 +276,30 @@ export default function AutoTestsTab({ employee }) {
       setError(err.message || "Failed to export test suite");
     } finally {
       setExportingSuite(false);
+    }
+  };
+
+  const handleDeleteSuite = async () => {
+    const n = cases.length;
+    if (
+      !confirm(
+        `Delete all ${n} test case${n === 1 ? "" : "s"} for this employee? Run history will be removed. This cannot be undone.`,
+      )
+    ) {
+      return;
+    }
+    setDeletingSuite(true);
+    setError(null);
+    try {
+      await deleteTestSuite(employee.id);
+      setActiveRun(null);
+      setTrajectoryRunId(null);
+      setTrajectoryCaseId(null);
+      await load();
+    } catch (err) {
+      setError(err.message || "Failed to delete test suite");
+    } finally {
+      setDeletingSuite(false);
     }
   };
 
@@ -244,14 +379,6 @@ export default function AutoTestsTab({ employee }) {
             </p>
           </div>
           <div className="flex items-center gap-2">
-            <input
-              type="number"
-              min={1}
-              max={100}
-              value={count}
-              onChange={(e) => setCount(Number(e.target.value) || 1)}
-              className="w-20 rounded-lg border border-border/50 bg-workspace px-2 py-1.5 text-sm"
-            />
             <button
               type="button"
               className="rounded-lg bg-accent-teal px-6 py-2.5 text-sm font-medium text-workspace"
@@ -277,18 +404,36 @@ export default function AutoTestsTab({ employee }) {
               </button>
             ) : null}
             {cases.length > 0 ? (
-              <button
-                type="button"
-                className="rounded-lg border border-border/60 px-4 py-2.5 text-sm"
-                onClick={handleExportSuite}
-                disabled={exportingSuite || runningAll || runningCaseId !== null}
-                title="Download all cases and runs as JSON"
-              >
-                <span className="inline-flex items-center gap-2">
-                  {exportingSuite ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
-                  Export suite
-                </span>
-              </button>
+              <>
+                <button
+                  type="button"
+                  className="rounded-lg border border-border/60 px-4 py-2.5 text-sm"
+                  onClick={handleExportSuite}
+                  disabled={
+                    exportingSuite || deletingSuite || runningAll || runningCaseId !== null
+                  }
+                  title="Download all cases and runs as JSON"
+                >
+                  <span className="inline-flex items-center gap-2">
+                    {exportingSuite ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
+                    Export suite
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  className="rounded-lg border border-red-500/40 px-4 py-2.5 text-sm text-red-400 hover:bg-red-500/10"
+                  onClick={handleDeleteSuite}
+                  disabled={
+                    deletingSuite || exportingSuite || runningAll || runningCaseId !== null || generating
+                  }
+                  title="Remove every test case and its run history"
+                >
+                  <span className="inline-flex items-center gap-2">
+                    {deletingSuite ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
+                    Delete suite
+                  </span>
+                </button>
+              </>
             ) : null}
           </div>
         </div>
@@ -345,27 +490,167 @@ export default function AutoTestsTab({ employee }) {
             </button>
           </div>
         ) : (
-          <div className="space-y-3">
-            {cases.map((testCase) => (
-              <TestCaseCard
-                key={testCase.id}
-                testCase={testCase}
-                latestRun={(runsByCase[testCase.id] || [])[0]}
-                runLoading={runningCaseId === testCase.id}
-                onRun={handleRunCase}
-                onDelete={async (caseId) => {
-                  await deleteTestCase(employee.id, caseId);
-                  await load();
-                }}
-                onUpdate={async (caseId, updates) => {
-                  await updateTestCase(employee.id, caseId, updates);
-                  await load();
-                }}
-                onOpenRun={(run) => setActiveRun(run)}
-                onExport={handleExportCase}
-              />
-            ))}
-          </div>
+          <>
+            {/* Legend: workflow steps + category key */}
+            <div className="rounded-xl border border-border/40 bg-surface p-4">
+              {/* Workflow-step section — dynamically built from current cases */}
+              {groupedCases.length > 0 && (
+                <>
+                  <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-text-muted">
+                    Workflow steps in this suite
+                  </p>
+                  <div className="mb-4 flex flex-wrap gap-2">
+                    {groupedCases.map(({ step }) => (
+                      <span
+                        key={step}
+                        className="inline-flex items-center rounded-full bg-violet-500/15 px-2.5 py-0.5 text-[10px] font-medium text-violet-400"
+                      >
+                        {step === "other"
+                          ? "Other"
+                          : step.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())}
+                      </span>
+                    ))}
+                  </div>
+                </>
+              )}
+
+              {/* Category type key */}
+              <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-text-muted">
+                Category guide
+              </p>
+              <div className="space-y-2">
+                {CATEGORY_ORDER.map((cat) => {
+                  const meta = CATEGORY_META[cat];
+                  return (
+                    <div key={cat} className="flex items-baseline gap-3">
+                      <span
+                        className={`inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-[10px] font-medium uppercase leading-none tracking-wide ${meta.badgeClass}`}
+                      >
+                        {meta.label}
+                      </span>
+                      <p className="m-0 min-w-0 flex-1 text-xs leading-snug text-text-muted">
+                        {meta.description}
+                      </p>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Suite summary — visible only after at least one case has been run */}
+            {suiteStats && (
+              <div className="rounded-xl border border-border/40 bg-surface p-4">
+                <div className="mb-3 flex items-center justify-between">
+                  <p className="text-sm font-semibold text-text-primary">Suite Results</p>
+                  <span className={`text-sm font-semibold tabular-nums ${suiteStats.scoreColor}`}>
+                    {suiteStats.pass} / {suiteStats.ran} passed
+                    {suiteStats.unrun > 0 ? ` · ${suiteStats.unrun} unrun` : ""}
+                  </span>
+                </div>
+
+                {/* Segmented progress bar: green = pass, red = fail, amber = error */}
+                <div className="mb-4 flex h-2 w-full overflow-hidden rounded-full bg-workspace">
+                  {suiteStats.pass > 0 && (
+                    <div
+                      className="h-full bg-emerald-400 transition-[width] duration-300"
+                      style={{ width: `${(suiteStats.pass / suiteStats.total) * 100}%` }}
+                    />
+                  )}
+                  {suiteStats.fail > 0 && (
+                    <div
+                      className="h-full bg-red-400 transition-[width] duration-300"
+                      style={{ width: `${(suiteStats.fail / suiteStats.total) * 100}%` }}
+                    />
+                  )}
+                  {suiteStats.error > 0 && (
+                    <div
+                      className="h-full bg-amber-400 transition-[width] duration-300"
+                      style={{ width: `${(suiteStats.error / suiteStats.total) * 100}%` }}
+                    />
+                  )}
+                </div>
+
+                {/* Per-category breakdown */}
+                <div className="grid grid-cols-3 gap-2">
+                  {CATEGORY_ORDER.filter((cat) => suiteStats.byCategory[cat]).map((cat) => {
+                    const s = suiteStats.byCategory[cat];
+                    const meta = CATEGORY_META[cat];
+                    return (
+                      <div key={cat} className="rounded-lg border border-border/40 bg-workspace px-3 py-2.5">
+                        <span
+                          className={`rounded-full px-2 py-0.5 text-[10px] uppercase tracking-wide ${meta.badgeClass}`}
+                        >
+                          {meta.label}
+                        </span>
+                        <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                          {s.pass > 0 && (
+                            <span className="text-xs font-medium text-emerald-400">{s.pass} pass</span>
+                          )}
+                          {s.fail > 0 && (
+                            <span className="text-xs font-medium text-red-400">{s.fail} fail</span>
+                          )}
+                          {s.error > 0 && (
+                            <span className="text-xs font-medium text-amber-400">{s.error} err</span>
+                          )}
+                          {s.unrun > 0 && (
+                            <span className="text-xs text-text-muted">{s.unrun} unrun</span>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* Grouped case list — sectioned by workflow step */}
+            <div className="space-y-6">
+              {groupedCases.map(({ step, cases: stepCases }) => {
+                const stats = stepStats[step];
+                const stepRan = stats ? stats.total - stats.unrun : 0;
+                const stepLabel =
+                  step === "other"
+                    ? "Other"
+                    : step.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+                return (
+                  <div key={step}>
+                    <div className="mb-2 flex items-center gap-2">
+                      <span className="shrink-0 rounded-full bg-violet-500/15 px-2.5 py-0.5 text-[10px] font-medium text-violet-400">
+                        {stepLabel}
+                      </span>
+                      {stats && stepRan > 0 && (
+                        <span className="text-xs text-text-muted">
+                          {stats.pass}/{stepRan} passed
+                        </span>
+                      )}
+                      <div className="h-px flex-1 bg-border/30" />
+                    </div>
+                    <div className="space-y-3">
+                      {stepCases.map((testCase) => (
+                        <TestCaseCard
+                          key={testCase.id}
+                          testCase={testCase}
+                          latestRun={(runsByCase[testCase.id] || [])[0]}
+                          runLoading={runningCaseId === testCase.id}
+                          onRun={handleRunCase}
+                          onDelete={async (caseId) => {
+                            await deleteTestCase(employee.id, caseId);
+                            await load();
+                          }}
+                          onUpdate={async (caseId, updates) => {
+                            await updateTestCase(employee.id, caseId, updates);
+                            await load();
+                          }}
+                          onOpenRun={(run) => setActiveRun(run)}
+                          onExport={handleExportCase}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </>
         )}
       </div>
 

@@ -14,12 +14,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 import yaml
 from config import SKILL_SELECTION_MODEL
-from config import TEST_CASE_DEFAULT_MAX_LATENCY_MS, TEST_CASE_MIN_LATENCY_MS
+from config import TEST_CASE_DEFAULT_MAX_LATENCY_MS, TEST_CASE_MIN_LATENCY_MS, TEST_SUITE_GENERATION_COUNT
 from config import AGENT_MODEL
 from test_case_generator import generate_test_cases
 from test_case_runner import run_test_case
@@ -422,6 +422,7 @@ class TestCaseUpdate(BaseModel):
     status: str | None = None
     category: str | None = None
     subcategory: str | None = None
+    workflow_step: str | None = None
 
 
 def _serialize_test_case(row) -> dict:
@@ -441,6 +442,7 @@ def _serialize_test_case(row) -> dict:
         "status": row.status,
         "category": getattr(row, "category", None) or "edge",
         "subcategory": getattr(row, "subcategory", None),
+        "workflow_step": getattr(row, "workflow_step", None),
         "created_at": row.created_at.isoformat() if row.created_at else None,
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
     }
@@ -603,6 +605,12 @@ async def list_employees():
     return _memory_store
 
 
+@router.get("/auto_tests_config")
+async def get_auto_tests_public_config():
+    """Expose Auto Tests defaults from ``config.py`` for the web UI."""
+    return {"test_suite_generation_count": TEST_SUITE_GENERATION_COUNT}
+
+
 @router.get("/{employee_id}")
 async def get_employee(employee_id: str):
     if _db_available:
@@ -761,7 +769,11 @@ async def delete_employee(employee_id: str):
 
 
 @router.post("/{employee_id}/test_cases/generate")
-async def generate_employee_test_cases(employee_id: str, count: int = 5):
+async def generate_employee_test_cases(
+    employee_id: str,
+    count: int | None = Query(default=None),
+):
+    effective_count = count if count is not None else TEST_SUITE_GENERATION_COUNT
     employee = await _assert_employee_exists(employee_id)
     skill_ids = employee.get("skillIds") or []
     plugin_ids = employee.get("pluginIds") or []
@@ -774,7 +786,7 @@ async def generate_employee_test_cases(employee_id: str, count: int = 5):
             employee_task=employee.get("task") or "",
             skills=skill_summaries,
             plugins=plugin_summaries,
-            count=count,
+            count=effective_count,
         )
     except HTTPException:
         raise
@@ -804,6 +816,7 @@ async def generate_employee_test_cases(employee_id: str, count: int = 5):
                     status="draft",
                     category=item.get("category") or "edge",
                     subcategory=item.get("subcategory"),
+                    workflow_step=item.get("workflow_step"),
                 )
                 session.add(row)
                 await session.flush()
@@ -829,6 +842,7 @@ async def generate_employee_test_cases(employee_id: str, count: int = 5):
             "status": "draft",
             "category": item.get("category") or "edge",
             "subcategory": item.get("subcategory"),
+            "workflow_step": item.get("workflow_step"),
             "created_at": now_iso,
             "updated_at": now_iso,
         }
@@ -861,6 +875,47 @@ async def list_employee_test_cases(employee_id: str):
         reverse=True,
     )
     return {"employee_id": employee_id, "cases": rows}
+
+
+@router.delete("/{employee_id}/test_cases")
+async def delete_all_employee_test_cases(employee_id: str):
+    """Remove every test case (and associated runs) for this employee."""
+    await _assert_employee_exists(employee_id)
+    if _db_available:
+        from db.engine import async_session
+        from db.models import TestCase, TestCaseRun
+        from sqlalchemy import delete, select
+
+        emp_uuid = _parse_uuid(employee_id)
+        async with async_session() as session:
+            run_ids = (
+                await session.execute(
+                    select(TestCaseRun.id).where(
+                        TestCaseRun.test_case_id.in_(
+                            select(TestCase.id).where(TestCase.employee_id == emp_uuid)
+                        )
+                    )
+                )
+            ).scalars().all()
+            for rid in run_ids:
+                _test_case_run_events.pop(str(rid), None)
+                _test_case_run_transcripts.pop(str(rid), None)
+            result = await session.execute(delete(TestCase).where(TestCase.employee_id == emp_uuid))
+            await session.commit()
+            n = result.rowcount
+        return {"employee_id": employee_id, "deleted": n if n is not None else 0}
+
+    cases = _test_case_memory_store.pop(employee_id, [])
+    for item in cases:
+        cid = item.get("id")
+        if not cid:
+            continue
+        for run in _test_case_run_memory_store.pop(cid, []) or []:
+            rid = run.get("id")
+            if rid:
+                _test_case_run_events.pop(rid, None)
+                _test_case_run_transcripts.pop(rid, None)
+    return {"employee_id": employee_id, "deleted": len(cases)}
 
 
 @router.patch("/{employee_id}/test_cases/{case_id}")

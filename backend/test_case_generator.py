@@ -7,7 +7,8 @@ from typing import Any
 from openai import AsyncOpenAI
 
 from config import (
-    OPENAI_API_KEY,
+    OPENROUTER_API_KEY,
+    OPENROUTER_BASE_URL,
     TEST_CASE_DEFAULT_MAX_LATENCY_MS,
     TEST_CASE_MIN_LATENCY_MS,
     VERIFIER_MODEL,
@@ -253,6 +254,7 @@ Return ONLY a single JSON object with this exact shape:
       "title": "<short label, 3-8 words>",
       "category": "happy_path | normal | edge",
       "subcategory": "<short descriptor or 'X - NAME' for edge cases>",
+      "workflow_step": "<snake_case label for which phase of the employee's workflow this test exercises, e.g. 'entity_lookup', 'risk_scoring', 'report_writing'>",
       "prompt": "<imperative user message with concrete identifiers>",
       "success_criteria": "<names at least one real tool (browser/file_editor/terminal/task_tracker) AND describes the observable artifact>",
       "hard_failure_signals": ["<specific phrase or behavior that means definite failure>"],
@@ -263,12 +265,17 @@ Return ONLY a single JSON object with this exact shape:
 }
 
 Field rules (non-negotiable):
-- Use EXACTLY these keys: "title", "category", "subcategory", "prompt",
-  "success_criteria", "hard_failure_signals", "expected_tool_families",
+- Use EXACTLY these keys: "title", "category", "subcategory", "workflow_step",
+  "prompt", "success_criteria", "hard_failure_signals", "expected_tool_families",
   "max_latency_ms".
 - `category` MUST be one of: "happy_path", "normal", "edge".
 - The number of cases per category MUST match `category_targets` exactly.
 - Every case MUST have non-empty `title`, `prompt`, AND `success_criteria`.
+- `workflow_step` MUST be a non-empty lowercase snake_case string (words joined
+  by underscores, at most 4 words) that names which phase of the employee's
+  workflow this test exercises. Derive the vocabulary from the employee's
+  `description` and `task` fields. Use the SAME vocabulary consistently across
+  all cases in the suite so the UI can group them into stable sections.
 - `hard_failure_signals` must be a non-empty array with at least one string.
 - `expected_tool_families` must be a non-empty array drawn ONLY from
   the four real tool names: "browser", "file_editor", "terminal",
@@ -294,6 +301,7 @@ suite looks like:
       "title": "Risk-score inline applicant, write report",
       "category": "happy_path",
       "subcategory": "core_query",
+      "workflow_step": "risk_scoring",
       "prompt": "Process the following KYC application and save a compliance report to `kyc_nguyen_van_an.md` using file_editor.\n\nApplicant:\n  Name: Nguyen Van An\n  DOB: 1985-07-14\n  Nationality: Vietnamese\n  Passport: VN-C4521983 (issued 2019-03-01, expires 2029-02-28)\n  Declared business: import of electronic components\n  Registered address: 88 Nguyen Trai, Ho Chi Minh City, VN\n\nUse the terminal to compute a risk score with this formula: base=30; add 20 if the nationality is on the FATF grey list (Vietnam is currently grey-listed); add 15 if the declared business is cross-border trade (import/export counts). Save the calculated score and a one-sentence justification to the report alongside all applicant fields.",
       "success_criteria": "Agent uses terminal to compute the risk score (expected result: 65 = 30+20+15) and uses file_editor to write `kyc_nguyen_van_an.md` containing all applicant fields, the computed risk score, and a risk justification.",
       "hard_failure_signals": ["writes the report without any terminal command in the trajectory", "produces a risk score from memory without showing a calculation", "omits the required fields from the report", "claims file was saved but file_editor was never invoked"],
@@ -304,6 +312,7 @@ suite looks like:
       "title": "Batch-process three applicants to CSV",
       "category": "normal",
       "subcategory": "alternate_format",
+      "workflow_step": "batch_processing",
       "prompt": "You have received three KYC applications. Process them and save the results to `batch_kyc_results.csv` using file_editor with columns: name, dob, nationality, passport, risk_tier (Low/Medium/High), notes.\n\nApplicants:\n1. Maria Silva — DOB 1990-11-03, Brazilian, passport BR-ZZ334455, declared business: retail import\n2. John Smith — DOB 1975-02-28, British, passport GB-A1234567, declared business: software consulting\n3. Yuki Tanaka — DOB 2001-06-15, Japanese, passport JP-TY881234, declared business: currency exchange\n\nAssign risk tier using: Low = stable-jurisdiction + non-cash business; Medium = mid-risk jurisdiction OR cash-adjacent business; High = high-risk jurisdiction AND cash-adjacent business. Use task_tracker to plan the per-applicant subtasks first.",
       "success_criteria": "Agent uses task_tracker to lay out per-applicant subtasks and writes `batch_kyc_results.csv` via file_editor with exactly three data rows each containing a risk_tier assignment and notes column.",
       "hard_failure_signals": ["writes the CSV without ever invoking task_tracker", "produces fewer than three data rows", "omits the risk_tier or notes column", "file_editor never invoked but claims file was saved"],
@@ -314,6 +323,7 @@ suite looks like:
       "title": "OFAC search yields no results",
       "category": "edge",
       "subcategory": "A - TOOL-FAILURE RESILIENCE",
+      "workflow_step": "sanctions_screening",
       "prompt": "Screen the entity 'Nonexistent Compliance Holdings 99' (claimed jurisdiction: Andorra) for sanctions exposure. Use the browser to search https://sanctionssearch.ofac.treas.gov and report what you find. Save your finding to `nonexistent_check.md` via file_editor.",
       "success_criteria": "Agent uses the browser to search the OFAC site for the entity, observes that no matching record exists, and writes a file to `nonexistent_check.md` via file_editor that explicitly states 'no OFAC match found' (or equivalent) without fabricating a screening verdict.",
       "hard_failure_signals": ["claims a sanctions verdict without an OFAC search in the trajectory", "writes a definitive 'cleared' verdict despite no result", "fabricates a sanctions match"],
@@ -324,6 +334,7 @@ suite looks like:
       "title": "Insufficient applicant data",
       "category": "edge",
       "subcategory": "D - AMBIGUOUS_INPUT",
+      "workflow_step": "data_validation",
       "prompt": "Generate a KYC report for John Doe. I have his passport number, US-A12345678. Save the report to `kyc_john_doe.md`.",
       "success_criteria": "Agent recognizes that essential fields (DOB, nationality, registered address) are missing and asks a targeted clarifying question before any browser action OR before any file_editor write — does NOT save a partial report.",
       "hard_failure_signals": ["writes `kyc_john_doe.md` despite missing required fields", "fabricates a DOB or nationality", "produces a 'final' verdict on incomplete data"],
@@ -439,6 +450,12 @@ def _normalize_case(raw: Any) -> tuple[dict[str, Any] | None, str | None]:
 
     subcategory = str(raw.get("subcategory") or "").strip() or None
 
+    # workflow_step: free-form snake_case label inferred by the LLM from the
+    # employee's task. Normalise to lowercase with spaces → underscores so the
+    # UI grouping is stable even when the model output varies slightly.
+    raw_workflow_step = str(raw.get("workflow_step") or "").strip()
+    workflow_step = raw_workflow_step.lower().replace(" ", "_").replace("-", "_") or None
+
     hard_failure_signals = raw.get("hard_failure_signals")
     if not isinstance(hard_failure_signals, list):
         hard_failure_signals = []
@@ -490,6 +507,7 @@ def _normalize_case(raw: Any) -> tuple[dict[str, Any] | None, str | None]:
         "title": title,
         "category": category,
         "subcategory": subcategory,
+        "workflow_step": workflow_step,
         "prompt": prompt,
         "success_criteria": success_criteria,
         "hard_failure_signals": hard_failure_signals,
@@ -504,12 +522,12 @@ async def generate_test_cases(
     employee_task: str,
     skills: list[dict[str, str]],
     plugins: list[dict[str, str]],
-    count: int = 5,
+    count: int = 6,
 ) -> tuple[list[dict[str, Any]], str]:
-    if not OPENAI_API_KEY:
-        raise RuntimeError("OPENAI_API_KEY is not configured")
+    if not OPENROUTER_API_KEY:
+        raise RuntimeError("OPENROUTER_API_KEY is not configured")
 
-    client = AsyncOpenAI(api_key=OPENAI_API_KEY, timeout=45.0)
+    client = AsyncOpenAI(api_key=OPENROUTER_API_KEY, base_url=OPENROUTER_BASE_URL, timeout=45.0)
     target_model = _resolve_openai_model(VERIFIER_MODEL)
     requested_count = max(1, min(int(count), 100))
     category_targets = _distribute_categories(requested_count)

@@ -5,7 +5,7 @@ from typing import Any
 
 from openai import AsyncOpenAI
 
-from config import OPENAI_API_KEY, VERIFIER_MODEL
+from config import OPENROUTER_API_KEY, OPENROUTER_BASE_URL, VERIFIER_MODEL
 
 # The verifier intentionally grades two SEPARATE dimensions:
 #
@@ -130,11 +130,11 @@ async def verify_test_case_run(
     tools_used: list[str] | None = None,
     workspace_files: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    if not OPENAI_API_KEY:
-        raise RuntimeError("OPENAI_API_KEY is not configured")
+    if not OPENROUTER_API_KEY:
+        raise RuntimeError("OPENROUTER_API_KEY is not configured")
 
     target_model = _resolve_openai_model(VERIFIER_MODEL)
-    client = AsyncOpenAI(api_key=OPENAI_API_KEY, timeout=60.0)
+    client = AsyncOpenAI(api_key=OPENROUTER_API_KEY, base_url=OPENROUTER_BASE_URL, timeout=60.0)
     payload = {
         "test_case": {
             "prompt": case_prompt,
