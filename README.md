@@ -7,6 +7,8 @@ A React-based chat interface for a multi-trial self-evolving AI system that answ
 - **Streaming Chat** — Real-time Server-Sent Events (SSE) streaming that surfaces each step of the agent's reasoning: tool calls, intermediate results, self-evaluation, reflection, and final answers.
 - **Live Browser View** — Optional real-time browser rendering over WebSocket so you can watch the agent's Chromium session as it navigates and interacts with pages.
 - **Multi-Agent Support** — Connects to multiple specialized agents (Equity Research Analyst, Market Intelligence Associate, Portfolio Risk Analyst, Financial Advisor Assistant) and routes queries automatically.
+- **Per-Employee Model** — Each digital employee runs on its own configured LLM (set in the employee wizard); the runtime honors that choice and the chat header reflects it. Empty values fall back to the default `AGENT_MODEL`.
+- **Slack Integration** — Optional Slack bot (Socket Mode) that lets users chat with employees from Slack. Tag an employee by name in a channel (`@BNY Agent Walter, do X`) or open a DM with the bot. Chat history persists across restarts and shows up in the same sidebar as web chats.
 - **Chat History** — Sidebar with full conversation history, rename, and delete support.
 - **Evaluation Dashboard** — View benchmark results for each agent including task/step success rates, latency percentiles, hallucination rates, and per-category breakdowns.
 - **Skills Management** — Browse, create, edit, and delete agent skills. Inspect skill definitions and associated files with an inline file viewer.
@@ -150,6 +152,25 @@ npm run dev
 ```
 
 The frontend dev server starts at **http://localhost:5173** and proxies `/api` requests to the backend.
+
+### Slack Bot (optional)
+
+The backend ships with an optional Slack bot that runs in **Socket Mode** — no public ingress or tunnel is required; the bot opens an outbound WebSocket to Slack.
+
+1. Create a Slack app from the manifest at `backend/slack_app_manifest.yaml` (Slack → _Your Apps_ → _Create New App_ → _From manifest_). The manifest enables Socket Mode and requests the scopes the bot needs (`app_mentions:read`, `chat:write`, `im:*`, etc.).
+2. Install the app to your workspace and grab:
+   - the **Bot User OAuth Token** (`xoxb-…`)
+   - an **App-Level Token** with `connections:write` (`xapp-…`)
+3. Add them to `backend/.env`:
+
+   ```env
+   SLACK_BOT_TOKEN=xoxb-...
+   SLACK_APP_TOKEN=xapp-...
+   ```
+
+4. Start the backend normally — if both tokens are set, the bot connects on startup. If they are missing the backend skips Slack and only serves the web UI.
+
+Routing: `@BNY Agent Walter, summarize this filing` routes to the employee named "Walter". DMs remember the last employee you spoke to. Multi-word names work with spaces, underscores, or hyphens.
 
 ### Live Browser Flags
 
