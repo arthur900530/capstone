@@ -351,7 +351,7 @@ async def _auto_select_skills(description: str) -> list[str]:
                 {"role": "system", "content": _SKILL_SELECTION_PROMPT},
                 {"role": "user", "content": json.dumps(payload, ensure_ascii=True)},
             ],
-            temperature=0.1,
+            temperature=1.0,
             max_completion_tokens=600,
             response_format={"type": "json_object"},
         )
@@ -382,7 +382,12 @@ async def _auto_select_skills(description: str) -> list[str]:
 
 @router.post("/suggest-skills")
 async def suggest_skills(body: SkillSuggestionRequest):
-    _demo_replay_guard()
+    # Intentionally not gated by ``_demo_replay_guard``: this endpoint only
+    # talks to OpenAI to rank skill ids — it does not spawn the agent runtime
+    # that demo replay replaces. ``_auto_select_skills`` already degrades
+    # gracefully (returns ``[]``) when ``OPENAI_API_KEY`` is missing or the
+    # API call fails, so it's safe to expose in --demo as long as the host
+    # has a key configured.
     return {"skillIds": await _auto_select_skills(body.description or "")}
 
 

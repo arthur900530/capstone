@@ -24,6 +24,7 @@ export default function StepPlugin({
   const [newSkillInput, setNewSkillInput] = useState("");
   const [isAutoSelecting, setIsAutoSelecting] = useState(false);
   const [autoSelectError, setAutoSelectError] = useState(null);
+  const [autoSelectNotice, setAutoSelectNotice] = useState(null);
 
   const { agents } = useApp();
   // Suggestions for the model picker: curated defaults union'd with whatever
@@ -101,10 +102,21 @@ export default function StepPlugin({
     if (!text || isAutoSelecting) return;
     setIsAutoSelecting(true);
     setAutoSelectError(null);
+    setAutoSelectNotice(null);
     try {
       const data = await suggestEmployeeSkills(text);
       const suggested = Array.isArray(data?.skillIds) ? data.skillIds : [];
-      onSkillIdsChange([...new Set([...skillIds, ...suggested])]);
+      const merged = [...new Set([...skillIds, ...suggested])];
+      onSkillIdsChange(merged);
+      // The backend silently returns [] when OPENAI_API_KEY is missing or
+      // the LLM call fails. Surface a hint so the button doesn't appear
+      // broken — particularly relevant in --demo where users may not have
+      // a key configured.
+      if (suggested.length === 0) {
+        setAutoSelectNotice(
+          "No suggestions returned. Check that OPENAI_API_KEY is set on the backend.",
+        );
+      }
     } catch (err) {
       setAutoSelectError(err?.message || "Failed to auto select skills.");
     } finally {
@@ -118,6 +130,7 @@ export default function StepPlugin({
     setShowSkillEditor(false);
     setSkillViewMode("list");
     setAutoSelectError(null);
+    setAutoSelectNotice(null);
   };
 
   const hasSelection = selectedPluginIds.length > 0;
@@ -190,6 +203,9 @@ export default function StepPlugin({
                   </p>
                   {autoSelectError && (
                     <p className="mt-1 text-xs text-red-400">{autoSelectError}</p>
+                  )}
+                  {!autoSelectError && autoSelectNotice && (
+                    <p className="mt-1 text-xs text-amber-400">{autoSelectNotice}</p>
                   )}
                 </div>
                 <div className="flex flex-wrap gap-2">
