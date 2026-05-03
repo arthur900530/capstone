@@ -256,7 +256,7 @@ export default function BrowserReplayView({ sessionId }) {
         <div className="mb-2 flex items-center justify-between">
           <div className="flex items-center gap-2 text-sm font-medium text-white">
             <Globe size={15} className="text-cyan-300" />
-            Recorded Browser
+            Live Browser
           </div>
           <div className="flex items-center gap-2">
             {setBrowserLive && (

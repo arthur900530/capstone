@@ -1585,6 +1585,46 @@ def _task_run_prompt_from_chat(session_id: str, task_index: int) -> str | None:
     return None
 
 
+def _live_demo_user_prompt(employee_id: str, task_index: int) -> str | None:
+    """Return the user's typed prompt for ``task_index`` from the most
+    recent live chat tied to ``employee_id``.
+
+    Demo mode synthesizes runs from the recording, so ``run["session_id"]``
+    is the recording_id and won't match any key in ``_chats``. We resolve
+    the live session via ``_SESSION_EMPLOYEE_IDS`` instead so the
+    trajectory drawer can show what the user actually typed instead of the
+    recorded ``submits[].question``.
+    """
+    try:
+        from server import _chats, _SESSION_EMPLOYEE_IDS  # type: ignore
+    except Exception:
+        return None
+
+    sessions = [
+        sid for sid, eid in _SESSION_EMPLOYEE_IDS.items()
+        if eid == employee_id and sid in _chats
+    ]
+    if not sessions:
+        return None
+    # Most recently updated chat wins. For a single-chat demo flow this is
+    # unambiguous; if a user juggles multiple live chats for the same
+    # employee, only the freshest one feeds prompts back into the drawer.
+    sessions.sort(
+        key=lambda sid: _chats[sid].get("updated_at") or "",
+        reverse=True,
+    )
+    chat = _chats[sessions[0]]
+
+    current_index = -1
+    for message in chat.get("messages") or []:
+        if message.get("type") == "user":
+            current_index += 1
+            if current_index == task_index:
+                content = (message.get("content") or "").strip()
+                return content or None
+    return None
+
+
 def _trajectory_summary(run: dict, tree) -> dict:
     flat = flatten_action_nodes(tree)
     answer_nodes = [
@@ -1646,6 +1686,19 @@ async def employee_metrics(employee_id: str, limit: int = _RECENT_TASK_LIMIT):
                     from metrics import _attach_goal_fields  # local import
 
                     _attach_goal_fields(run)
+
+                # Override the recorded ``submits[].question`` with what the
+                # user actually typed in the most recent live demo chat for
+                # this employee, so the report-card row (and the trajectory
+                # drawer it opens) shows the real prompt instead of the
+                # recording's seed text. Falls back to the recorded value
+                # when the user hasn't typed that turn yet.
+                typed = _live_demo_user_prompt(
+                    employee_id, int(run.get("task_index") or 0)
+                )
+                if typed:
+                    run["full_prompt"] = typed
+                    run["prompt_preview"] = typed[:200]
             # Most-recent first (matches the DB branch's ORDER BY desc).
             _epoch = datetime.fromtimestamp(0, tz=timezone.utc)
             runs.sort(
@@ -1825,7 +1878,15 @@ async def employee_task_trajectory(employee_id: str, session_id: str, task_index
         # disk by skill_slug — works the same in demo mode because we
         # cache the slug alongside the alignment in ``_DEMO_TRAJ_CACHE``.
         workflow_aligns = await _hydrate_workflow_aligns(annotations)
-        prompt = run.get("full_prompt") or run.get("prompt_preview") or ""
+        # Prefer the prompt the user actually typed in the live demo chat
+        # over the recorded ``submits[].question`` so the drawer reflects
+        # the real conversation rather than the recording's seed text.
+        prompt = (
+            _live_demo_user_prompt(employee_id, task_index)
+            or run.get("full_prompt")
+            or run.get("prompt_preview")
+            or ""
+        )
         return {
             "available": True,
             "session_id": recording_id,
