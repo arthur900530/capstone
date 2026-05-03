@@ -353,19 +353,14 @@ export default function EmployeeReportCard({ employee }) {
               value={a.tool_mix.length}
             />
           </MetricCard>
-        </div>
 
-        {/* User ratings distribution — pinned to the bottom of the
-            report card so the operator's qualitative signal sits below
-            the quantitative goal/workflow sections. */}
-        <MetricCard icon={Star} label="User ratings distribution">
-          {a.rated_tasks === 0 ? (
-            <p className="text-xs text-text-muted">
-              No ratings yet. Rate an answer inline to populate this card.
-            </p>
-          ) : (
-            <div className="grid gap-6 md:grid-cols-[minmax(0,220px)_minmax(0,1fr)] md:items-center">
-              <div>
+          <MetricCard icon={Star} label="User ratings distribution">
+            {a.rated_tasks === 0 ? (
+              <p className="text-xs text-text-muted">
+                No ratings yet. Rate an answer inline to populate this card.
+              </p>
+            ) : (
+              <div className="space-y-3">
                 <div className="flex items-baseline justify-between py-1">
                   <span className="text-xs text-text-muted">Average</span>
                   <span className="flex items-baseline gap-1 font-semibold text-text-primary">
@@ -379,34 +374,34 @@ export default function EmployeeReportCard({ employee }) {
                   label="Rated tasks"
                   value={`${a.rated_tasks} / ${a.tasks}`}
                 />
-              </div>
-              <div className="space-y-1.5">
-                {[5, 4, 3, 2, 1].map((stars) => {
-                  const count = a.rating_distribution?.[stars] || 0;
-                  const pct = a.rated_tasks
-                    ? (count / a.rated_tasks) * 100
-                    : 0;
-                  return (
-                    <div key={stars} className="flex items-center gap-2">
-                      <span className="w-6 shrink-0 text-[11px] text-text-muted tabular-nums">
-                        {stars}★
-                      </span>
-                      <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-border/50">
-                        <div
-                          className="h-full rounded-full bg-amber-300 transition-all duration-500"
-                          style={{ width: `${pct}%` }}
-                        />
+                <div className="space-y-1.5 pt-1">
+                  {[5, 4, 3, 2, 1].map((stars) => {
+                    const count = a.rating_distribution?.[stars] || 0;
+                    const pct = a.rated_tasks
+                      ? (count / a.rated_tasks) * 100
+                      : 0;
+                    return (
+                      <div key={stars} className="flex items-center gap-2">
+                        <span className="w-6 shrink-0 text-[11px] text-text-muted tabular-nums">
+                          {stars}★
+                        </span>
+                        <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-border/50">
+                          <div
+                            className="h-full rounded-full bg-amber-300 transition-all duration-500"
+                            style={{ width: `${pct}%` }}
+                          />
+                        </div>
+                        <span className="w-8 shrink-0 text-right text-[11px] text-text-muted tabular-nums">
+                          {count}
+                        </span>
                       </div>
-                      <span className="w-8 shrink-0 text-right text-[11px] text-text-muted tabular-nums">
-                        {count}
-                      </span>
-                    </div>
-                  );
-                })}
+                    );
+                  })}
+                </div>
               </div>
-            </div>
-          )}
-        </MetricCard>
+            )}
+          </MetricCard>
+        </div>
       </div>
       {selectedTask ? (
         <TaskTrajectoryDrawer
