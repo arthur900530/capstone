@@ -567,6 +567,7 @@ def runtime(
     workspace=None,
     session_id: str | None = None,
     employee_profile: dict | None = None,
+    model_override: str | None = None,
 ):
     """
     Run one agent conversation against a DockerWorkspace.
@@ -600,7 +601,10 @@ def runtime(
         except Exception:
             logger.debug("Failed to pre-create OpenHands server directories", exc_info=True)
 
-    llm = LLM(model=model, api_key=SecretStr(api_key), base_url=base_url, service_id="agent")
+    # Per-employee model override falls through to the module-level default
+    # (config.AGENT_MODEL). Empty strings count as "not set" — strip first.
+    effective_model = (model_override or "").strip() or model
+    llm = LLM(model=effective_model, api_key=SecretStr(api_key), base_url=base_url, service_id="agent")
     skills = load_project_skills(work_dir=repo_dir)
     skill_names = sorted(
         str(
