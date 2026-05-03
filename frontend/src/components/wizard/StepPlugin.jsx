@@ -1,11 +1,13 @@
 import { useMemo, useState } from "react";
-import { ChevronDown, Plus, X, List, Share2 } from "lucide-react";
+import { ChevronDown, Plus, X, List, Share2, Sparkles, Trash2, Loader2 } from "lucide-react";
 import PLUGINS from "../../data/plugins";
 import PluginCard from "../PluginCard";
 import SkillGraph from "./SkillGraph";
 import { useApp } from "../../context/appContextCore";
+import { suggestEmployeeSkills } from "../../services/api";
 
 export default function StepPlugin({
+  description,
   selectedPluginIds,
   onSelectPlugins,
   skillIds,
@@ -20,6 +22,8 @@ export default function StepPlugin({
   const [showSkillEditor, setShowSkillEditor] = useState(false);
   const [skillViewMode, setSkillViewMode] = useState("list");
   const [newSkillInput, setNewSkillInput] = useState("");
+  const [isAutoSelecting, setIsAutoSelecting] = useState(false);
+  const [autoSelectError, setAutoSelectError] = useState(null);
 
   const { agents } = useApp();
   // Suggestions for the model picker: curated defaults union'd with whatever
@@ -92,6 +96,30 @@ export default function StepPlugin({
     }
   };
 
+  const handleAutoSelect = async () => {
+    const text = description.trim();
+    if (!text || isAutoSelecting) return;
+    setIsAutoSelecting(true);
+    setAutoSelectError(null);
+    try {
+      const data = await suggestEmployeeSkills(text);
+      const suggested = Array.isArray(data?.skillIds) ? data.skillIds : [];
+      onSkillIdsChange([...new Set([...skillIds, ...suggested])]);
+    } catch (err) {
+      setAutoSelectError(err?.message || "Failed to auto select skills.");
+    } finally {
+      setIsAutoSelecting(false);
+    }
+  };
+
+  const handleDeleteAllSkills = () => {
+    onSelectPlugins([]);
+    onSkillIdsChange([]);
+    setShowSkillEditor(false);
+    setSkillViewMode("list");
+    setAutoSelectError(null);
+  };
+
   const hasSelection = selectedPluginIds.length > 0;
 
   return (
@@ -155,9 +183,35 @@ export default function StepPlugin({
 
           {showSkillEditor && skillViewMode === "list" && (
             <div className="mt-3 rounded-xl border border-border/40 bg-surface p-4">
-              <p className="mb-3 text-xs text-text-muted">
-                Add, remove, or create skills for this employee:
-              </p>
+              <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <p className="text-xs text-text-muted">
+                    Add, remove, or create skills for this employee:
+                  </p>
+                  {autoSelectError && (
+                    <p className="mt-1 text-xs text-red-400">{autoSelectError}</p>
+                  )}
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    onClick={handleAutoSelect}
+                    disabled={!description.trim() || isAutoSelecting}
+                    className="flex items-center gap-1 rounded-lg bg-accent-teal/10 px-3 py-1.5 text-xs font-medium text-accent-teal transition-colors hover:bg-accent-teal/20 disabled:cursor-not-allowed disabled:opacity-40"
+                    title={description.trim() ? "Auto select skills from the description" : "Add a description first to auto select skills"}
+                  >
+                    {isAutoSelecting ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />}
+                    Auto Select
+                  </button>
+                  <button
+                    onClick={handleDeleteAllSkills}
+                    disabled={skillIds.length === 0}
+                    className="flex items-center gap-1 rounded-lg bg-red-500/10 px-3 py-1.5 text-xs font-medium text-red-400 transition-colors hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    <Trash2 size={12} />
+                    Delete All
+                  </button>
+                </div>
+              </div>
 
               <div className="flex flex-wrap gap-2">
                 {skillIds.map((sid) => (

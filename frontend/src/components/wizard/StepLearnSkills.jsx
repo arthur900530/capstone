@@ -64,6 +64,10 @@ export default function StepLearnSkills({
     );
   };
 
+  const addSkills = (newSkillIds) => {
+    onSkillIdsChange([...new Set([...skillIds, ...newSkillIds])]);
+  };
+
   return (
     <div className="mx-auto max-w-3xl">
       <h2 className="mb-2 text-xl font-semibold text-text-primary">
@@ -127,6 +131,7 @@ export default function StepLearnSkills({
       <SkillBrowser
         selectedSkillIds={skillIds}
         onToggleSkill={toggleSkill}
+        onAddSkills={addSkills}
         onSkillsChanged={refreshSkills}
         defaultSubTab="create"
       />

@@ -1,4 +1,4 @@
-import { Wrench, Cloud, CheckCircle, Paperclip } from "lucide-react";
+import { Wrench, Cloud, Paperclip } from "lucide-react";
 
 function timeAgo(dateStr) {
   if (!dateStr) return "";
@@ -41,9 +41,7 @@ export default function SkillCard({ skill, isSelected, onClick, viewMode = "grid
         </span>
         {isCloudOnly ? (
           <Cloud size={12} className="shrink-0 text-text-muted" />
-        ) : (
-          <CheckCircle size={12} className="shrink-0 text-green-400" />
-        )}
+        ) : null}
         <span className="shrink-0 text-[10px] text-text-muted">{timeAgo(skill.updated_at)}</span>
       </button>
     );
@@ -76,9 +74,7 @@ export default function SkillCard({ skill, isSelected, onClick, viewMode = "grid
             <Cloud size={10} />
             Cloud
           </span>
-        ) : (
-          <CheckCircle size={14} className="shrink-0 text-green-400" />
-        )}
+        ) : null}
       </div>
 
       <p className="mt-2.5 min-h-[2.5rem] line-clamp-2 text-xs leading-relaxed text-text-secondary">
