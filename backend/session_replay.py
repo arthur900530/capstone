@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -116,3 +117,95 @@ def slice_turn(session: dict[str, Any], turn_idx: int) -> dict[str, Any]:
         "browser_frames": sliced_frames,
         "t0": t_start,
     }
+
+
+def task_runs_from_recording(
+    data: dict[str, Any],
+    *,
+    recording_id: str,
+    base_dt: datetime | None = None,
+) -> list[dict[str, Any]]:
+    """Convert one recording into ``task_runs[]`` rows for the report card.
+
+    One ``task_run`` per ``submits[]`` entry. The shape mirrors what
+    ``metrics.task_runs_from_chat`` produces from a live in-memory chat
+    so the report card / trajectory drawer can read demo runs through
+    the same code path as DB-backed runs.
+
+    ``recording_id`` is stored as the synthetic ``session_id`` so the
+    trajectory endpoint can reverse-lookup the recording with no DB.
+
+    Each turn is staggered by one minute on ``base_dt`` so the recent-
+    task list shows distinct timestamps even when a recording only has
+    one or two submits.
+    """
+    # Lazy imports keep this module cheap to import (server.py imports it
+    # at startup) and break the metrics → trajectory → session_replay
+    # circular import that would otherwise occur via build_task_run_from_buffer.
+    from metrics import _attach_goal_fields, build_task_run_from_buffer
+
+    submits = data.get("submits") or []
+    if base_dt is None:
+        base_dt = datetime.now(timezone.utc)
+
+    runs: list[dict[str, Any]] = []
+    for idx, sub in enumerate(submits):
+        sliced = slice_turn(data, idx)
+        sub_events = sliced.get("events") or []
+
+        # Stagger turns so each gets its own ``started_at`` rather than
+        # collapsing onto a single instant in the recent-task list.
+        turn_base = base_dt + timedelta(seconds=idx * 60)
+
+        # Recording stores events as ``{t, event, data}``; flatten to the
+        # ``{role, type, timestamp, ...payload}`` shape that
+        # ``build_task_run_from_buffer`` reads.
+        flat_events: list[dict[str, Any]] = []
+        for ev in sub_events:
+            payload = ev.get("data") or {}
+            ts = turn_base + timedelta(milliseconds=int(ev.get("t", 0)))
+            entry: dict[str, Any] = {
+                "role": "assistant",
+                "type": ev.get("event") or "",
+                "timestamp": ts.isoformat(),
+            }
+            if isinstance(payload, dict):
+                # Don't let payload keys clobber the role/type/timestamp
+                # we just set above (e.g. an "answer" event whose payload
+                # also carries a "type" field would otherwise break the
+                # tool_call / trial_start counters in build_task_run_from_buffer).
+                for k, v in payload.items():
+                    entry.setdefault(k, v)
+            flat_events.append(entry)
+
+        user_msg = {
+            "role": "user",
+            "type": "user",
+            "content": sub.get("question") or "",
+            "timestamp": turn_base.isoformat(),
+        }
+
+        if sub_events:
+            end_ts = turn_base + timedelta(
+                milliseconds=int(sub_events[-1].get("t", 0))
+            )
+        else:
+            end_ts = turn_base
+
+        run = build_task_run_from_buffer(
+            user_msg=user_msg,
+            events=flat_events,
+            end_ts=end_ts,
+        )
+        run["session_id"] = recording_id
+        run["task_index"] = idx
+        run.setdefault("trajectory_annotations", {})
+        # Match the DB-row shape so the React drawer doesn't see KeyError-
+        # like ``undefined``s when toggling between DB and demo employees.
+        run["source"] = "chat"
+        run["test_case_run_id"] = None
+        run["user_rating"] = None
+        run["user_rating_at"] = None
+        _attach_goal_fields(run)
+        runs.append(run)
+    return runs

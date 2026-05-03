@@ -80,6 +80,66 @@ def _demo_replay_guard() -> None:
         )
 
 
+def _demo_replay_enabled() -> bool:
+    """Cheap check shared by every endpoint with a demo-mode branch."""
+    return os.getenv("DEMO_REPLAY") == "1"
+
+
+# In-process cache for trajectory annotations / workflow alignments computed
+# in --demo mode. We mirror the ``trajectory_annotations`` JSONB column
+# layout so the same read path (``apply_annotations`` + ``_hydrate_workflow_aligns``)
+# works whether annotations came from the DB or this dict. Keyed by
+# ``(recording_id, task_index)`` because demo runs don't have DB rows to
+# update via SQLAlchemy. Lifetime is the server process — restarting the
+# backend clears the cache, which is the right tradeoff for a demo build.
+_DEMO_TRAJ_CACHE: dict[tuple[str, int], dict[str, Any]] = {}
+
+
+async def _demo_resolve_task_run(
+    employee_id: str, task_index: int
+) -> tuple[dict[str, Any], str]:
+    """Synthesize a ``task_run`` row from this employee's demo recording.
+
+    Returns ``(run, recording_id)``. ``run`` already has any cached demo
+    annotations / workflow alignments merged into ``trajectory_annotations``
+    so callers can treat it identically to a serialized DB row.
+
+    Raises ``HTTPException(404)`` when there's no recording on disk or when
+    the requested ``task_index`` is out of range for the recording.
+    """
+    import session_replay  # local import: keeps router import-time cheap
+
+    picked = session_replay.pick_recording(employee_id)
+    if picked is None:
+        raise HTTPException(404, "No demo recording configured for this employee")
+    path, recording_id = picked
+
+    try:
+        data = session_replay.load(path)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(500, f"Failed to load demo recording: {exc}") from exc
+
+    runs = session_replay.task_runs_from_recording(
+        data, recording_id=recording_id
+    )
+    run = next(
+        (r for r in runs if int(r.get("task_index") or 0) == int(task_index)),
+        None,
+    )
+    if run is None:
+        raise HTTPException(404, "Demo turn not found")
+
+    cached = _DEMO_TRAJ_CACHE.get((recording_id, int(task_index)))
+    if cached:
+        run["trajectory_annotations"] = dict(cached)
+        # Re-run goal aggregation so KPIs (annotated_tasks etc.) reflect
+        # the freshly cached annotations rather than the empty defaults.
+        from metrics import _attach_goal_fields  # local import
+
+        _attach_goal_fields(run)
+    return run, recording_id
+
+
 _db_available = False
 _memory_store: list[dict] = []
 _test_case_memory_store: dict[str, list[dict[str, Any]]] = {}
@@ -1548,6 +1608,55 @@ async def employee_metrics(employee_id: str, limit: int = _RECENT_TASK_LIMIT):
     """
     limit = max(1, min(int(limit), 100))
 
+    # ── Demo mode ────────────────────────────────────────────────────────
+    # When ``DEMO_REPLAY=1`` the live agent runtime isn't writing to
+    # ``task_runs`` at all, so reading the table would return either an
+    # empty card or stale rows from before the server was switched into
+    # demo mode. Synthesize the rows from this employee's recording (with
+    # ``_default.json`` fallback) and merge in any annotations/alignments
+    # that were computed earlier in this process so the report card shows
+    # a populated, internally-consistent view.
+    if _demo_replay_enabled():
+        import session_replay  # local import
+
+        picked = session_replay.pick_recording(employee_id)
+        if picked is not None:
+            path, recording_id = picked
+            try:
+                data = session_replay.load(path)
+            except Exception as exc:  # noqa: BLE001
+                raise HTTPException(
+                    500, f"Failed to load demo recording: {exc}"
+                ) from exc
+
+            runs = session_replay.task_runs_from_recording(
+                data, recording_id=recording_id
+            )
+            for run in runs:
+                cached = _DEMO_TRAJ_CACHE.get(
+                    (recording_id, int(run["task_index"]))
+                )
+                if cached:
+                    run["trajectory_annotations"] = dict(cached)
+                    from metrics import _attach_goal_fields  # local import
+
+                    _attach_goal_fields(run)
+            # Most-recent first (matches the DB branch's ORDER BY desc).
+            _epoch = datetime.fromtimestamp(0, tz=timezone.utc)
+            runs.sort(
+                key=lambda r: r.get("started_at") or _epoch,
+                reverse=True,
+            )
+            return {
+                "employee_id": employee_id,
+                "aggregate": aggregate_task_runs(runs),
+                "recent": runs[:limit],
+                "recent_limit": limit,
+                "source": "demo",
+            }
+        # No recording on disk → fall through to whichever store is
+        # configured so the user still sees *something* (likely empty).
+
     if _db_available:
         from db.engine import async_session
         from db.models import Employee, TaskRun
@@ -1689,6 +1798,42 @@ async def _hydrate_workflow_aligns(annotations: dict | None) -> list[dict]:
 
 @router.get("/{employee_id}/task_runs/{session_id}/{task_index}/trajectory")
 async def employee_task_trajectory(employee_id: str, session_id: str, task_index: int):
+    # Demo mode: ignore ``session_id`` — the report card shipped it from
+    # ``employee_metrics`` where we set it to the recording_id, but the
+    # source of truth for "which recording does this employee replay" is
+    # ``session_replay.pick_recording(employee_id)`` so we re-resolve here.
+    # That keeps the demo trajectory in lock-step with the demo metrics.
+    if _demo_replay_enabled():
+        run, recording_id = await _demo_resolve_task_run(employee_id, task_index)
+        raw_events = run.get("raw_events") or []
+        if not raw_events:
+            raise HTTPException(
+                status_code=410,
+                detail={"available": False, "reason": "trajectory_not_persisted"},
+            )
+
+        action_nodes, trial_boundaries = build_nodes_from_events(raw_events)
+        tree = segment_nodes(action_nodes, trial_boundaries)
+        annotations = run.get("trajectory_annotations") or {}
+        tree_dict = apply_annotations(to_dict(tree), annotations)
+        # ``_hydrate_workflow_aligns`` lazily reloads workflow.json from
+        # disk by skill_slug — works the same in demo mode because we
+        # cache the slug alongside the alignment in ``_DEMO_TRAJ_CACHE``.
+        workflow_aligns = await _hydrate_workflow_aligns(annotations)
+        prompt = run.get("full_prompt") or run.get("prompt_preview") or ""
+        return {
+            "available": True,
+            "session_id": recording_id,
+            "task_index": task_index,
+            "prompt": prompt,
+            "summary": _trajectory_summary(run, tree),
+            "tree": tree_dict,
+            "raw_events": raw_events,
+            "annotations": annotations,
+            "annotated": bool(annotations),
+            "workflow_aligns": workflow_aligns,
+        }
+
     if _db_available:
         from db.engine import async_session
         from db.models import Employee, TaskRun
@@ -1826,6 +1971,69 @@ async def annotate_task_trajectory(
     Results are cached in ``task_runs.trajectory_annotations`` so subsequent
     opens of the "Processed" view are free. Pass ``?force=true`` to recompute.
     """
+    # Demo mode: synthesize the run from the recording, run the same LLM
+    # pass against it, and cache the result in-process under
+    # ``_DEMO_TRAJ_CACHE``. This lets annotate/align keep working in --demo
+    # without the database, and subsequent calls hit the in-process cache
+    # the same way DB-backed runs hit the JSONB column.
+    if _demo_replay_enabled():
+        run, recording_id = await _demo_resolve_task_run(employee_id, task_index)
+        raw_events = run.get("raw_events") or []
+        if not raw_events:
+            raise HTTPException(
+                status_code=410,
+                detail={"available": False, "reason": "trajectory_not_persisted"},
+            )
+
+        action_nodes, trial_boundaries = build_nodes_from_events(raw_events)
+        tree = segment_nodes(action_nodes, trial_boundaries)
+
+        cached_all = run.get("trajectory_annotations") or {}
+        # Only the path-keyed annotation entries count as a "real" cache
+        # hit. ``workflow_aligns`` is a sibling subkey populated by the
+        # align endpoint and must not short-circuit annotation here.
+        cached_paths = {
+            k: v for k, v in cached_all.items() if k != "workflow_aligns"
+        }
+
+        if cached_paths and not force:
+            annotations = cached_all
+            source = "cache"
+        else:
+            try:
+                fresh = await annotate_tree(tree)
+            except Exception as exc:  # noqa: BLE001
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"LLM annotation failed: {exc}",
+                ) from exc
+            # Preserve any previously cached workflow_aligns under this run
+            # — the DB endpoint clobbers them, but in demo mode we'd rather
+            # keep both kinds of LLM output around so the trajectory drawer
+            # doesn't need a second align round-trip after every annotate.
+            merged: dict[str, Any] = {**fresh}
+            if isinstance(cached_all.get("workflow_aligns"), dict):
+                merged["workflow_aligns"] = cached_all["workflow_aligns"]
+            _DEMO_TRAJ_CACHE[(recording_id, int(task_index))] = merged
+            annotations = merged
+            source = "llm"
+
+        tree_dict = apply_annotations(to_dict(tree), annotations)
+        prompt = run.get("full_prompt") or run.get("prompt_preview") or ""
+
+        return {
+            "available": True,
+            "session_id": recording_id,
+            "task_index": task_index,
+            "prompt": prompt,
+            "summary": _trajectory_summary(run, tree),
+            "tree": tree_dict,
+            "raw_events": raw_events,
+            "annotations": annotations,
+            "annotated": True,
+            "source": source,
+        }
+
     if not _db_available:
         raise HTTPException(
             503, "Trajectory annotation requires the database to be available."
@@ -1952,13 +2160,132 @@ async def align_task_trajectory(
     flipping back to the same skill in the picker is free. Pass
     ``?force=true`` to recompute.
     """
+    if not skill_id:
+        raise HTTPException(400, "skill_id query parameter is required")
+
+    # Demo-mode branch: ``Skill`` table is the only DB-required piece left
+    # (we look up slug from the UUID picker). When DEMO_REPLAY is on we
+    # accept the slug in the ``skill_id`` query param directly so the
+    # whole flow can run without the DB. Cache lives in ``_DEMO_TRAJ_CACHE``
+    # under the same nested layout as the JSONB column would.
+    if _demo_replay_enabled():
+        # Resolve workflow.json off-disk. We accept either a UUID (when
+        # the DB happens to be available so we can map UUID→slug) or a
+        # slug directly. Either way we end up with a workflow dict or 404.
+        skill_slug: str | None = None
+        try:
+            uuid.UUID(skill_id)
+            is_uuid = True
+        except (ValueError, TypeError):
+            is_uuid = False
+
+        if is_uuid and _db_available:
+            from db.engine import async_session
+            from db.models import Skill
+            from sqlalchemy import select
+
+            async with async_session() as session:
+                skill_row = (
+                    await session.execute(
+                        select(Skill).where(Skill.id == uuid.UUID(skill_id))
+                    )
+                ).scalar_one_or_none()
+                if skill_row is None:
+                    raise HTTPException(404, "Skill not found")
+                skill_slug = skill_row.slug
+        else:
+            skill_slug = skill_id
+
+        if not skill_slug:
+            raise HTTPException(404, "Could not resolve skill slug")
+
+        wf = await asyncio.to_thread(load_workflow, skill_slug)
+        expected_workflow_dict = wf.to_dict() if wf is not None else None
+        if expected_workflow_dict is None:
+            raise HTTPException(
+                404,
+                f"No workflow.json on file for skill '{skill_slug or skill_id}'",
+            )
+
+        run, recording_id = await _demo_resolve_task_run(employee_id, task_index)
+        raw_events = run.get("raw_events") or []
+        if not raw_events:
+            raise HTTPException(
+                status_code=410,
+                detail={"available": False, "reason": "trajectory_not_persisted"},
+            )
+
+        action_nodes, trial_boundaries = build_nodes_from_events(raw_events)
+        tree = segment_nodes(action_nodes, trial_boundaries)
+        actions = flatten_action_nodes(tree)
+        action_descriptions = [_action_subgoal(a) for a in actions]
+
+        cached_all = run.get("trajectory_annotations") or {}
+        cached_aligns = (
+            cached_all.get("workflow_aligns")
+            if isinstance(cached_all, dict)
+            else None
+        ) or {}
+        cached_for_skill = (
+            cached_aligns.get(skill_id)
+            if isinstance(cached_aligns, dict)
+            else None
+        )
+
+        if cached_for_skill and not force:
+            align_result = cached_for_skill
+            source = "cache"
+        else:
+            try:
+                align_result = await align_trajectory_to_workflow(
+                    workflow=expected_workflow_dict,
+                    action_descriptions=action_descriptions,
+                )
+            except Exception as exc:  # noqa: BLE001
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"LLM workflow alignment failed: {exc}",
+                ) from exc
+            source = "llm"
+
+        workflow_completion = compute_workflow_completion(
+            expected_workflow_dict,
+            align_result.get("workflow_alignment"),
+        )
+
+        if source == "llm":
+            cache_payload = {
+                "action_assignments": align_result.get("action_assignments") or [],
+                "workflow_alignment": align_result.get("workflow_alignment"),
+                "workflow_completion": workflow_completion,
+                "skill_slug": skill_slug,
+            }
+            existing = dict(
+                _DEMO_TRAJ_CACHE.get((recording_id, int(task_index))) or {}
+            )
+            aligns = dict(existing.get("workflow_aligns") or {})
+            aligns[skill_id] = cache_payload
+            existing["workflow_aligns"] = aligns
+            _DEMO_TRAJ_CACHE[(recording_id, int(task_index))] = existing
+
+        return {
+            "available": True,
+            "session_id": recording_id,
+            "task_index": task_index,
+            "skill_id": skill_id,
+            "skill_slug": skill_slug,
+            "workflow": expected_workflow_dict,
+            "action_assignments": align_result.get("action_assignments") or [],
+            "workflow_alignment": align_result.get("workflow_alignment"),
+            "workflow_completion": workflow_completion,
+            "source": source,
+        }
+
     if not _db_available:
         raise HTTPException(
             503,
             "Trajectory workflow alignment requires the database to be available.",
         )
-    if not skill_id:
-        raise HTTPException(400, "skill_id query parameter is required")
 
     from db.engine import async_session
     from db.models import Employee, Skill, TaskRun
