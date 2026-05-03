@@ -3,12 +3,12 @@ import {
   BarChart3,
   Wrench,
   Timer,
-  Repeat,
   Activity,
   Loader2,
   AlertCircle,
   ListChecks,
   ChevronRight,
+  ChevronDown,
   Star,
 } from "lucide-react";
 import { fetchEmployeeMetrics } from "../../services/api";
@@ -29,18 +29,55 @@ function KpiCard({ label, value, sub }) {
   );
 }
 
+/* ── CollapsibleSection ──────────────────────────────────────────────── */
+/* Wraps any arbitrary content (e.g. KPI strip, TaskPerformanceSection)
+   behind a click-to-expand banner. Collapsed by default. */
+function CollapsibleSection({ title, children }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="rounded-lg border border-border/60 bg-[#2a2c31] shadow-[0_2px_12px_rgba(0,0,0,0.25)]">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="flex w-full items-center justify-between px-4 py-3 text-left"
+      >
+        <h4 className="text-xs font-semibold uppercase tracking-wider text-text-secondary">
+          {title}
+        </h4>
+        <ChevronDown
+          size={14}
+          className={`text-text-muted transition-transform duration-200 ${open ? "rotate-180" : ""}`}
+        />
+      </button>
+      {open && <div className="px-4 pb-4">{children}</div>}
+    </div>
+  );
+}
+
 function MetricCard({ icon, label, children, className = "" }) {
+  const [open, setOpen] = useState(false);
   return (
     <div
-      className={`rounded-lg border border-border/60 bg-[#2a2c31] p-4 shadow-[0_2px_12px_rgba(0,0,0,0.25)] ${className}`}
+      className={`rounded-lg border border-border/60 bg-[#2a2c31] shadow-[0_2px_12px_rgba(0,0,0,0.25)] ${className}`}
     >
-      <div className="mb-3 flex items-center gap-2">
-        {createElement(icon, { size: 15, className: "text-accent-teal" })}
-        <h4 className="text-xs font-semibold uppercase tracking-wider text-text-secondary">
-          {label}
-        </h4>
-      </div>
-      {children}
+      {/* Clicking the header row toggles the card open/closed */}
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="flex w-full items-center justify-between px-4 py-3 text-left"
+      >
+        <div className="flex items-center gap-2">
+          {createElement(icon, { size: 15, className: "text-accent-teal" })}
+          <h4 className="text-xs font-semibold uppercase tracking-wider text-text-secondary">
+            {label}
+          </h4>
+        </div>
+        <ChevronDown
+          size={14}
+          className={`text-text-muted transition-transform duration-200 ${open ? "rotate-180" : ""}`}
+        />
+      </button>
+      {open && <div className="px-4 pb-4">{children}</div>}
     </div>
   );
 }
@@ -249,50 +286,45 @@ export default function EmployeeReportCard({ employee }) {
           </div>
         </div>
 
-        {/* Goal-oriented task performance (new) */}
-        <TaskPerformanceSection
-          employeeId={employee.id}
-          aggregate={a}
-          recent={data.recent || []}
-          onOpenTrajectory={(task) => setSelectedTask(task)}
-          onRefresh={() => loadMetrics({ showSpinner: false })}
-        />
+        {/* Goal-oriented task performance */}
+        <CollapsibleSection title="Task performance">
+          <TaskPerformanceSection
+            employeeId={employee.id}
+            aggregate={a}
+            recent={data.recent || []}
+            onOpenTrajectory={(task) => setSelectedTask(task)}
+            onRefresh={() => loadMetrics({ showSpinner: false })}
+          />
+        </CollapsibleSection>
 
         {/* KPI strip */}
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-          <KpiCard label="Tasks completed" value={a.tasks} />
-          <KpiCard
-            label="Avg tool calls / task"
-            value={a.avg_tool_calls.toFixed(1)}
-            sub={`${totalToolCalls} total calls`}
-          />
-          <KpiCard
-            label="Avg latency"
-            value={formatMs(a.avg_latency_ms)}
-            sub={`p95 ${formatMs(a.p95_latency_ms)}`}
-          />
-          <KpiCard
-            label="Avg trials / task"
-            value={a.avg_trials.toFixed(2)}
-            sub={`${(a.reflexion_rate * 100).toFixed(0)}% retried`}
-          />
-        </div>
+        <CollapsibleSection title="Key metrics">
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <KpiCard label="Tasks completed" value={a.tasks} />
+            <KpiCard
+              label="Avg tool calls / task"
+              value={a.avg_tool_calls.toFixed(1)}
+              sub={`${totalToolCalls} total calls`}
+            />
+            <KpiCard
+              label="Avg latency"
+              value={formatMs(a.avg_latency_ms)}
+              sub={`p95 ${formatMs(a.p95_latency_ms)}`}
+            />
+            <KpiCard
+              label="Avg trials / task"
+              value={a.avg_trials.toFixed(2)}
+              sub={`${(a.reflexion_rate * 100).toFixed(0)}% retried`}
+            />
+          </div>
+        </CollapsibleSection>
 
         {/* Detail grid */}
-        <div className="grid gap-4 lg:grid-cols-2">
+        <div className="grid items-start gap-4 lg:grid-cols-2">
           <MetricCard icon={Timer} label="Response latency">
             <Row label="Average" value={formatMs(a.avg_latency_ms)} />
             <Row label="P50" value={formatMs(a.p50_latency_ms)} />
             <Row label="P95" value={formatMs(a.p95_latency_ms)} />
-          </MetricCard>
-
-          <MetricCard icon={Repeat} label="Reflexion behavior">
-            <Row label="Avg trials" value={a.avg_trials.toFixed(2)} />
-            <Row label="Avg reflections" value={a.avg_reflections.toFixed(2)} />
-            <Row
-              label="Tasks needing retry"
-              value={`${(a.reflexion_rate * 100).toFixed(0)}%`}
-            />
           </MetricCard>
 
           <MetricCard icon={Wrench} label="Tool mix">
