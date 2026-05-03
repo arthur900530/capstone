@@ -289,17 +289,15 @@ async def train_skills(files: list[UploadFile] = File(...)):
             saved_basenames.append(safe_name)
 
         if os.getenv("DEMO_REPLAY") == "1":
-            # Demo mode: train normally so the workflow review popup can
-            # render, then delete the freshly created
-            # ``backend/skills/<slug>/`` directories and intentionally
-            # return an empty ``new_skills`` list. The frontend's
-            # ``handleTrained`` auto-attaches every returned skill id to
-            # the wizard / chat selection (see SkillBrowser.jsx); since
-            # the slug exists nowhere after this branch (no DB row, no
-            # disk folder, not in ``server._SKILLS``), advertising it
-            # would cause ``_validate_skills_for_runtime`` to 400 the
-            # next chat turn with ``Unknown skill_id: ...``. Returning []
-            # keeps the demo flow purely ephemeral.
+            # Demo mode: train normally and surface the freshly extracted
+            # skills only in process memory (``server._SKILLS`` /
+            # ``server._FILE_CONTENTS``) so the wizard, browse list and
+            # chat runtime can all see them. The on-disk
+            # ``backend/skills/<slug>/`` directories are then removed so
+            # demo mode never pollutes the working tree across server
+            # restarts. The skills are forced to ``type="user"`` so
+            # ``_validate_skills_for_runtime`` resolves their files from
+            # the in-memory store rather than the deleted disk path.
             skills_root = Path(__file__).resolve().parent.parent / "skills"
             before_dirs = (
                 {p.name for p in skills_root.iterdir() if p.is_dir()}
@@ -310,14 +308,39 @@ async def train_skills(files: list[UploadFile] = File(...)):
             trainer = MMSkillTrainer()
             train_result = await asyncio.to_thread(trainer.train, saved_paths)
 
+            new_skills: list[dict] = []
             if skills_root.exists():
+                import server
+
+                refreshed = server._load_skills_from_disk()
                 after_dirs = {
                     p.name for p in skills_root.iterdir() if p.is_dir()
                 }
-                for name in after_dirs - before_dirs:
-                    shutil.rmtree(skills_root / name, ignore_errors=True)
+                for slug in sorted(after_dirs - before_dirs):
+                    skill = refreshed.get(slug)
+                    if skill is None:
+                        continue
+                    skill = {**skill, "type": "user"}
+                    skill_dir = skills_root / slug
+                    contents: dict[str, str] = {}
+                    for meta in skill.get("files") or []:
+                        rel = meta["name"]
+                        try:
+                            with open(skill_dir / rel, encoding="utf-8") as fh:
+                                contents[rel] = fh.read()
+                        except (OSError, UnicodeDecodeError):
+                            # Binary or unreadable auxiliaries are rare
+                            # for trained skills (which are mostly
+                            # SKILL.md text). Skipping them is safe;
+                            # validation only fails for non-SKILL.md
+                            # files with no retrievable content.
+                            continue
 
-            new_skills: list[dict] = []
+                    server._SKILLS[slug] = skill
+                    server._FILE_CONTENTS[slug] = contents
+                    new_skills.append(skill)
+
+                    shutil.rmtree(skill_dir, ignore_errors=True)
         elif _db_available:
             from services import skill_service
             async with _get_session_factory()() as session:
