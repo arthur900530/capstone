@@ -15,13 +15,14 @@ import {
 } from "lucide-react";
 import ConfirmDialog from "../components/skills/ConfirmDialog";
 import * as Icons from "lucide-react";
-import EmployeeChat from "../components/employee/EmployeeChat";
-import DesktopSimulator from "../components/desktop/DesktopSimulator";
 import EmployeeConsole from "../components/employee/EmployeeConsole";
 import ChatView from "../components/ChatView";
 import BrowserLiveView from "../components/BrowserLiveView";
 
-const IS_DEMO = import.meta.env.VITE_DEMO === "true";
+// In --demo mode the standard ChatView + BrowserLiveView (which itself
+// swaps in BrowserReplayView when VITE_DEMO=true) renders the recorded
+// session, so the legacy EmployeeChat + DesktopSimulator fork is no
+// longer needed.
 const LIVE_BROWSER_ENABLED = import.meta.env.VITE_LIVE_BROWSER !== "false";
 import EmployeeReportCard from "../components/employee/EmployeeReportCard";
 import EmployeeSkillsTab from "../components/employee/EmployeeSkillsTab";
@@ -62,7 +63,6 @@ export default function EmployeePage() {
   const [loading, setLoading] = useState(true);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [deleting, setDeleting] = useState(false);
-  const desktopEventRef = useRef(null);
   const restoredForRef = useRef(null);
 
   useEffect(() => {
@@ -122,10 +122,6 @@ export default function EmployeePage() {
   const plugins = PLUGINS.filter((p) => pluginIds.includes(p.id));
   const RoleIcon = Icons[plugins[0]?.icon] || Icons.Bot;
 
-  const handleDesktopEvent = (type, data) => {
-    desktopEventRef.current?.(type, data);
-  };
-
   const handleDelete = async () => {
     setDeleting(true);
     await deleteEmployee(employee.id);
@@ -134,7 +130,7 @@ export default function EmployeePage() {
   };
 
   const showBrowserPanel =
-    LIVE_BROWSER_ENABLED && !IS_DEMO && activeTab === "chat" && browserLive?.visible;
+    LIVE_BROWSER_ENABLED && activeTab === "chat" && browserLive?.visible;
 
   return (
     <div className="flex flex-1 flex-col min-h-0 overflow-hidden">
@@ -204,7 +200,7 @@ export default function EmployeePage() {
         </div>
       </div>
 
-      {activeTab === "chat" && !IS_DEMO && (
+      {activeTab === "chat" && (
         <div className="flex flex-1 overflow-hidden">
           <div
             className={`flex min-w-0 flex-1 flex-col transition-all duration-300 ${
@@ -218,16 +214,6 @@ export default function EmployeePage() {
               <BrowserLiveView sessionId={sessionId || browserLive?.sessionId} />
             </div>
           )}
-        </div>
-      )}
-      {activeTab === "chat" && IS_DEMO && (
-        <div className="flex flex-1 overflow-hidden">
-          <div className="flex min-w-0 flex-1 flex-col border-r border-border/20 lg:max-w-[50%]">
-            <EmployeeChat key={id} employee={employee} onDesktopEvent={handleDesktopEvent} />
-          </div>
-          <div className="hidden flex-1 flex-col lg:flex">
-            <DesktopSimulator employee={employee} onEventRef={desktopEventRef} />
-          </div>
         </div>
       )}
       {activeTab === "skills" && (

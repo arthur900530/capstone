@@ -29,9 +29,9 @@ from pathlib import Path
 from typing import Any
 
 import dotenv
-from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi import FastAPI, HTTPException, UploadFile, File, WebSocket, WebSocketDisconnect, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse, Response
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
@@ -88,6 +88,9 @@ from agent_event_utils import (
     extract_text as _extract_text,
     parse_tool_args as _parse_tool_args,
 )
+
+import session_recorder
+import session_replay
 
 
 # ---------------------------------------------------------------------------
@@ -209,8 +212,18 @@ async def lifespan(application):
             set_emp_db(False)
             logger.warning("DB init skipped — falling back to in-memory skills: %s", exc)
 
+    # In --demo mode the agent runtime is replaced by the recorded-session
+    # replay (see ``_stream_demo_replay``). Skip the Docker prime-up entirely
+    # — saves the long pull/start, and the SHARED_WS hooks tolerate
+    # ``workspace=None`` because the replay path never touches them.
+    if _demo_replay_enabled():
+        logger.info("DEMO_REPLAY=1 — skipping shared DockerWorkspace startup.")
+        _SHARED_WS["workspace"] = None
+        _SHARED_WS["host_dir"] = None
+        _SHARED_WS["lock"] = None
+
     # Warm the shared DockerWorkspace once, before accepting requests.
-    if REAL_AGENT_ENABLED:
+    if REAL_AGENT_ENABLED and not _demo_replay_enabled():
         # Stable host dir so MEMORY.md, per-conversation logs, and any
         # agent-written workspace files survive server restarts. Override
         # via AGENT_WORKSPACE_DIR if you want a different location; rm -rf
@@ -343,6 +356,15 @@ _SESSION_EMPLOYEE_IDS: dict[str, str] = {}
 # Strong refs for background ``task_runs`` persistence. Without this set the
 # asyncio task could be garbage-collected before it finishes writing.
 _background_metrics_tasks: set[asyncio.Task] = set()
+
+# DEMO replay: per-session turn cursor (which submit in the recording is
+# played next). Wraps to 0 once the recording's last turn has been replayed,
+# so the user can keep chatting indefinitely.
+_demo_cursors: dict[str, int] = {}
+
+
+def _demo_replay_enabled() -> bool:
+    return os.getenv("DEMO_REPLAY") == "1"
 
 
 def _now_iso() -> str:
@@ -526,6 +548,9 @@ def _upsert_chat(
 
 def _append_event(session_id: str, event_type: str, data: dict):
     """Persist an SSE event so the full trajectory can be restored later."""
+    # Capture into the on-disk recording first; the recorder is a no-op when
+    # RECORD_SESSIONS is unset, so the hot path stays cheap.
+    session_recorder.add_event(session_id, event_type, data)
     if session_id not in _chats:
         return
     msg = {"role": "assistant", "type": event_type, "timestamp": _now_iso()}
@@ -927,6 +952,12 @@ async def _stream_task(question: str, session_id: str, max_trials: int, confiden
         )
 
     yield _sse("done", {"message": "Complete"})
+    # Mock path mirrors the real-agent path: finalize the recording on
+    # every turn so multi-turn chats keep growing one JSON file.
+    try:
+        session_recorder.finalize(session_id)
+    except Exception:
+        logger.exception("[recorder] finalize failed for session=%s", session_id)
 
 
 async def _stream_conversation(question: str, session_id: str, agent: dict):
@@ -939,6 +970,104 @@ async def _stream_conversation(question: str, session_id: str, agent: dict):
     yield _sse("chat_response", evt)
     _append_event(session_id, "chat_response", evt)
     await asyncio.sleep(0.1)
+
+    yield _sse("done", {"message": "Complete"})
+    try:
+        session_recorder.finalize(session_id)
+    except Exception:
+        logger.exception("[recorder] finalize failed for session=%s", session_id)
+
+
+# ---------------------------------------------------------------------------
+# Demo replay (active when DEMO_REPLAY=1)
+# ---------------------------------------------------------------------------
+
+
+async def _stream_demo_replay(req: "ChatRequest", session_id: str, agent: dict):
+    """Replay a recorded session as SSE in place of the agent runtime.
+
+    Selection: ``recordings/employees/{employee_id}.json`` if it exists,
+    else ``recordings/_default.json``. Multi-turn chats advance through
+    ``submits[]`` with wrap-around on the cursor so demos loop gracefully.
+
+    Replay still calls ``_append_event`` so ``_chats[session_id]`` looks
+    like a real chat (chats sidebar, history endpoint, trajectory drawer
+    all keep working). It does NOT enqueue ``_record_task_run_for_session``
+    so the report-card metrics stay sourced from real runs only.
+    """
+    yield _sse("session", {"session_id": session_id})
+    yield _sse("agent", agent)
+
+    picked = session_replay.pick_recording(req.employee_id)
+    if picked is None:
+        yield _sse(
+            "error",
+            {
+                "message": (
+                    "No demo recording configured. Add a recording at "
+                    "backend/recordings/_default.json (or "
+                    "backend/recordings/employees/<employee_id>.json) "
+                    "and restart with --demo."
+                )
+            },
+        )
+        yield _sse("done", {"message": "Complete"})
+        return
+
+    path, recording_id = picked
+    try:
+        recording = session_replay.load(path)
+    except Exception as exc:
+        logger.exception("[demo-replay] failed to load recording=%s", path)
+        yield _sse("error", {"message": f"Failed to load recording: {exc}"})
+        yield _sse("done", {"message": "Complete"})
+        return
+
+    submits = recording.get("submits") or []
+    if not submits:
+        yield _sse(
+            "error",
+            {"message": "Recording has no submits to replay."},
+        )
+        yield _sse("done", {"message": "Complete"})
+        return
+
+    turn = _demo_cursors.get(session_id, 0) % len(submits)
+    _demo_cursors[session_id] = (turn + 1) % len(submits)
+
+    sliced = session_replay.slice_turn(recording, turn)
+    events = sliced.get("events") or []
+    browser_frames = sliced.get("browser_frames") or []
+
+    # Up-front meta event so BrowserReplayView knows where to fetch the
+    # RFB byte slice for this turn. Carried through _append_event so a
+    # later page reload of the chat history can still find it.
+    meta = {
+        "recording_id": recording_id,
+        "turn": turn,
+        "browser_frames_url": (
+            f"/api/recording-browser/{recording_id}?turn={turn}"
+        ),
+        "frame_count": len(browser_frames),
+    }
+    yield _sse("replay_meta", meta)
+    _append_event(session_id, "replay_meta", meta)
+
+    prev_t = 0
+    for ev in events:
+        ev_t = int(ev.get("t", 0))
+        delta = max(0, ev_t - prev_t)
+        if delta:
+            await asyncio.sleep(delta / 1000.0)
+        prev_t = ev_t
+
+        event_type = ev.get("event") or ""
+        data = ev.get("data") or {}
+        if not event_type or event_type in ("session", "agent"):
+            # Already emitted above; don't double-fire.
+            continue
+        yield _sse(event_type, data)
+        _append_event(session_id, event_type, data)
 
     yield _sse("done", {"message": "Complete"})
 
@@ -1888,6 +2017,13 @@ async def _stream_real_task(
                 "Failed to schedule task_run persist for session=%s",
                 session_id,
             )
+        # Flush whatever events / browser frames the recorder accumulated for
+        # this turn. No-op when RECORD_SESSIONS is unset; survives client
+        # disconnects because we're inside the outer finally.
+        try:
+            session_recorder.finalize(session_id)
+        except Exception:
+            logger.exception("[recorder] finalize failed for session=%s", session_id)
         _turn_counter.pop(session_id, None)
         _pending_bash_writes.pop(session_id, None)
 
@@ -2193,6 +2329,29 @@ async def chat(req: ChatRequest):
     file_dicts = [f.model_dump(exclude_none=True) for f in req.files] if req.files else None
     _upsert_chat(session_id, req.question, role="user", agent_id=agent["id"], files=file_dicts)
 
+    # Open / append to a recording buffer for this session. The recorder is a
+    # no-op when RECORD_SESSIONS is unset, so this is free on the live path.
+    session_recorder.start(
+        session_id,
+        employee_id=req.employee_id,
+        config={
+            "model": req.model,
+            "maxTrials": req.max_trials,
+            "confidenceThreshold": req.confidence_threshold,
+            "useReflexion": req.use_reflexion,
+        },
+    )
+    session_recorder.add_submit(
+        session_id,
+        {
+            "question": req.question,
+            "files": file_dicts or [],
+            "skill_ids": req.skill_ids or [],
+            "mount_dir": req.mount_dir,
+            "employee_id": req.employee_id,
+        },
+    )
+
     # Prefer the server-side lookup (the DB row is the source of truth, and
     # it survives stale frontend bundles). Fall back to whatever persona the
     # client embedded in the request so the chat keeps working if the DB is
@@ -2252,7 +2411,9 @@ async def chat(req: ChatRequest):
         sorted((employee_profile or {}).keys()),
     )
 
-    if REAL_AGENT_ENABLED:
+    if _demo_replay_enabled():
+        gen = _stream_demo_replay(req, session_id, agent)
+    elif REAL_AGENT_ENABLED:
         gen = _stream_real_task(
             req.question,
             session_id,
@@ -2283,6 +2444,10 @@ async def browser_live_info(session_id: str | None = None):
     that port onto the host and let the frontend iframe it directly;
     ``session_id`` is accepted for API symmetry but the same browser
     is shared for all sessions on the shared workspace.
+
+    Iframe target is the same-origin proxy (``/api/browser/proxy/...``)
+    so the WebSocket goes through this server and the recorder can tee
+    the RFB byte stream when ``RECORD_SESSIONS=1``.
     """
     if not ENABLE_BROWSER_LIVE:
         raise HTTPException(status_code=503, detail="Live browser is disabled.")
@@ -2291,21 +2456,295 @@ async def browser_live_info(session_id: str | None = None):
     if novnc_port is None:
         raise HTTPException(status_code=503, detail="Live browser is not ready yet.")
 
+    # noVNC's UI resolves its ``path`` setting *relative to the directory
+    # of vnc.html*, not relative to the host root. Since the iframe is at
+    # ``/api/browser/proxy/vnc.html``, that base directory is already
+    # ``/api/browser/proxy/``, so we pass just ``websockify`` (plus the
+    # session_id query param). The browser then dials
+    #   ws://<host>/api/browser/proxy/websockify?session_id=<sid>
+    # which matches the websockify rule in vite.config.js + our backend
+    # proxy, and the WS bridge sees every byte of every connection.
+    # Passing the full absolute path would result in a doubled prefix
+    # (``/api/browser/proxy/api/browser/proxy/websockify``) that no
+    # proxy rule matches, so the WS handshake fails silently.
+    from urllib.parse import quote
+
+    proxy_path = "websockify"
+    if session_id:
+        proxy_path = f"{proxy_path}?session_id={quote(session_id, safe='')}"
+    encoded_path = quote(proxy_path, safe="")
+
     return {
         "sessionId": session_id,
         "port": novnc_port,
-        # ``vnc_lite.html`` (or ``vnc.html``) is shipped with noVNC and
-        # auto-connects to the websockify endpoint on the same origin.
-        # ``resize=scale`` makes the noVNC client scale the remote display
-        # to fit the iframe (preserving aspect ratio). Using ``remote``
-        # relies on the VM's RandR support and frequently leaves the view
-        # clipped when the iframe is smaller than the native VM resolution,
-        # which we don't want.
+        # Same-origin URL — the websockify rule in vite.config.js + the
+        # backend proxy below tunnel both HTTP and WS to the upstream
+        # noVNC server, so all traffic is observable here.
         "url": (
-            f"http://127.0.0.1:{novnc_port}/vnc.html"
+            "/api/browser/proxy/vnc.html"
             "?autoconnect=1&resize=scale&reconnect=1&show_dot=1"
+            f"&path={encoded_path}"
         ),
     }
+
+
+# ---------------------------------------------------------------------------
+# noVNC reverse proxy + recorder tee
+# ---------------------------------------------------------------------------
+
+import httpx
+
+_BROWSER_PROXY_PREFIX = "/api/browser/proxy/"
+
+
+@app.get("/api/browser/proxy/{path:path}")
+async def browser_proxy_http(path: str, request: Request):
+    """Reverse-proxy noVNC static assets from the agent-server container.
+
+    websockify on the upstream serves both the noVNC HTML/JS bundle and
+    the WebSocket endpoint on the same port. We forward GETs verbatim so
+    the iframe can be loaded same-origin; this is what lets the WS proxy
+    below see the RFB stream.
+    """
+    if not ENABLE_BROWSER_LIVE:
+        raise HTTPException(status_code=503, detail="Live browser is disabled.")
+    novnc_port = _workspace_novnc_port()
+    if novnc_port is None:
+        raise HTTPException(status_code=503, detail="Live browser is not ready yet.")
+
+    upstream = f"http://127.0.0.1:{novnc_port}/{path}"
+    qs = request.url.query
+    if qs:
+        upstream = f"{upstream}?{qs}"
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(upstream)
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code=502, detail=f"Upstream noVNC unreachable: {exc}"
+        )
+
+    # Strip hop-by-hop headers so Starlette doesn't choke on them.
+    drop = {"transfer-encoding", "connection", "content-encoding", "content-length"}
+    headers = {k: v for k, v in resp.headers.items() if k.lower() not in drop}
+    return Response(
+        content=resp.content,
+        status_code=resp.status_code,
+        headers=headers,
+        media_type=resp.headers.get("content-type"),
+    )
+
+
+@app.websocket("/api/browser/proxy/websockify")
+async def browser_proxy_ws(websocket: WebSocket):
+    """Bidirectional bridge between the iframe's WebSocket and the upstream
+    websockify on the agent-server container.
+
+    Server-to-client RFB chunks are also pushed into the recorder so
+    ``BrowserReplayView`` can later replay them through @novnc/novnc.
+    """
+    if not ENABLE_BROWSER_LIVE:
+        await websocket.close(code=1011)
+        return
+    novnc_port = _workspace_novnc_port()
+    if novnc_port is None:
+        await websocket.close(code=1011)
+        return
+
+    session_id = websocket.query_params.get("session_id") or ""
+
+    # Accept the websockify ``binary`` subprotocol the client requests
+    # (noVNC negotiates this). Without echoing it back the handshake
+    # fails on Chrome.
+    requested_protocols = (
+        websocket.headers.get("sec-websocket-protocol", "")
+        .replace(" ", "")
+        .split(",")
+        if websocket.headers.get("sec-websocket-protocol")
+        else []
+    )
+    chosen_subprotocol = None
+    for proto in requested_protocols:
+        if proto:
+            chosen_subprotocol = proto
+            break
+    await websocket.accept(subprotocol=chosen_subprotocol)
+
+    upstream_url = f"ws://127.0.0.1:{novnc_port}/websockify"
+
+    import websockets  # bundled via uvicorn[standard]
+    import base64
+
+    try:
+        async with websockets.connect(
+            upstream_url,
+            subprotocols=[chosen_subprotocol] if chosen_subprotocol else None,
+            max_size=None,
+        ) as upstream:
+            async def client_to_upstream():
+                try:
+                    while True:
+                        msg = await websocket.receive()
+                        msg_type = msg.get("type")
+                        if msg_type == "websocket.disconnect":
+                            return
+                        data = msg.get("bytes")
+                        if data is None:
+                            text = msg.get("text")
+                            if text is None:
+                                continue
+                            await upstream.send(text)
+                        else:
+                            await upstream.send(data)
+                except WebSocketDisconnect:
+                    return
+
+            async def upstream_to_client():
+                try:
+                    async for message in upstream:
+                        if isinstance(message, (bytes, bytearray)):
+                            try:
+                                session_recorder.add_browser_frame(
+                                    session_id,
+                                    "s2c",
+                                    base64.b64encode(bytes(message)).decode("ascii"),
+                                )
+                            except Exception:
+                                logger.exception("[recorder] add_browser_frame failed")
+                            await websocket.send_bytes(bytes(message))
+                        else:
+                            await websocket.send_text(message)
+                except Exception:
+                    return
+
+            sender = asyncio.create_task(client_to_upstream())
+            receiver = asyncio.create_task(upstream_to_client())
+            done, pending = await asyncio.wait(
+                {sender, receiver}, return_when=asyncio.FIRST_COMPLETED
+            )
+            for t in pending:
+                t.cancel()
+                try:
+                    await t
+                except (asyncio.CancelledError, Exception):
+                    pass
+    except Exception:
+        logger.exception("[browser-proxy] WS bridge failed for session=%s", session_id)
+    finally:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+
+
+# ---------------------------------------------------------------------------
+# Recordings API (read-side; used by --demo replay and admin tools)
+# ---------------------------------------------------------------------------
+
+
+def _recording_path(recording_id: str) -> Path:
+    """Resolve a ``recording_id`` to a filesystem path inside ``recordings/``.
+
+    The id is the filename stem (``abc123``) for top-level recordings, or
+    ``employees/<employee_id>`` for per-employee overrides. We refuse path
+    traversal explicitly.
+    """
+    if not recording_id or ".." in recording_id:
+        raise HTTPException(status_code=400, detail="Invalid recording id.")
+    rec_dir = session_recorder.RECORDINGS_DIR.resolve()
+    candidate = (rec_dir / f"{recording_id}.json").resolve()
+    try:
+        candidate.relative_to(rec_dir)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid recording id.")
+    if not candidate.exists():
+        raise HTTPException(status_code=404, detail="Recording not found.")
+    return candidate
+
+
+@app.get("/api/recordings")
+async def list_recordings():
+    """List recordings on disk so admin / debug UIs can pick one."""
+    rec_dir = session_recorder.RECORDINGS_DIR
+    if not rec_dir.exists():
+        return []
+
+    out: list[dict] = []
+    for p in rec_dir.rglob("*.json"):
+        try:
+            stat = p.stat()
+            with open(p, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            rel = p.relative_to(rec_dir).with_suffix("").as_posix()
+            events = data.get("events") or []
+            frames = (data.get("browser") or {}).get("frames") or []
+            duration_ms = max((e.get("t", 0) for e in events), default=0)
+            out.append(
+                {
+                    "id": rel,
+                    "sessionId": data.get("sessionId"),
+                    "createdAt": data.get("createdAt"),
+                    "employeeId": data.get("employeeId"),
+                    "durationMs": duration_ms,
+                    "eventCount": len(events),
+                    "frameCount": len(frames),
+                    "totalBytes": stat.st_size,
+                }
+            )
+        except Exception:
+            logger.exception("[recordings] failed to read %s", p)
+    out.sort(key=lambda r: r.get("createdAt") or "", reverse=True)
+    return out
+
+
+@app.get("/api/recordings/{recording_id:path}")
+async def get_recording(recording_id: str):
+    """Return the full recording JSON, or the RFB slice if the path ends
+    in ``/browser``.
+
+    ``recording_id`` is the filename stem; e.g. ``abc-123`` or
+    ``employees/<employee_id>`` for per-employee overrides. ``:path`` is
+    greedy and matches both `<id>` and `<id>/browser`, so we branch on the
+    suffix here instead of declaring two competing routes.
+    """
+    if recording_id.endswith("/browser"):
+        stem = recording_id[: -len("/browser")]
+        path = _recording_path(stem)
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+        except Exception:
+            raise HTTPException(status_code=500, detail="Failed to read recording.")
+        return (data.get("browser") or {})
+
+    path = _recording_path(recording_id)
+    return FileResponse(path, media_type="application/json")
+
+
+@app.get("/api/recording-browser/{recording_id:path}")
+async def get_recording_browser(recording_id: str, turn: int | None = None):
+    """Return the RFB byte stream slice for a turn, or all frames.
+
+    The frontend ``BrowserReplayView`` fetches this and feeds the bytes
+    into a fake WebSocket consumed by @novnc/novnc. We expose a separate
+    namespace (``/api/recording-browser/...``) instead of a sub-path
+    under ``/api/recordings/.../browser`` because the path-parameter is
+    greedy and would shadow this route.
+    """
+    path = _recording_path(recording_id)
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except Exception:
+        raise HTTPException(status_code=500, detail="Failed to read recording.")
+    browser = (data.get("browser") or {}).copy()
+    if turn is None:
+        return browser
+    sliced = session_replay.slice_turn(data, turn)
+    browser["frames"] = sliced.get("browser_frames") or []
+    browser["t0"] = sliced.get("t0", 0)
+    return browser
 
 
 @app.get("/api/chats")
@@ -2628,6 +3067,11 @@ async def get_agent_skills():
 @app.post("/api/skill-evals/run", status_code=202)
 async def run_skill_eval(agent_id: str):
     """For each skill of the agent, run eval only if no existing result exists."""
+    if _demo_replay_enabled():
+        raise HTTPException(
+            status_code=503,
+            detail="Disabled in demo mode: agent runtime is being replayed.",
+        )
     agent_skills_path = _SKILLSBENCH_ROOT / "agent_skills.json"
     if not agent_skills_path.is_file():
         raise HTTPException(status_code=404, detail="agent_skills.json not found")

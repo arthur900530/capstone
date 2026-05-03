@@ -59,5 +59,15 @@ backend/uploads/
 # Runtime conversation sessions (generated per chat, not source code)
 backend/conversations/
 
+# Captured agent runs (start.sh --record). The whole tree is gitignored
+# except curated demo files you can intentionally commit:
+#   recordings/_default.json — global fallback used in --demo mode
+#   recordings/employees/<employee_id>.json — per-employee overrides
+backend/recordings/*
+!backend/recordings/_default.json
+!backend/recordings/employees/
+backend/recordings/employees/*
+!backend/recordings/employees/.gitkeep
+
 # Internal docs (not tracked)
 docs/

@@ -28,10 +28,12 @@ fi
 
 MOCK_MODE=0
 DEMO_MODE=0
+RECORD_MODE=0
 for arg in "$@"; do
   case "$arg" in
     --mock) MOCK_MODE=1 ;;
     --demo) DEMO_MODE=1 ;;
+    --record) RECORD_MODE=1 ;;
   esac
 done
 
@@ -303,6 +305,7 @@ header "Starting services"
 
 # Build frontend env vars from flags
 VITE_ENV=""
+BACKEND_ENV=""
 MODE_LABEL=""
 if [[ "$MOCK_MODE" == "1" ]]; then
   VITE_ENV="VITE_MOCK=true $VITE_ENV"
@@ -311,14 +314,20 @@ if [[ "$MOCK_MODE" == "1" ]]; then
 fi
 if [[ "$DEMO_MODE" == "1" ]]; then
   VITE_ENV="VITE_DEMO=true $VITE_ENV"
+  BACKEND_ENV="DEMO_REPLAY=1 $BACKEND_ENV"
   MODE_LABEL="${MODE_LABEL} demo"
-  step "Desktop simulator demo enabled"
+  step "Recorded-demo replay enabled"
+fi
+if [[ "$RECORD_MODE" == "1" ]]; then
+  BACKEND_ENV="RECORD_SESSIONS=1 $BACKEND_ENV"
+  MODE_LABEL="${MODE_LABEL} record"
+  step "Session recording on (writing to backend/recordings/)"
 fi
 
 # Start backend (logs go to backend/server.log so errors are inspectable)
 BACKEND_LOG="$BACKEND_DIR/server.log"
 : > "$BACKEND_LOG"
-(cd "$BACKEND_DIR" && PYTHONPATH=. .venv/bin/uvicorn server:app --host 127.0.0.1 --port 8000 >>"$BACKEND_LOG" 2>&1) &
+(cd "$BACKEND_DIR" && env $BACKEND_ENV PYTHONPATH=. .venv/bin/uvicorn server:app --host 127.0.0.1 --port 8000 >>"$BACKEND_LOG" 2>&1) &
 PIDS+=($!)
 
 info "Waiting for API..."
