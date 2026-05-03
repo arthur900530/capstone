@@ -13,6 +13,7 @@ import shutil
 import tempfile
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, UploadFile, File
 from fastapi.responses import FileResponse
@@ -287,7 +288,37 @@ async def train_skills(files: list[UploadFile] = File(...)):
             saved_paths.append(dest)
             saved_basenames.append(safe_name)
 
-        if _db_available:
+        if os.getenv("DEMO_REPLAY") == "1":
+            # Demo mode: train normally so the workflow review popup can
+            # render, then delete the freshly created
+            # ``backend/skills/<slug>/`` directories and intentionally
+            # return an empty ``new_skills`` list. The frontend's
+            # ``handleTrained`` auto-attaches every returned skill id to
+            # the wizard / chat selection (see SkillBrowser.jsx); since
+            # the slug exists nowhere after this branch (no DB row, no
+            # disk folder, not in ``server._SKILLS``), advertising it
+            # would cause ``_validate_skills_for_runtime`` to 400 the
+            # next chat turn with ``Unknown skill_id: ...``. Returning []
+            # keeps the demo flow purely ephemeral.
+            skills_root = Path(__file__).resolve().parent.parent / "skills"
+            before_dirs = (
+                {p.name for p in skills_root.iterdir() if p.is_dir()}
+                if skills_root.exists()
+                else set()
+            )
+
+            trainer = MMSkillTrainer()
+            train_result = await asyncio.to_thread(trainer.train, saved_paths)
+
+            if skills_root.exists():
+                after_dirs = {
+                    p.name for p in skills_root.iterdir() if p.is_dir()
+                }
+                for name in after_dirs - before_dirs:
+                    shutil.rmtree(skills_root / name, ignore_errors=True)
+
+            new_skills: list[dict] = []
+        elif _db_available:
             from services import skill_service
             async with _get_session_factory()() as session:
                 existing = await skill_service.list_skills(session)

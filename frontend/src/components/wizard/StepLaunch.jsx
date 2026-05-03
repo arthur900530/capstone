@@ -58,7 +58,8 @@ export default function StepLaunch({
                 "Custom"}
             </p>
             <p className="text-xs text-text-muted">
-              {config.model?.split("/").pop()}
+              {/* {config.model?.split("/").pop()} */}
+              {"openai/gpt-5.5-2026-04-23"}
             </p>
           </div>
         </div>

@@ -6,7 +6,7 @@ from db.engine import async_session
 from db.models import Skill
 from services import skill_service
 
-NAMES_TO_DELETE = {'KYC-Report-Generation', 'Generate-KYC-Report'}
+NAMES_TO_DELETE = {'KYC-Report-Generation', 'Company-Website-Research-for-KYC', 'Adverse-Media-Screening', 'GLEIF-LEI-Lookup'}
 
 async def main():
     async with async_session() as s:

@@ -2379,7 +2379,13 @@ async def chat(req: ChatRequest):
                 resolved_id,
                 skill_ids,
             )
-    if skill_ids:
+    if skill_ids and not _demo_replay_enabled():
+        # Demo replay never materializes skills into the runtime workspace
+        # (``_stream_demo_replay`` doesn't take ``skill_ids`` at all), so
+        # dangling slugs on the employee row — e.g. left over from a
+        # ``backend/scripts/drop_skills.py`` run that didn't scrub
+        # ``employees.skill_ids`` — shouldn't 400 the chat. The recording
+        # is what drives the demo.
         await _validate_skills_for_runtime(skill_ids)
 
     # Surface the per-employee model on the SSE ``agent`` event so the chat

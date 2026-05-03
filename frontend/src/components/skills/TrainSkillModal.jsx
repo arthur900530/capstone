@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import {
   AlertCircle,
-  CheckCircle,
   Loader2,
   Paperclip,
   Sparkles,
@@ -136,32 +135,6 @@ export default function TrainSkillModal({ open, onClose, onTrained }) {
         <div className="max-h-[80vh] space-y-4 overflow-y-auto px-5 py-4">
           {result ? (
             <div className="space-y-4">
-              <div className="flex items-center gap-2 rounded-lg bg-green-500/10 px-3 py-2.5 text-sm text-green-400">
-                <CheckCircle size={15} />
-                {skillsResult.length === 0
-                  ? "Training complete, but no new skills were extracted."
-                  : `Successfully extracted ${skillsResult.length} skill${
-                      skillsResult.length > 1 ? "s" : ""
-                    }!`}
-              </div>
-              {skillsResult.length > 0 && (
-                <div className="space-y-1.5">
-                  {skillsResult.map((s) => (
-                    <div
-                      key={s.id}
-                      className="flex items-center gap-2 rounded-md bg-charcoal/70 px-3 py-2"
-                    >
-                      <Sparkles size={12} className="shrink-0 text-accent-teal" />
-                      <span className="min-w-0 flex-1 truncate text-sm font-medium text-text-primary">
-                        {s.name}
-                      </span>
-                      <span className="shrink-0 text-[10px] text-text-muted">
-                        {s.id}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              )}
               {hasWorkflows ? (
                 <WorkflowReviewView
                   workflows={workflows}

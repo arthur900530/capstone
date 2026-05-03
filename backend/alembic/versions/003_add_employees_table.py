@@ -23,7 +23,7 @@ def upgrade():
         sa.Column("task", sa.Text, nullable=False, server_default=""),
         sa.Column("plugin_ids", JSONB, nullable=False, server_default="[]"),
         sa.Column("skill_ids", JSONB, nullable=False, server_default="[]"),
-        sa.Column("model", sa.String(120), nullable=False, server_default="openai/gpt-4o"),
+        sa.Column("model", sa.String(120), nullable=False, server_default="openai/gpt-5.5-2026-04-23"),
         sa.Column("use_reflexion", sa.Boolean, nullable=False, server_default="false"),
         sa.Column("max_trials", sa.Integer, nullable=False, server_default="3"),
         sa.Column("confidence_threshold", sa.Float, nullable=False, server_default="0.7"),

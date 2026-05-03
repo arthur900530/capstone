@@ -1,34 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import {
-  CircleAlert,
-  Globe,
-  Loader2,
-  MousePointerClick,
-  X,
-} from "lucide-react";
+import { CircleAlert, Globe, Loader2, X } from "lucide-react";
 import RFB from "@novnc/novnc";
 import { useApp } from "../context/appContextCore";
 
 // Same letterbox math as BrowserLiveView so the replay pane sizes
 // identically to the live one.
 const VM_ASPECT_RATIO = 1280 / 800;
-
-function formatAction(action) {
-  if (!action?.tool) return "";
-  const labels = {
-    browser_navigate: "Navigating",
-    browser_click: "Clicking",
-    browser_type: "Typing",
-    browser_scroll: "Scrolling",
-    browser_go_back: "Going back",
-    browser_switch_tab: "Switching tab",
-    browser_close_tab: "Closing tab",
-    browser_get_content: "Reading page",
-    browser_get_state: "Inspecting page",
-  };
-  const base = labels[action.tool] || action.tool.replaceAll("_", " ");
-  return action.detail ? `${base}: ${action.detail}` : base;
-}
 
 function base64ToArrayBuffer(b64) {
   // ``atob`` is fine for the websockify byte stream — frames are short
@@ -121,7 +98,7 @@ class FakeRfbSocket {
 }
 
 export default function BrowserReplayView({ sessionId }) {
-  const { browserLive, setBrowserLive, replayMeta } = useApp();
+  const { setBrowserLive, replayMeta } = useApp();
   const targetRef = useRef(null);
   const panelRef = useRef(null);
   const rfbRef = useRef(null);
@@ -154,11 +131,6 @@ export default function BrowserReplayView({ sessionId }) {
     }
     return { width: `${w}px`, height: `${w / VM_ASPECT_RATIO}px` };
   }, [panelSize]);
-
-  const actionText = useMemo(
-    () => formatAction(browserLive?.lastAction),
-    [browserLive?.lastAction],
-  );
 
   // Tear down any existing RFB / fake socket whenever replay meta changes
   // (i.e. a new turn starts) so each turn replays from a clean slate.
@@ -311,15 +283,6 @@ export default function BrowserReplayView({ sessionId }) {
               The recorded noVNC framebuffer plays here, in lock-step with
               the chat trajectory. No live agent runtime is running in
               demo mode.
-            </div>
-          </div>
-        )}
-
-        {actionText && phase === "playing" && (
-          <div className="pointer-events-none absolute bottom-4 left-4 right-4">
-            <div className="inline-flex max-w-full items-center gap-2 rounded-full border border-cyan-400/20 bg-slate-950/75 px-3 py-2 text-xs text-cyan-100 shadow-lg backdrop-blur">
-              <MousePointerClick size={13} className="shrink-0 text-cyan-300" />
-              <span className="truncate">{actionText}</span>
             </div>
           </div>
         )}

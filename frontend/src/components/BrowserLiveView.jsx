@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Globe, Loader2, MousePointerClick, X } from "lucide-react";
+import { Globe, Loader2, X } from "lucide-react";
 import { useApp } from "../context/appContextCore";
 import BrowserReplayView from "./BrowserReplayView";
 
@@ -18,25 +18,6 @@ const VM_ASPECT_RATIO = 1280 / 800;
 // correct surface without further changes.
 const IS_DEMO = import.meta.env.VITE_DEMO === "true";
 
-function formatAction(action) {
-  if (!action?.tool) return "";
-
-  const labels = {
-    browser_navigate: "Navigating",
-    browser_click: "Clicking",
-    browser_type: "Typing",
-    browser_scroll: "Scrolling",
-    browser_go_back: "Going back",
-    browser_switch_tab: "Switching tab",
-    browser_close_tab: "Closing tab",
-    browser_get_content: "Reading page",
-    browser_get_state: "Inspecting page",
-  };
-
-  const base = labels[action.tool] || action.tool.replaceAll("_", " ");
-  return action.detail ? `${base}: ${action.detail}` : base;
-}
-
 export default function BrowserLiveView({ sessionId }) {
   if (IS_DEMO) {
     return <BrowserReplayView sessionId={sessionId} />;
@@ -46,6 +27,9 @@ export default function BrowserLiveView({ sessionId }) {
 
 function BrowserLiveViewLive({ sessionId }) {
   const { browserLive, setBrowserLive } = useApp();
+  // ``browserLive.lastAction`` is still tracked in app state because other
+  // surfaces (chat trajectory rows, etc.) consume it; we just don't
+  // overlay the floating action chip on this panel anymore.
   const [iframeSrc, setIframeSrc] = useState("");
   const [status, setStatus] = useState("Waiting for agent to open the browser...");
   const [panelSize, setPanelSize] = useState({ w: 0, h: 0 });
@@ -85,11 +69,6 @@ function BrowserLiveViewLive({ sessionId }) {
       height: `${w / VM_ASPECT_RATIO}px`,
     };
   }, [panelSize]);
-
-  const actionText = useMemo(
-    () => formatAction(browserLive?.lastAction),
-    [browserLive?.lastAction],
-  );
 
   useEffect(() => {
     if (!browserLive?.enabled || !browserLive?.visible) {
@@ -190,15 +169,6 @@ function BrowserLiveViewLive({ sessionId }) {
             <div className="max-w-sm text-xs text-slate-500">
               The panel connects automatically once the agent Chromium is up.
               The view is read-only while the agent is working.
-            </div>
-          </div>
-        )}
-
-        {actionText && (
-          <div className="pointer-events-none absolute bottom-4 left-4 right-4">
-            <div className="inline-flex max-w-full items-center gap-2 rounded-full border border-cyan-400/20 bg-slate-950/75 px-3 py-2 text-xs text-cyan-100 shadow-lg backdrop-blur">
-              <MousePointerClick size={13} className="shrink-0 text-cyan-300" />
-              <span className="truncate">{actionText}</span>
             </div>
           </div>
         )}
