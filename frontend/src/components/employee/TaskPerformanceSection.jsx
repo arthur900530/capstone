@@ -1260,11 +1260,7 @@ export default function TaskPerformanceSection({
   return (
     <div className="space-y-4">
       {/* Goal-oriented KPI tiles */}
-      <div
-        className={`grid grid-cols-1 gap-3 ${
-          tasksWorkflowAligned > 0 ? "sm:grid-cols-4" : "sm:grid-cols-3"
-        }`}
-      >
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-4">
         <Kpi
           icon={TrendingUp}
           label="Avg success rate"
@@ -1282,33 +1278,44 @@ export default function TaskPerformanceSection({
           }
           accent={annotatedTasks > 0 ? leafAccent : undefined}
         />
-        {tasksWorkflowAligned > 0 ? (
-          <Kpi
-            icon={GitCompareArrows}
-            label="Workflow alignment"
-            value={
-              workflowSteps.total > 0 ? (
-                <>
-                  <span>{workflowSteps.passed}</span>
-                  <span className="text-lg font-normal text-text-muted">
-                    {" / "}
-                    {workflowSteps.total}
-                  </span>
-                </>
-              ) : (
-                "—"
-              )
-            }
-            sub={
-              workflowSteps.total > 0
+        {/* Always render so the layout doesn't shift the moment the first
+            alignment lands. Shows ``—/—`` until the user aligns at least
+            one task in the trajectory drawer's Workflow tab. */}
+        <Kpi
+          icon={GitCompareArrows}
+          label="Workflow alignment"
+          value={
+            workflowSteps.total > 0 ? (
+              <>
+                <span>{workflowSteps.passed}</span>
+                <span className="text-lg font-normal text-text-muted">
+                  {" / "}
+                  {workflowSteps.total}
+                </span>
+              </>
+            ) : (
+              <>
+                <span className="text-text-muted">—</span>
+                <span className="text-lg font-normal text-text-muted">
+                  {" / "}
+                  —
+                </span>
+              </>
+            )
+          }
+          sub={
+            tasksWorkflowAligned > 0
+              ? workflowSteps.total > 0
                 ? `${workflowMicroPct}% of leaf steps · avg ${Math.round(
                     (workflowRate || 0) * 100,
                   )}% per task`
                 : "no leaf-step signal yet"
-            }
-            accent={accentForRate(workflowRate)}
-          />
-        ) : null}
+              : "align a task in the trajectory drawer to populate"
+          }
+          accent={
+            tasksWorkflowAligned > 0 ? accentForRate(workflowRate) : undefined
+          }
+        />
         <Kpi
           icon={Target}
           label="Tasks achieved"
