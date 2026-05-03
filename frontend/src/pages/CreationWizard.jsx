@@ -131,6 +131,7 @@ export default function CreationWizard() {
         )}
         {step === 1 && (
           <StepPlugin
+            description={description}
             selectedPluginIds={selectedPluginIds}
             onSelectPlugins={setSelectedPluginIds}
             skillIds={skillIds}

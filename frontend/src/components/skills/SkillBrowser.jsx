@@ -10,7 +10,13 @@ import CreateSkillModal from "./CreateSkillModal";
 import TrainSkillModal from "./TrainSkillModal";
 import SubmitSkillModal from "./SubmitSkillModal";
 
-export default function SkillBrowser({ selectedSkillIds, onToggleSkill, onSkillsChanged, defaultSubTab = "browse" }) {
+export default function SkillBrowser({
+  selectedSkillIds,
+  onToggleSkill,
+  onAddSkills,
+  onSkillsChanged,
+  defaultSubTab = "browse",
+}) {
   const [skills, setSkills] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -54,7 +60,11 @@ export default function SkillBrowser({ selectedSkillIds, onToggleSkill, onSkills
     setSkills((prev) => [...prev, skill]);
     setSelectedId(skill.id);
     setSubTab("browse");
-    onToggleSkill(skill.id);
+    if (onAddSkills) {
+      onAddSkills([skill.id]);
+    } else {
+      onToggleSkill(skill.id);
+    }
     onSkillsChanged?.();
   };
 
@@ -62,8 +72,21 @@ export default function SkillBrowser({ selectedSkillIds, onToggleSkill, onSkills
     await refreshList();
     setSubTab("browse");
     if (newSkills.length > 0) {
-      setSelectedId(newSkills[0].id);
-      onToggleSkill(newSkills[0].id);
+      const newSkillIds = newSkills
+        .map((skill) => skill?.id)
+        .filter(Boolean);
+      setSelectedId(newSkillIds[0] || null);
+      if (newSkillIds.length > 0) {
+        if (onAddSkills) {
+          onAddSkills(newSkillIds);
+        } else {
+          newSkillIds.forEach((skillId) => {
+            if (!selectedSkillIds.includes(skillId)) {
+              onToggleSkill(skillId);
+            }
+          });
+        }
+      }
     }
   };
 
