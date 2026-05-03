@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Globe, Loader2, MousePointerClick, X } from "lucide-react";
 import { useApp } from "../context/appContextCore";
+import BrowserReplayView from "./BrowserReplayView";
 
 // The agent's VM runs Chromium inside a desktop environment. noVNC streams
 // the whole desktop over ``resize=scale``. We measure the panel with a
@@ -8,6 +9,14 @@ import { useApp } from "../context/appContextCore";
 // width horizontally and letterbox vertically if the panel is taller than
 // the VM's aspect ratio. This shows the entire VM with no cropping.
 const VM_ASPECT_RATIO = 1280 / 800;
+
+// When the backend runs in --demo mode (DEMO_REPLAY=1, surfaced as
+// VITE_DEMO=true on the frontend), there is no live noVNC container
+// behind /api/browser/live. The replay viewer renders a real <canvas>
+// driven by recorded RFB bytes, so we early-return it from BrowserLiveView
+// — every existing call site (ChatView, EmployeePage, etc.) gets the
+// correct surface without further changes.
+const IS_DEMO = import.meta.env.VITE_DEMO === "true";
 
 function formatAction(action) {
   if (!action?.tool) return "";
@@ -29,6 +38,13 @@ function formatAction(action) {
 }
 
 export default function BrowserLiveView({ sessionId }) {
+  if (IS_DEMO) {
+    return <BrowserReplayView sessionId={sessionId} />;
+  }
+  return <BrowserLiveViewLive sessionId={sessionId} />;
+}
+
+function BrowserLiveViewLive({ sessionId }) {
   const { browserLive, setBrowserLive } = useApp();
   const [iframeSrc, setIframeSrc] = useState("");
   const [status, setStatus] = useState("Waiting for agent to open the browser...");

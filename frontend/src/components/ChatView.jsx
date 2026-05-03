@@ -17,7 +17,6 @@ import BrowserLiveView from "./BrowserLiveView";
 import { useApp } from "../context/appContextCore";
 
 const LIVE_BROWSER_ENABLED = import.meta.env.VITE_LIVE_BROWSER !== "false";
-const IS_DEMO = import.meta.env.VITE_DEMO === "true";
 
 // Intermediate agent events that make up the "trajectory" — collapsed per turn
 // behind a per-response toggle so the chat shows only user turns, final
@@ -207,7 +206,10 @@ export default function ChatView({ showWelcome = true, embedded = false }) {
     setRatings?.((prev) => ({ ...(prev || {}), [taskIndex]: rating }));
   };
 
-  const liveBrowserAvailable = LIVE_BROWSER_ENABLED && !IS_DEMO;
+  // BrowserLiveView itself swaps to BrowserReplayView when VITE_DEMO=true,
+  // so we no longer need the IS_DEMO gate here. The same panel handles
+  // both live and replay modes transparently.
+  const liveBrowserAvailable = LIVE_BROWSER_ENABLED;
 
   const toggleBrowserVisible = () => {
     if (!setBrowserLive) return;

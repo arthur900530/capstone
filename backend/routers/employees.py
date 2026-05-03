@@ -64,6 +64,22 @@ from trajectory_workflow_align import align_trajectory_to_workflow
 
 router = APIRouter(prefix="/api/employees", tags=["employees"])
 
+
+def _demo_replay_guard() -> None:
+    """Raise 503 when the server is running in --demo (replay) mode.
+
+    The agent runtime is replaced by recorded SSE replay in demo mode, so
+    endpoints that would otherwise spawn an LLM/Docker run must refuse
+    cleanly instead of trying to call into the missing runtime. Read-only
+    endpoints (metrics, chat history, trajectory drawer) are unaffected.
+    """
+    if os.getenv("DEMO_REPLAY") == "1":
+        raise HTTPException(
+            status_code=503,
+            detail="Disabled in demo mode: agent runtime is being replayed.",
+        )
+
+
 _db_available = False
 _memory_store: list[dict] = []
 _test_case_memory_store: dict[str, list[dict[str, Any]]] = {}
@@ -306,6 +322,7 @@ async def _auto_select_skills(description: str) -> list[str]:
 
 @router.post("/suggest-skills")
 async def suggest_skills(body: SkillSuggestionRequest):
+    _demo_replay_guard()
     return {"skillIds": await _auto_select_skills(body.description or "")}
 
 
@@ -1191,6 +1208,7 @@ async def _run_single_test_case(employee_id: str, case_payload: dict[str, Any]) 
 
 @router.post("/{employee_id}/test_cases/{case_id}/run")
 async def run_employee_test_case(employee_id: str, case_id: str):
+    _demo_replay_guard()
     await _assert_employee_exists(employee_id)
     if _db_available:
         from db.engine import async_session
@@ -1224,6 +1242,7 @@ async def run_employee_test_case(employee_id: str, case_id: str):
 
 @router.post("/{employee_id}/test_cases/run_all")
 async def run_all_employee_test_cases(employee_id: str):
+    _demo_replay_guard()
     await _assert_employee_exists(employee_id)
     if _db_available:
         from db.engine import async_session

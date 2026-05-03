@@ -93,6 +93,10 @@ export default function App() {
     sessionId: null,
     lastAction: null,
   });
+  // Set when the backend's --demo replay handler emits a ``replay_meta``
+  // SSE event up front. BrowserReplayView reads this to know which
+  // recording / turn's RFB byte stream to fetch.
+  const [replayMeta, setReplayMeta] = useState(null);
 
   // Routes where the chat-style workspace (canvas + file tree) is meaningful.
   // We gate by route — not by an effect-driven `chatMounted` flag — so the
@@ -341,6 +345,29 @@ export default function App() {
                 { type: "agent_marker", agent: data },
               ]);
               return;
+            case "replay_meta":
+              // --demo replay: the backend tells us which recording is
+              // playing this turn so BrowserReplayView can fetch the
+              // matching RFB byte slice.
+              setReplayMeta({
+                recordingId: data.recording_id,
+                turn: data.turn,
+                browserFramesUrl: data.browser_frames_url,
+                frameCount: data.frame_count,
+              });
+              // Auto-show the browser pane if the recording has frames; the
+              // tool_call event below also flips visible=true on browser_*
+              // tools, but for non-browser recordings (frame_count==0) we
+              // intentionally leave it untouched.
+              if ((data.frame_count ?? 0) > 0) {
+                setBrowserLive((prev) => ({
+                  ...prev,
+                  visible: true,
+                  status: "replay",
+                  sessionId: sid,
+                }));
+              }
+              return;
             case "status":
               msg = {
                 role: "assistant",
@@ -547,6 +574,7 @@ export default function App() {
       sessionId: null,
       lastAction: null,
     });
+    setReplayMeta(null);
   };
 
   const ownerEmployeeOf = useCallback(
@@ -747,6 +775,8 @@ export default function App() {
     setCanvasCollapsed,
     browserLive,
     setBrowserLive,
+    replayMeta,
+    setReplayMeta,
     handleCanvasSelectFile,
     handleCanvasCloseFile,
     workspacePanelOpen,
