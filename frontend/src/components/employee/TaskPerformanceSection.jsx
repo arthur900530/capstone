@@ -1226,11 +1226,11 @@ export default function TaskPerformanceSection({
       ? Math.round((leafTotals.achieved / leafTotals.total) * 100)
       : 0;
 
-  // Task-level "fully achieved" — a task counts iff every depth of the
-  // weighted score was success (``task_score === 1``), and the
-  // denominator is annotated tasks. The per-goal counts the old field
-  // exposed double-credited sessions with multiple surfaced sub-goals
-  // and let a root-level "failure" annotation slip through unseen.
+  // "Tasks achieved" is a pure workflow-alignment KPI — a task counts iff
+  // the user has aligned it against a skill workflow AND every workflow
+  // step is satisfied. The denominator is therefore the number of
+  // workflow-aligned runs, not all annotated runs, so unaligned tasks
+  // don't quietly drag the ratio down or pad the denominator.
   const annotatedTasks = aggregate?.annotated_tasks ?? 0;
   const tasksFullyAchieved = aggregate?.tasks_fully_achieved ?? 0;
 
@@ -1313,19 +1313,23 @@ export default function TaskPerformanceSection({
           icon={Target}
           label="Tasks achieved"
           value={
-            annotatedTasks > 0 ? (
+            tasksWorkflowAligned > 0 ? (
               <>
                 <span>{tasksFullyAchieved}</span>
                 <span className="text-lg font-normal text-text-muted">
                   {" / "}
-                  {annotatedTasks}
+                  {tasksWorkflowAligned}
                 </span>
               </>
             ) : (
               "—"
             )
           }
-          sub="LLM top-level verdict = success"
+          sub={
+            tasksWorkflowAligned > 0
+              ? "workflow alignment = 100%"
+              : "align a task against a skill workflow to populate"
+          }
         />
         <Kpi
           icon={ListChecks}

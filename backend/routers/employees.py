@@ -2538,18 +2538,132 @@ async def annotate_recent_task_runs(
     the report card's goal-oriented KPIs populate. Runs concurrently with a
     small fan-out ceiling to avoid spamming the LLM endpoint.
     """
+    import asyncio
+
+    limit = max(1, min(int(limit), 50))
+
+    # ── Demo mode ────────────────────────────────────────────────────────
+    # Newly-created employees in --demo have no ``task_runs`` rows for
+    # their UUID (the agent runtime is replaced by recorded replay), so the
+    # DB-backed path below would silently return ``{scanned: 0}`` and the
+    # report card's goal bars would stay empty forever. Mirror what
+    # ``annotate_task_trajectory`` already does for single tasks: synthesize
+    # the runs from this employee's recording (with ``_default.json`` as
+    # the fallback) and write annotations into the in-process
+    # ``_DEMO_TRAJ_CACHE`` so subsequent ``/metrics`` calls pick them up.
+    if _demo_replay_enabled():
+        import session_replay  # local import
+
+        picked = session_replay.pick_recording(employee_id)
+        if picked is None:
+            return {
+                "employee_id": employee_id,
+                "scanned": 0,
+                "annotated": 0,
+                "skipped_unpersisted": 0,
+                "already_cached": 0,
+                "failed": [],
+            }
+        path, recording_id = picked
+        try:
+            data = session_replay.load(path)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(
+                500, f"Failed to load demo recording: {exc}"
+            ) from exc
+
+        runs = session_replay.task_runs_from_recording(
+            data, recording_id=recording_id
+        )
+        # Most-recent first to match the DB branch's ORDER BY desc, then
+        # trim to ``limit`` so a long recording doesn't fan out to dozens
+        # of LLM calls in one click.
+        _epoch = datetime.fromtimestamp(0, tz=timezone.utc)
+        runs.sort(
+            key=lambda r: r.get("started_at") or _epoch,
+            reverse=True,
+        )
+        runs = runs[:limit]
+
+        targets: list[tuple[int, dict, dict]] = []
+        already_cached = 0
+        skipped_unpersisted = 0
+        for run in runs:
+            idx = int(run.get("task_index") or 0)
+            if not run.get("raw_events"):
+                skipped_unpersisted += 1
+                continue
+            cached = _DEMO_TRAJ_CACHE.get((recording_id, idx)) or {}
+            # ``workflow_aligns`` is a sibling subkey written by the align
+            # endpoint and must not count as "already annotated" here.
+            cached_paths = {
+                k: v for k, v in cached.items() if k != "workflow_aligns"
+            }
+            if cached_paths and not force:
+                already_cached += 1
+                continue
+            targets.append((idx, run, cached))
+
+        if not targets:
+            return {
+                "employee_id": employee_id,
+                "scanned": len(runs),
+                "annotated": 0,
+                "skipped_unpersisted": skipped_unpersisted,
+                "already_cached": already_cached,
+                "failed": [],
+            }
+
+        semaphore = asyncio.Semaphore(3)  # cap LLM fan-out
+
+        async def _one_demo(
+            entry: tuple[int, dict, dict],
+        ) -> tuple[int, bool, str | None]:
+            idx, run, cached = entry
+            async with semaphore:
+                try:
+                    action_nodes, trial_boundaries = build_nodes_from_events(
+                        run.get("raw_events") or []
+                    )
+                    tree = segment_nodes(action_nodes, trial_boundaries)
+                    fresh = await annotate_tree(tree)
+                except Exception as exc:  # noqa: BLE001
+                    return idx, False, str(exc)[:200]
+
+            merged: dict[str, Any] = {**fresh}
+            # Preserve any previously cached workflow_aligns under this run
+            # so backfill doesn't wipe align results from the drawer.
+            if isinstance(cached.get("workflow_aligns"), dict):
+                merged["workflow_aligns"] = cached["workflow_aligns"]
+            _DEMO_TRAJ_CACHE[(recording_id, idx)] = merged
+            return idx, True, None
+
+        demo_results = await asyncio.gather(*(_one_demo(t) for t in targets))
+        succeeded_demo = [r for r in demo_results if r[1]]
+        failed_demo = [
+            {"session_id": recording_id, "task_index": r[0], "error": r[2]}
+            for r in demo_results
+            if not r[1]
+        ]
+
+        return {
+            "employee_id": employee_id,
+            "scanned": len(runs),
+            "annotated": len(succeeded_demo),
+            "failed": failed_demo,
+            "skipped_unpersisted": skipped_unpersisted,
+            "already_cached": already_cached,
+        }
+
     if not _db_available:
         raise HTTPException(
             503, "Trajectory annotation requires the database to be available."
         )
 
-    import asyncio
-
     from db.engine import async_session
     from db.models import Employee, TaskRun
     from sqlalchemy import select, update
 
-    limit = max(1, min(int(limit), 50))
     emp_uuid = _parse_uuid(employee_id)
 
     async with async_session() as session:

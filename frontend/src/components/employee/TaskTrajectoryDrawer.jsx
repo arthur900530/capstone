@@ -388,13 +388,22 @@ export default function TaskTrajectoryDrawer({ employeeId, task, onClose, onAnno
     if (!task || !selectedSkillId) return;
     setAligning(true);
     setAlignError(null);
+    // In demo mode every employee without a custom recording falls back
+    // to ``recordings/_default.json``, so the backend's
+    // ``_DEMO_TRAJ_CACHE`` (keyed by recording_id) leaks earlier
+    // employees' alignments into newly-created ones. Always force a
+    // fresh LLM call here so the workflow tab reflects this employee's
+    // actual run instead of someone else's cached result. The alignment
+    // is still mirrored into ``cachedAligns`` below so dropdown
+    // toggling within this drawer session stays instant.
+    const isDemoMode = import.meta.env.VITE_DEMO === "true";
     try {
       const result = await alignTaskTrajectoryWithWorkflow(
         employeeId,
         task.sessionId,
         task.taskIndex,
         selectedSkillId,
-        { force },
+        { force: force || isDemoMode },
       );
       setAlignment(result);
       // Mirror the freshly-computed alignment into the local cache so

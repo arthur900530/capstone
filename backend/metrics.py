@@ -502,16 +502,18 @@ def aggregate_task_runs(runs: Iterable[dict]) -> dict:
     rating_distribution: dict[int, int] = {k: 0 for k in range(1, 6)}
     for r in user_ratings:
         rating_distribution[r] = rating_distribution.get(r, 0) + 1
-    # "Tasks achieved" uses the LLM's top-level (root) verdict directly:
-    # the session is achieved iff the root annotation says ``success``.
-    # The earlier strict-1.0 rule punished every imperfect leaf trace
-    # and ended up 0/N; the per-goal count before that ignored the root
-    # entirely. Neither matched what the user sees in the drawer.
+    # "Tasks achieved" is a pure workflow-alignment signal: a run counts
+    # as achieved iff the user has aligned it against at least one skill
+    # workflow AND the best alignment satisfies every workflow step
+    # (rate >= 1.0). The denominator is therefore ``tasks_workflow_aligned``
+    # — runs that were never aligned have no opinion and don't count for
+    # or against. The earlier definitions mixed in the LLM's root verdict,
+    # which silently disagreed with what the workflow tab in the drawer
+    # showed; this version makes the KPI trace back to a single signal.
     tasks_fully_achieved = sum(
         1
-        for r in runs
-        if ((r.get("trajectory_annotations") or {}).get("root") or {}).get("status")
-        == "success"
+        for s in aligned_summaries
+        if float(((s.get("best") or {}).get("rate") or 0.0)) >= 1.0
     )
 
     return {
