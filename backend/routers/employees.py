@@ -22,7 +22,10 @@ from config import SKILL_SELECTION_MODEL
 from config import TEST_CASE_DEFAULT_MAX_LATENCY_MS, TEST_CASE_MIN_LATENCY_MS
 from test_case_generator import generate_test_cases
 from test_case_runner import run_test_case
-from workflow import compute_workflow_completion, load_workflow
+from workflow import (
+    compute_workflow_completion,
+    load_workflow_with_memory_fallback,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1108,7 +1111,9 @@ async def _run_single_test_case(employee_id: str, case_payload: dict[str, Any]) 
     target_slug = case_payload.get("skill_slug")
     if target_slug:
         try:
-            wf = await asyncio.to_thread(load_workflow, target_slug)
+            wf = await asyncio.to_thread(
+                load_workflow_with_memory_fallback, target_slug
+            )
             if wf is not None:
                 expected_workflow_dict = wf.to_dict()
         except Exception:  # noqa: BLE001
@@ -1375,7 +1380,9 @@ async def list_employee_test_case_runs(employee_id: str, case_id: str):
         expected_workflow_dict: dict | None = None
         if target_slug:
             try:
-                wf = await asyncio.to_thread(load_workflow, target_slug)
+                wf = await asyncio.to_thread(
+                    load_workflow_with_memory_fallback, target_slug
+                )
                 if wf is not None:
                     expected_workflow_dict = wf.to_dict()
             except Exception:  # noqa: BLE001
@@ -1808,7 +1815,7 @@ async def _hydrate_workflow_aligns(annotations: dict | None) -> list[dict]:
     async def _load_slug(slug: str) -> dict | None:
         if slug in workflow_by_slug:
             return workflow_by_slug[slug]
-        wf = await asyncio.to_thread(load_workflow, slug)
+        wf = await asyncio.to_thread(load_workflow_with_memory_fallback, slug)
         workflow_by_slug[slug] = wf.to_dict() if wf is not None else None
         return workflow_by_slug[slug]
 
@@ -2265,7 +2272,12 @@ async def align_task_trajectory(
         if not skill_slug:
             raise HTTPException(404, "Could not resolve skill slug")
 
-        wf = await asyncio.to_thread(load_workflow, skill_slug)
+        # Use the memory-fallback variant so skills trained during a
+        # --demo session (whose backend/skills/<slug>/ dirs are purged
+        # right after capturing files into server._FILE_CONTENTS) can
+        # still be aligned against. Disk-resident skills take the fast
+        # path and behave exactly as before.
+        wf = await asyncio.to_thread(load_workflow_with_memory_fallback, skill_slug)
         expected_workflow_dict = wf.to_dict() if wf is not None else None
         if expected_workflow_dict is None:
             raise HTTPException(
@@ -2383,7 +2395,7 @@ async def align_task_trajectory(
         skill_slug = skill_id
 
     if skill_slug:
-        wf = await asyncio.to_thread(load_workflow, skill_slug)
+        wf = await asyncio.to_thread(load_workflow_with_memory_fallback, skill_slug)
         if wf is not None:
             expected_workflow_dict = wf.to_dict()
     if expected_workflow_dict is None:

@@ -171,6 +171,54 @@ def load_workflow(slug: str) -> Workflow | None:
         return None
 
 
+def load_workflow_with_memory_fallback(slug: str) -> Workflow | None:
+    """Load a skill's workflow, preferring disk and falling back to memory.
+
+    The on-disk ``backend/skills/<slug>/workflow.json`` is the canonical
+    source. When --demo replay is active, ``routers/skills.train_skill``
+    captures every trained skill's files into ``server._FILE_CONTENTS``
+    and then ``shutil.rmtree``s the on-disk directory so the working
+    tree stays clean across server restarts. After that purge,
+    :func:`load_workflow` returns ``None`` even though the workflow
+    text is still reachable in process memory.
+
+    This helper closes that gap by checking ``_FILE_CONTENTS[slug]
+    ['workflow.json']`` whenever disk has nothing to offer. The fallback
+    is harmless in non-demo deployments because ``_FILE_CONTENTS`` only
+    contains entries the server has already loaded — disk-resident
+    skills hit the fast path above and never touch the fallback.
+
+    The ``server`` import is local to keep this module free of any
+    runtime dependency on the FastAPI app shell (which mutates
+    ``_FILE_CONTENTS`` only after its own import graph is fully
+    resolved). If ``server`` can't be imported for any reason — e.g.
+    in a unit test that exercises ``workflow.py`` standalone — we
+    silently fall through to the original ``None`` behaviour.
+    """
+    wf = load_workflow(slug)
+    if wf is not None:
+        return wf
+    if not slug:
+        return None
+    try:
+        import server  # local: avoids module-load cycles, server isn't loaded in tests
+    except ImportError:
+        return None
+    raw_contents = getattr(server, "_FILE_CONTENTS", None) or {}
+    skill_files = raw_contents.get(slug) or {}
+    raw = skill_files.get("workflow.json")
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    try:
+        return Workflow.from_dict(data)
+    except Exception:
+        return None
+
+
 def save_workflow(slug: str, workflow: Workflow) -> Path:
     """Persist ``workflow`` next to the skill's ``SKILL.md``."""
     path = workflow_path(slug)

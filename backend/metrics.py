@@ -311,7 +311,7 @@ def _summarize_workflow_aligns(
     so an older alignment still flows into the headline KPI rather than
     being silently dropped.
     """
-    from workflow import compute_workflow_completion, load_workflow
+    from workflow import compute_workflow_completion, load_workflow_with_memory_fallback
 
     aligns_raw = (annotations or {}).get("workflow_aligns") or {}
     if not isinstance(aligns_raw, dict):
@@ -324,7 +324,12 @@ def _summarize_workflow_aligns(
             return None
         if slug in workflow_by_slug:
             return workflow_by_slug[slug]
-        wf = load_workflow(slug)
+        # Use the memory-fallback variant so cached alignments against
+        # skills trained during a --demo session (whose backend/skills/
+        # <slug>/ dirs are purged after capture) still hydrate into the
+        # report card's headline workflow score instead of being
+        # silently dropped.
+        wf = load_workflow_with_memory_fallback(slug)
         workflow_by_slug[slug] = wf.to_dict() if wf is not None else None
         return workflow_by_slug[slug]
 

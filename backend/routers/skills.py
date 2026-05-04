@@ -20,7 +20,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from skills_ingestor.sessions import get_default_store
-from workflow import load_workflow
+from workflow import load_workflow_with_memory_fallback
 
 router = APIRouter(prefix="/api/skills", tags=["skills"])
 
@@ -81,7 +81,33 @@ async def list_skills():
     if _db_available:
         from services import skill_service
         async with _get_session_factory()() as session:
-            return await skill_service.list_skills(session)
+            db_skills = await skill_service.list_skills(session)
+
+        # In --demo mode, the train flow only writes new skills to the
+        # in-memory ``server._SKILLS`` dict (it never inserts DB rows so
+        # the demo never pollutes persistent state across restarts).
+        # Without this merge, freshly trained skills would be invisible
+        # in any surface that fetches via this endpoint — most visibly
+        # the trajectory drawer's "Compare with workflow" picker. Append
+        # any in-memory entry whose slug isn't already represented in
+        # the DB result so trained-this-session skills show up alongside
+        # the DB-seeded ones, while existing UUID-based assignments stay
+        # untouched.
+        if os.getenv("DEMO_REPLAY") == "1":
+            skills, _ = _get_in_memory_stores()
+            existing_slugs = {
+                str(s.get("slug") or s.get("id") or "") for s in db_skills
+            }
+            existing_slugs.discard("")
+            extras = [
+                skill
+                for slug, skill in skills.items()
+                if slug not in existing_slugs
+            ]
+            if extras:
+                extras.sort(key=lambda s: str(s.get("created_at", "")))
+                return [*db_skills, *extras]
+        return db_skills
 
     skills, _ = _get_in_memory_stores()
     return sorted(skills.values(), key=lambda s: str(s.get("created_at", "")))
@@ -93,9 +119,19 @@ async def get_skill(skill_id: str):
         from services import skill_service
         async with _get_session_factory()() as session:
             result = await skill_service.get_skill(session, skill_id)
-            if not result:
-                raise HTTPException(status_code=404, detail="Skill not found")
+        if result:
             return result
+        # Demo-mode fallback: ``list_skills`` merges in-memory entries
+        # that aren't backed by a DB row, so the picker can hand us a
+        # slug-shaped id the DB has never heard of. Resolve it from
+        # ``server._SKILLS`` before 404'ing so detail surfaces (skill
+        # detail panel, etc.) keep working for trained-this-session
+        # skills.
+        if os.getenv("DEMO_REPLAY") == "1":
+            skills, _ = _get_in_memory_stores()
+            if skill_id in skills:
+                return skills[skill_id]
+        raise HTTPException(status_code=404, detail="Skill not found")
 
     skills, _ = _get_in_memory_stores()
     if skill_id not in skills:
@@ -448,7 +484,11 @@ async def get_skill_workflow(skill_id: str):
     if slug is None:
         raise HTTPException(status_code=404, detail="Skill not found")
 
-    workflow = await asyncio.to_thread(load_workflow, slug)
+    # Use the memory-fallback variant so a skill whose disk dir was
+    # purged (--demo training keeps the workflow text in server.
+    # _FILE_CONTENTS but removes backend/skills/<slug>/) can still
+    # serve its workflow.json to the trajectory drawer / review surfaces.
+    workflow = await asyncio.to_thread(load_workflow_with_memory_fallback, slug)
     if workflow is None:
         raise HTTPException(status_code=404, detail="Workflow not found for skill")
     return workflow.to_dict()
