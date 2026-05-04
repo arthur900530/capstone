@@ -129,8 +129,14 @@ export default function EmployeePage() {
     navigate("/");
   };
 
-  const showBrowserPanel =
-    LIVE_BROWSER_ENABLED && activeTab === "chat" && browserLive?.visible;
+  // Intentionally NOT gated on ``activeTab === "chat"``. The chat
+  // container below is kept mounted (and hidden via CSS) when the user
+  // navigates to another tab, so the BrowserLiveView / BrowserReplayView
+  // instance — and in --demo mode the running noVNC RFB session — can
+  // survive tab switches. Re-adding the active-tab check here would
+  // unmount the browser panel on every Report Card / Skills hop and the
+  // demo replay would restart from frame 0 on return.
+  const showBrowserPanel = LIVE_BROWSER_ENABLED && browserLive?.visible;
 
   return (
     <div className="flex flex-1 flex-col min-h-0 overflow-hidden">
@@ -200,22 +206,32 @@ export default function EmployeePage() {
         </div>
       </div>
 
-      {activeTab === "chat" && (
-        <div className="flex flex-1 overflow-hidden">
-          <div
-            className={`flex min-w-0 flex-1 flex-col transition-all duration-300 ${
-              showBrowserPanel ? "border-r border-border/20 lg:max-w-[50%]" : ""
-            }`}
-          >
-            <ChatView embedded />
-          </div>
-          {showBrowserPanel && (
-            <div className="hidden flex-1 flex-col lg:flex">
-              <BrowserLiveView sessionId={sessionId || browserLive?.sessionId} />
-            </div>
-          )}
+      {/* Chat panel is mounted unconditionally and merely hidden via CSS
+          when the user is on another tab. Unmounting would tear down
+          ChatView's local message state and, in --demo mode, the
+          BrowserReplayView's RFB session + queued frame timers, causing
+          the recorded browser to restart from frame 0 every time the
+          user came back from Report Card / Skills / etc. ``hidden``
+          (display:none) collapses the layout so the active tab below
+          still gets the full viewport. */}
+      <div
+        className={`flex flex-1 overflow-hidden ${
+          activeTab !== "chat" ? "hidden" : ""
+        }`}
+      >
+        <div
+          className={`flex min-w-0 flex-1 flex-col transition-all duration-300 ${
+            showBrowserPanel ? "border-r border-border/20 lg:max-w-[50%]" : ""
+          }`}
+        >
+          <ChatView embedded />
         </div>
-      )}
+        {showBrowserPanel && (
+          <div className="hidden flex-1 flex-col lg:flex">
+            <BrowserLiveView sessionId={sessionId || browserLive?.sessionId} />
+          </div>
+        )}
+      </div>
       {activeTab === "skills" && (
         <EmployeeSkillsTab
           key={id}

@@ -597,6 +597,13 @@ function TaskRow({ index, run, expanded, onToggle, onOpenTrajectory }) {
   const wfAccent =
     wfBest != null ? BUCKET_STYLES[scoreBucket(wfBest.rate)] : null;
   const isAutotest = run.source === "autotest";
+  // Until the LLM annotates a run we have no per-goal verdicts, so the
+  // multi-segment GoalBar would just render a row of muted greys with
+  // confusing dividers. Collapse to a single grey bar and pin the
+  // headline % to 0 so unannotated tasks read as "no signal · 0%"
+  // instead of "—". Once ``run.annotated`` flips true the rest of the
+  // row falls back to the normal score-driven rendering.
+  const isUnannotated = !run.annotated;
 
   const title =
     run.prompt_preview?.trim() ||
@@ -648,14 +655,27 @@ function TaskRow({ index, run, expanded, onToggle, onOpenTrajectory }) {
           </span>
         ) : null}
         <span
-          className={`shrink-0 text-[13px] font-semibold tabular-nums ${pctColor}`}
+          className={`shrink-0 text-[13px] font-semibold tabular-nums ${
+            isUnannotated ? "text-text-muted" : pctColor
+          }`}
+          title={isUnannotated ? "Not yet annotated — score defaults to 0%" : undefined}
         >
-          {hasSignal ? `${pct}%` : "—"}
+          {isUnannotated ? "0%" : hasSignal ? `${pct}%` : "0%"}
         </span>
       </div>
 
       <div className="mt-2 pl-10">
-        {aligned && wfBest?.workflow ? (
+        {isUnannotated ? (
+          // Single muted bar so an unscored run reads as "empty" at a
+          // glance instead of a row of GoalBar segments that all happen
+          // to fall into the empty bucket.
+          <div
+            className="h-3 w-full rounded border border-border/40 bg-zinc-700/60"
+            role="img"
+            aria-label="Not yet annotated"
+            title="Not yet annotated — run the LLM to score this task"
+          />
+        ) : aligned && wfBest?.workflow ? (
           // For workflow-aligned runs the bar reflects the chosen
           // skill's workflow steps and the LLM's per-leaf alignment so
           // the visual matches the score the user just saw in the
@@ -667,7 +687,7 @@ function TaskRow({ index, run, expanded, onToggle, onOpenTrajectory }) {
         ) : (
           <GoalBar goals={goals} />
         )}
-        {!hasSignal && !run.annotated ? (
+        {isUnannotated ? (
           <p className="mt-1 text-[11px] italic text-text-muted">
             Not yet annotated — run the LLM to score this task.
           </p>
