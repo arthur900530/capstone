@@ -6,7 +6,16 @@ import {
   Search,
 } from "lucide-react";
 import FileTreeNode from "./FileTreeNode";
-import { fetchWorkspaceTree } from "../services/api";
+import { fetchWorkspaceTree, isDemoMount } from "../services/api";
+
+// Hard-coded artifact list surfaced when the panel is bound to the
+// ``demo://workspace`` sentinel. Mirrors the constants in App.jsx —
+// keeping a small duplicate here avoids a circular import (App imports
+// WorkspacePanel) without adding context plumbing for two filenames.
+const DEMO_ARTIFACTS = [
+  { name: "kyc-memo.md", path: "kyc-memo.md", type: "file" },
+  { name: "kyc-memo.pdf", path: "kyc-memo.pdf", type: "file" },
+];
 
 export default function WorkspacePanel({
   mountDir,
@@ -15,6 +24,7 @@ export default function WorkspacePanel({
   onSelectFile,
   onClose,
   refreshTrigger = 0,
+  demoArtifactsReady = false,
 }) {
   const [tree, setTree] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -23,6 +33,16 @@ export default function WorkspacePanel({
 
   const loadTree = useCallback(async () => {
     if (!mountDir) return;
+    // Demo mode short-circuit: synthesize the tree client-side so the
+    // panel mirrors the agent's run state (empty before a submit, two
+    // artifacts after the answer event fires) without any network call
+    // against /api/workspace/tree (which would 400 on the sentinel).
+    if (isDemoMount(mountDir)) {
+      setError(null);
+      setLoading(false);
+      setTree(demoArtifactsReady ? DEMO_ARTIFACTS : []);
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
@@ -33,7 +53,7 @@ export default function WorkspacePanel({
     } finally {
       setLoading(false);
     }
-  }, [mountDir]);
+  }, [mountDir, demoArtifactsReady]);
 
   useEffect(() => {
     loadTree();

@@ -653,6 +653,19 @@ export async function fetchTestCaseRunVerdict(employeeId, runId) {
 // Workspace browsing
 // ---------------------------------------------------------------------------
 
+// Sentinel ``mountDir`` value used in --demo mode. The frontend short-
+// circuits any workspace API call when it sees this prefix and serves a
+// hard-coded artifact set (markdown + pdf "final report") from
+// ``frontend/public/demo-artifacts/`` instead of hitting disk. This lets
+// the demo show a believable "before run = empty workspace, after run =
+// generated report" reveal on any machine without depending on a real
+// directory existing locally.
+export const DEMO_MOUNT_DIR = "demo://workspace";
+
+export function isDemoMount(rootDir) {
+  return typeof rootDir === "string" && rootDir.startsWith("demo://");
+}
+
 export async function fetchWorkspaceTree(dirPath) {
   const res = await fetch(
     `${API_BASE}/workspace/tree?path=${encodeURIComponent(dirPath)}`,
@@ -670,6 +683,11 @@ export async function fetchWorkspaceFile(rootDir, filePath) {
 }
 
 export function workspaceRawUrl(rootDir, filePath) {
+  if (isDemoMount(rootDir)) {
+    // Serve from frontend/public/demo-artifacts/ so PdfViewer's <iframe>
+    // and ImageViewer's <img> just work with the same URL plumbing.
+    return `/demo-artifacts/${filePath}`;
+  }
   return `${API_BASE}/workspace/raw?root=${encodeURIComponent(rootDir)}&path=${encodeURIComponent(filePath)}`;
 }
 

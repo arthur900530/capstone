@@ -35,9 +35,34 @@ import {
   deleteChat as apiDeleteChat,
   renameChat as apiRenameChat,
   fetchWorkspaceFile,
+  DEMO_MOUNT_DIR,
+  isDemoMount,
 } from "./services/api";
 
 const LIVE_BROWSER_ENABLED = import.meta.env.VITE_LIVE_BROWSER !== "false";
+const IS_DEMO = import.meta.env.VITE_DEMO === "true";
+
+// Hard-coded artifact set surfaced by the workspace panel + canvas in
+// demo mode. Both files are static assets shipped under
+// ``frontend/public/demo-artifacts/``: the .md is fetched as text and
+// rendered through the existing MarkdownViewer; the .pdf flows through
+// ``workspaceRawUrl``'s demo branch into PdfViewer's <iframe>. Sourcing
+// the markdown from disk (rather than reusing the recorded ``answer``
+// event text) keeps the on-screen report in sync with the canonical
+// asset shipped in the repo, so editing kyc-memo.md is the only knob
+// needed to change what the demo shows.
+const DEMO_ARTIFACT_MD = "kyc-memo.md";
+const DEMO_ARTIFACT_PDF = "kyc-memo.pdf";
+
+async function fetchDemoArtifactText(filename) {
+  try {
+    const res = await fetch(`/demo-artifacts/${filename}`);
+    if (!res.ok) return null;
+    return await res.text();
+  } catch {
+    return null;
+  }
+}
 
 function generateOptimisticChatName(question) {
   const q = question.trim().replace(/[?!.]+$/, "");
@@ -62,7 +87,17 @@ export default function App() {
   const [stagedFiles, setStagedFiles] = useState([]);
   const [skills, setSkills] = useState([]);
   const [focusAgentId, setFocusAgentId] = useState(null);
-  const [mountDir, setMountDir] = useState("");
+  // In demo mode we always mount the synthetic ``demo://workspace``
+  // sentinel so WorkspacePanel renders unconditionally and any "real"
+  // disk path the user might have lying around is ignored. The picker
+  // UI in InputBox is hidden for the same reason — demo workspaces are
+  // a controlled showcase, not a directory the user owns.
+  const [mountDir, setMountDir] = useState(IS_DEMO ? DEMO_MOUNT_DIR : "");
+  // Flips ``true`` when the agent emits its final ``answer`` event so
+  // the demo workspace transitions from "empty" to "kyc-memo.md +
+  // kyc-memo.pdf". Multi-turn chats keep this latched so subsequent
+  // submits don't visually wipe the artifacts mid-session.
+  const [demoArtifactsReady, setDemoArtifactsReady] = useState(false);
   const [selectedSkillIds, setSelectedSkillIds] = useState([]);
   const [skipSkillConfirm, setSkipSkillConfirm] = useState(false);
   const [employees, setEmployees] = useState([]);
@@ -303,7 +338,10 @@ export default function App() {
                 }))
               : undefined,
           skillIds: effectiveSkillIds,
-          mountDir: mountDir || undefined,
+          // The demo sentinel is a frontend-only convention; never
+          // forward it to the backend (which would try to ``os.path.isdir``
+          // it and 400 on /api/chat).
+          mountDir: isDemoMount(mountDir) ? undefined : mountDir || undefined,
           employeeId: currentEmployeeId || undefined,
           employee: currentEmployee
             ? {
@@ -446,6 +484,34 @@ export default function App() {
                     ? data.task_index
                     : undefined,
               };
+              // Demo-only: the moment the agent emits its final answer,
+              // populate the synthetic workspace with kyc-memo.md and
+              // kyc-memo.pdf (both static assets under
+              // frontend/public/demo-artifacts/). Auto-open the .md so
+              // the canvas reveals the report without an extra click,
+              // and bump the tree refresh trigger so WorkspacePanel
+              // re-renders with the new files visible. The fetch is
+              // fire-and-forget — MarkdownViewer's "Loading…" state
+              // covers the brief gap before fileContents lands.
+              if (IS_DEMO) {
+                setDemoArtifactsReady(true);
+                fetchDemoArtifactText(DEMO_ARTIFACT_MD).then((text) => {
+                  if (text != null) {
+                    setFileContents((prev) => ({
+                      ...prev,
+                      [DEMO_ARTIFACT_MD]: text,
+                    }));
+                  }
+                });
+                setOpenFiles((prev) => {
+                  const next = [...prev];
+                  if (!next.includes(DEMO_ARTIFACT_MD)) next.push(DEMO_ARTIFACT_MD);
+                  if (!next.includes(DEMO_ARTIFACT_PDF)) next.push(DEMO_ARTIFACT_PDF);
+                  return next;
+                });
+                setActiveFile(DEMO_ARTIFACT_MD);
+                setTreeRefreshTrigger((n) => n + 1);
+              }
               break;
             case "chat_response":
               msg = {
@@ -555,7 +621,10 @@ export default function App() {
     setChatFiles([]);
     setStagedFiles([]);
     setSkipSkillConfirm(false);
-    setMountDir("");
+    // In demo mode keep the synthetic mount pinned; in live mode clear
+    // any user-set workspace path as before.
+    setMountDir(IS_DEMO ? DEMO_MOUNT_DIR : "");
+    setDemoArtifactsReady(false);
     setRatings({});
     visibleAgentRef.current = null;
     sentinelRefs.current.clear();
@@ -611,6 +680,32 @@ export default function App() {
       setChatFiles(chat.files ?? []);
       setStagedFiles([]);
       setRatings(chat.ratings || {});
+      // Demo-mode artifact rehydration: if the chat we're loading
+      // already contains a final ``answer`` message, treat the
+      // workspace as "post-run" so kyc-memo.{md,pdf} appear immediately
+      // (without waiting for the user to re-submit). The .md body is
+      // fetched from the static asset so it always matches the file
+      // shipped in the repo, regardless of what the prior session's
+      // answer text happened to be. Pin mountDir to the demo sentinel
+      // for the same reason new chats do — selecting an old chat in
+      // demo mode shouldn't strand the user with a blank workspace.
+      if (IS_DEMO) {
+        setMountDir(DEMO_MOUNT_DIR);
+        const hasAnswer = chat.messages.some((m) => m.type === "answer");
+        if (hasAnswer) {
+          setDemoArtifactsReady(true);
+          fetchDemoArtifactText(DEMO_ARTIFACT_MD).then((text) => {
+            if (text != null) {
+              setFileContents((prev) => ({
+                ...prev,
+                [DEMO_ARTIFACT_MD]: text,
+              }));
+            }
+          });
+        } else {
+          setDemoArtifactsReady(false);
+        }
+      }
       const hasBrowserActivity = chat.messages.some(
         (m) => m.type === "tool_call" && String(m.tool || "").startsWith("browser_"),
       );
@@ -701,6 +796,21 @@ export default function App() {
           setFileContents((prev) => ({ ...prev, [filePath]: "" }));
           return;
         }
+        // Demo workspace doesn't have a real file API behind it: text
+        // artifacts are served as static assets under
+        // frontend/public/demo-artifacts/. Try to fetch from there so
+        // that clicking a demo file in the tree (e.g. before the
+        // answer event has pre-populated fileContents, or after a
+        // tab-switch that cleared local state) still resolves to
+        // real content instead of a permanent "Loading…" spinner.
+        if (isDemoMount(mountDir)) {
+          const text = await fetchDemoArtifactText(filePath);
+          setFileContents((prev) => ({
+            ...prev,
+            [filePath]: text ?? "",
+          }));
+          return;
+        }
         try {
           const res = await fetchWorkspaceFile(mountDir, filePath);
           setFileContents((prev) => ({ ...prev, [filePath]: res.content }));
@@ -782,6 +892,10 @@ export default function App() {
     workspacePanelOpen,
     setWorkspacePanelOpen,
     treeRefreshTrigger,
+    // demo workspace (consumed indirectly via the WorkspacePanel prop;
+    // exposed on context for any future surface that wants to react to
+    // the "agent has produced its final report" signal).
+    demoArtifactsReady,
     // rating plumbing (used by ChatView -> ChatMessage -> MessageRating)
     ratings,
     setRatings,
@@ -851,6 +965,7 @@ export default function App() {
             onSelectFile={handleCanvasSelectFile}
             onClose={() => setWorkspacePanelOpen(false)}
             refreshTrigger={treeRefreshTrigger}
+            demoArtifactsReady={demoArtifactsReady}
           />
         )}
 

@@ -15,6 +15,12 @@ import {
 } from "lucide-react";
 import { fetchAgents, pickWorkspaceDirectory } from "../services/api";
 
+// In --demo mode the workspace is a synthetic ``demo://workspace``
+// pinned by App.jsx; surfacing the mount picker would let users override
+// it with a real disk path and silently break the canned report
+// reveal, so we hide the entire picker UI instead.
+const IS_DEMO = import.meta.env.VITE_DEMO === "true";
+
 export default function InputBox({
   onSubmit,
   isStreaming,
@@ -323,6 +329,7 @@ export default function InputBox({
             </div>
             )}
 
+            {!IS_DEMO && (
             <div className="relative" ref={workspaceRef}>
               <button
                 onClick={() => {
@@ -443,6 +450,7 @@ export default function InputBox({
                 </div>
               )}
             </div>
+            )}
           </div>
 
           <div className="flex items-center gap-2">
