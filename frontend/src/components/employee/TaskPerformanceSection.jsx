@@ -1326,7 +1326,7 @@ export default function TaskPerformanceSection({
           sub={
             tasksWorkflowAligned > 0
               ? workflowSteps.total > 0
-                ? `${workflowMicroPct}% of leaf steps · avg ${Math.round(
+                ? `${workflowMicroPct}% of workflow steps · avg ${Math.round(
                     (workflowRate || 0) * 100,
                   )}% per task`
                 : "no leaf-step signal yet"
